@@ -1,0 +1,62 @@
+version: "3.3"
+
+services:
+  app:
+    container_name: aams-app-server
+    build:
+      context: ./
+      dockerfile: ./Dockerfile
+    working_dir: /home/node/app
+#    command: [ "npm", "run", "start:dev" ]
+    restart: unless-stopped
+    tty: true
+    env_file:
+      - .env
+    volumes:
+      - ./:/home/node/app
+    ports:
+      - ${PORT}:${PORT}
+    networks:
+      - aams-app-network
+    depends_on:
+      - redis
+    environment:
+      - TZ: "Asia/Ho_Chi_Minh"
+
+  postgres:
+    container_name: aams-postgres
+    image: postgres:13.5
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      TZ: "Asia/Ho_Chi_Minh"
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    ports:
+      - ${DB_PORT}:5432
+    networks:
+      - aams-app-network
+
+  redis:
+    container_name: aams-app-redis
+    image: redis/redis-stack-server:latest
+    restart: unless-stopped
+    ports:
+      - ${REDIS_PORT}:${REDIS_PORT}
+    volumes:
+      - redis:/data
+    networks:
+      - aams-app-network
+
+volumes:
+  redis:
+    driver: local
+  postgres:
+    driver: local
+
+networks:
+  aams-app-network:
+    driver: bridge
+

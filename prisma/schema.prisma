@@ -1,0 +1,887 @@
+// Facebook Ads Crawling Database Schema
+// Prisma schema for storing all Facebook Marketing API data
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch"]
+  binaryTargets   = ["native", "debian-openssl-1.1.x", "debian-openssl-3.0.x", "linux-arm64-openssl-3.0.x"]
+  output          = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum CrawlJobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum CrawlJobType {
+  CAMPAIGNS
+  ADSETS
+  ADS
+  CREATIVES
+  IMAGES
+  VIDEOS
+  INSIGHTS_DAILY
+  INSIGHTS_DEVICE
+  INSIGHTS_PLACEMENT
+  INSIGHTS_AGE_GENDER
+  INSIGHTS_REGION
+  INSIGHTS_HOURLY
+}
+
+enum TokenType {
+  USER
+  PAGE
+  SYSTEM_USER
+}
+
+// ============================================================================
+// USERS - System users for authentication
+// ============================================================================
+
+model User {
+  id        Int       @id @default(autoincrement())
+  email     String    @unique @map("email")
+  password  String    @map("password")
+  name      String?   @map("name")
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime? @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  // Relations
+  fbAccounts    FbAccount[]
+  refreshTokens RefreshToken[]
+
+  @@map("users")
+}
+
+// ============================================================================
+// FB ACCOUNTS - Facebook accounts (1 nick FB = 1 token = multiple ad_accounts)
+// ============================================================================
+
+model FbAccount {
+  id           Int       @id @default(autoincrement())
+  userId       Int       @map("user_id")
+  fbUserId     String?   @map("fb_user_id") // Facebook user ID from API
+  name         String?   @map("name") // Nick FB name
+  isValid      Boolean   @default(true) @map("is_valid")
+  errorMessage String?   @map("error_message")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime? @updatedAt @map("updated_at")
+  deletedAt    DateTime? @map("deleted_at")
+
+  // Relations
+  user       User         @relation(fields: [userId], references: [id])
+  adAccounts AdAccount[]
+  tokens     FbApiToken[]
+
+  @@index([userId])
+  @@map("fb_accounts")
+}
+
+// ============================================================================
+// FB API TOKENS - Store access tokens for FB accounts
+// ============================================================================
+
+model FbApiToken {
+  id                  Int       @id @default(autoincrement())
+  fbAccountId         Int       @map("fb_account_id")
+  name                String?   @map("name") // e.g., "Main token", "Insights token"
+  accessToken         String    @map("access_token")
+  tokenType           TokenType @default(USER) @map("token_type")
+  scopes              String[]  @map("scopes")
+  expiresAt           DateTime? @map("expires_at")
+  dataAccessExpiresAt DateTime? @map("data_access_expires_at")
+  isValid             Boolean   @default(true) @map("is_valid")
+  isDefault           Boolean   @default(false) @map("is_default") // Token mặc định cho crawl
+  lastUsedAt          DateTime? @map("last_used_at")
+  errorMessage        String?   @map("error_message")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime? @updatedAt @map("updated_at")
+  deletedAt           DateTime? @map("deleted_at")
+
+  // Relations
+  fbAccount FbAccount @relation(fields: [fbAccountId], references: [id], onDelete: Cascade)
+
+  @@index([fbAccountId])
+  @@map("fb_api_tokens")
+}
+
+// ============================================================================
+// REFRESH TOKENS - For JWT authentication
+// ============================================================================
+
+model RefreshToken {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  token     String   @unique @map("token")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// ============================================================================
+// AD ACCOUNTS
+// ============================================================================
+
+model AdAccount {
+  id                       String    @id @map("id") // Facebook Account ID
+  fbAccountId              Int?      @map("fb_account_id")
+  name                     String?   @map("name")
+  accountStatus            Int       @map("account_status") // 1=ACTIVE, 2=DISABLED, etc.
+  age                      Float?    @map("age")
+  amountSpent              Decimal?  @map("amount_spent") @db.Decimal(20, 4)
+  balance                  Decimal?  @map("balance") @db.Decimal(20, 4)
+  businessId               String?   @map("business_id")
+  businessName             String?   @map("business_name")
+  currency                 String    @map("currency")
+  timezoneName             String?   @map("timezone_name")
+  timezoneOffsetHoursUtc   Int?      @map("timezone_offset_hours_utc")
+  disableReason            Int?      @map("disable_reason")
+  fundingSource            String?   @map("funding_source")
+  minCampaignGroupSpendCap Decimal?  @map("min_campaign_group_spend_cap") @db.Decimal(20, 4)
+  minDailyBudget           Decimal?  @map("min_daily_budget") @db.Decimal(20, 4)
+  spendCap                 Decimal?  @map("spend_cap") @db.Decimal(20, 4)
+  owner                    String?   @map("owner")
+  isPrepayAccount          Boolean?  @map("is_prepay_account")
+  createdTime              DateTime? @map("created_time")
+  endAdvertiser            String?   @map("end_advertiser")
+  endAdvertiserName        String?   @map("end_advertiser_name")
+  rawJson                  Json?     @map("raw_json")
+  syncedAt                 DateTime  @map("synced_at")
+  createdAt                DateTime  @default(now()) @map("created_at")
+  deletedAt                DateTime? @map("deleted_at")
+
+  // Relations
+  fbAccount         FbAccount?                 @relation(fields: [fbAccountId], references: [id])
+  campaigns         Campaign[]
+  adImages          AdImage[]
+  adVideos          AdVideo[]
+  creatives         Creative[]
+  adsets            Adset[]
+  ads               Ad[]
+  insightsDaily     AdInsightsDaily[]
+  insightsDevice    AdInsightsDeviceDaily[]
+  insightsPlacement AdInsightsPlacementDaily[]
+  insightsAgeGender AdInsightsAgeGenderDaily[]
+  insightsRegion    AdInsightsRegionDaily[]
+  insightsHourly    AdInsightsHourly[]
+  crawlJobs         CrawlJob[]
+
+  @@index([fbAccountId])
+  @@map("ad_accounts")
+}
+
+// ============================================================================
+// CAMPAIGNS
+// ============================================================================
+
+model Campaign {
+  id                       String    @id @map("id")
+  accountId                String    @map("account_id")
+  name                     String?   @map("name")
+  objective                String?   @map("objective")
+  status                   String    @map("status")
+  configuredStatus         String?   @map("configured_status")
+  effectiveStatus          String?   @map("effective_status")
+  buyingType               String?   @map("buying_type")
+  specialAdCategories      Json?     @map("special_ad_categories")
+  specialAdCategory        String?   @map("special_ad_category")
+  specialAdCategoryCountry Json?     @map("special_ad_category_country")
+  dailyBudget              Decimal?  @map("daily_budget") @db.Decimal(20, 4)
+  lifetimeBudget           Decimal?  @map("lifetime_budget") @db.Decimal(20, 4)
+  budgetRemaining          Decimal?  @map("budget_remaining") @db.Decimal(20, 4)
+  spendCap                 Decimal?  @map("spend_cap") @db.Decimal(20, 4)
+  bidStrategy              String?   @map("bid_strategy")
+  pacingType               Json?     @map("pacing_type")
+  startTime                DateTime? @map("start_time")
+  stopTime                 DateTime? @map("stop_time")
+  createdTime              DateTime? @map("created_time")
+  updatedTime              DateTime? @map("updated_time")
+  sourceCampaignId         String?   @map("source_campaign_id")
+  boostedObjectId          String?   @map("boosted_object_id")
+  smartPromotionType       String?   @map("smart_promotion_type")
+  isSkadnetworkAttribution Boolean?  @map("is_skadnetwork_attribution")
+  issuesInfo               Json?     @map("issues_info")
+  recommendations          Json?     @map("recommendations")
+  rawJson                  Json?     @map("raw_json")
+  syncedAt                 DateTime  @map("synced_at")
+  createdAt                DateTime  @default(now()) @map("created_at")
+  deletedAt                DateTime? @map("deleted_at")
+
+  // Relations
+  account AdAccount @relation(fields: [accountId], references: [id])
+  adsets  Adset[]
+  ads     Ad[]
+
+  @@index([accountId])
+  @@index([status, effectiveStatus])
+  @@map("campaigns")
+}
+
+// ============================================================================
+// ADSETS
+// ============================================================================
+
+model Adset {
+  id                          String    @id @map("id")
+  campaignId                  String    @map("campaign_id")
+  accountId                   String    @map("account_id")
+  name                        String?   @map("name")
+  status                      String    @map("status")
+  configuredStatus            String?   @map("configured_status")
+  effectiveStatus             String?   @map("effective_status")
+  dailyBudget                 Decimal?  @map("daily_budget") @db.Decimal(20, 4)
+  lifetimeBudget              Decimal?  @map("lifetime_budget") @db.Decimal(20, 4)
+  budgetRemaining             Decimal?  @map("budget_remaining") @db.Decimal(20, 4)
+  bidAmount                   Decimal?  @map("bid_amount") @db.Decimal(20, 4)
+  bidStrategy                 String?   @map("bid_strategy")
+  billingEvent                String?   @map("billing_event")
+  optimizationGoal            String?   @map("optimization_goal")
+  optimizationSubEvent        String?   @map("optimization_sub_event")
+  pacingType                  Json?     @map("pacing_type")
+  targeting                   Json      @map("targeting")
+  promotedObject              Json?     @map("promoted_object")
+  destinationType             String?   @map("destination_type")
+  attributionSpec             Json?     @map("attribution_spec")
+  startTime                   DateTime? @map("start_time")
+  endTime                     DateTime? @map("end_time")
+  createdTime                 DateTime? @map("created_time")
+  updatedTime                 DateTime? @map("updated_time")
+  learningStageInfo           Json?     @map("learning_stage_info")
+  isDynamicCreative           Boolean?  @map("is_dynamic_creative")
+  useNewAppClick              Boolean?  @map("use_new_app_click")
+  multiOptimizationGoalWeight String?   @map("multi_optimization_goal_weight")
+  rfPredictionId              String?   @map("rf_prediction_id")
+  recurringBudgetSemantics    String?   @map("recurring_budget_semantics")
+  reviewFeedback              String?   @map("review_feedback")
+  sourceAdsetId               String?   @map("source_adset_id")
+  issuesInfo                  Json?     @map("issues_info")
+  recommendations             Json?     @map("recommendations")
+  rawJson                     Json?     @map("raw_json")
+  syncedAt                    DateTime  @map("synced_at")
+  createdAt                   DateTime  @default(now()) @map("created_at")
+  deletedAt                   DateTime? @map("deleted_at")
+
+  // Relations
+  account  AdAccount @relation(fields: [accountId], references: [id])
+  campaign Campaign  @relation(fields: [campaignId], references: [id])
+  ads      Ad[]
+
+  @@index([campaignId])
+  @@index([accountId])
+  @@index([status, effectiveStatus])
+  @@map("adsets")
+}
+
+// ============================================================================
+// ADS
+// ============================================================================
+
+model Ad {
+  id                   String    @id @map("id")
+  adsetId              String    @map("adset_id")
+  campaignId           String    @map("campaign_id")
+  accountId            String    @map("account_id")
+  creativeId           String?   @map("creative_id")
+  name                 String?   @map("name")
+  status               String    @map("status")
+  configuredStatus     String?   @map("configured_status")
+  effectiveStatus      String?   @map("effective_status")
+  creative             Json?     @map("creative")
+  trackingSpecs        Json?     @map("tracking_specs")
+  conversionSpecs      Json?     @map("conversion_specs")
+  adReviewFeedback     Json?     @map("ad_review_feedback")
+  previewShareableLink String?   @map("preview_shareable_link")
+  sourceAdId           String?   @map("source_ad_id")
+  createdTime          DateTime? @map("created_time")
+  updatedTime          DateTime? @map("updated_time")
+  demolinkHash         String?   @map("demolink_hash")
+  engagementAudience   Boolean?  @map("engagement_audience")
+  issuesInfo           Json?     @map("issues_info")
+  recommendations      Json?     @map("recommendations")
+  rawJson              Json?     @map("raw_json")
+  syncedAt             DateTime  @map("synced_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  deletedAt            DateTime? @map("deleted_at")
+
+  // Relations
+  account           AdAccount                  @relation(fields: [accountId], references: [id])
+  campaign          Campaign                   @relation(fields: [campaignId], references: [id])
+  adset             Adset                      @relation(fields: [adsetId], references: [id])
+  creativeRef       Creative?                  @relation(fields: [creativeId], references: [id])
+  insightsDaily     AdInsightsDaily[]
+  insightsDevice    AdInsightsDeviceDaily[]
+  insightsPlacement AdInsightsPlacementDaily[]
+  insightsAgeGender AdInsightsAgeGenderDaily[]
+  insightsRegion    AdInsightsRegionDaily[]
+  insightsHourly    AdInsightsHourly[]
+
+  @@index([adsetId])
+  @@index([campaignId])
+  @@index([accountId])
+  @@index([creativeId])
+  @@index([status, effectiveStatus])
+  @@map("ads")
+}
+
+// ============================================================================
+// CREATIVES
+// ============================================================================
+
+model Creative {
+  id                        String    @id @map("id")
+  accountId                 String    @map("account_id")
+  name                      String?   @map("name")
+  title                     String?   @map("title")
+  body                      String?   @map("body")
+  description               String?   @map("description")
+  linkUrl                   String?   @map("link_url")
+  linkDestinationDisplayUrl String?   @map("link_destination_display_url")
+  callToActionType          String?   @map("call_to_action_type")
+  imageHash                 String?   @map("image_hash")
+  imageUrl                  String?   @map("image_url")
+  videoId                   String?   @map("video_id")
+  thumbnailUrl              String?   @map("thumbnail_url")
+  objectStorySpec           Json?     @map("object_story_spec")
+  objectStoryId             String?   @map("object_story_id")
+  effectiveObjectStoryId    String?   @map("effective_object_story_id")
+  objectId                  String?   @map("object_id")
+  objectType                String?   @map("object_type")
+  instagramActorId          String?   @map("instagram_actor_id")
+  instagramPermalinkUrl     String?   @map("instagram_permalink_url")
+  productSetId              String?   @map("product_set_id")
+  assetFeedSpec             Json?     @map("asset_feed_spec")
+  degreesOfFreedomSpec      Json?     @map("degrees_of_freedom_spec")
+  contextualMultiAds        Json?     @map("contextual_multi_ads")
+  urlTags                   String?   @map("url_tags")
+  templateUrl               String?   @map("template_url")
+  templateUrlSpec           Json?     @map("template_url_spec")
+  usePageActorOverride      Boolean?  @map("use_page_actor_override")
+  authorizationCategory     String?   @map("authorization_category")
+  runStatus                 String?   @map("run_status")
+  status                    String?   @map("status")
+  createdTime               DateTime? @map("created_time")
+  rawJson                   Json?     @map("raw_json")
+  syncedAt                  DateTime  @map("synced_at")
+  createdAt                 DateTime  @default(now()) @map("created_at")
+  deletedAt                 DateTime? @map("deleted_at")
+
+  // Relations
+  account  AdAccount @relation(fields: [accountId], references: [id])
+  imageRef AdImage?  @relation(fields: [imageHash], references: [hash])
+  videoRef AdVideo?  @relation(fields: [videoId], references: [id])
+  ads      Ad[]
+
+  @@index([accountId])
+  @@index([imageHash])
+  @@index([videoId])
+  @@map("creatives")
+}
+
+// ============================================================================
+// AD IMAGES
+// ============================================================================
+
+model AdImage {
+  hash           String    @id @map("hash")
+  accountId      String    @map("account_id")
+  id             String?   @map("id")
+  name           String?   @map("name")
+  url            String?   @map("url")
+  url128         String?   @map("url_128")
+  permalinkUrl   String?   @map("permalink_url")
+  originalWidth  Int?      @map("original_width")
+  originalHeight Int?      @map("original_height")
+  width          Int?      @map("width")
+  height         Int?      @map("height")
+  status         String?   @map("status")
+  createdTime    DateTime? @map("created_time")
+  updatedTime    DateTime? @map("updated_time")
+  rawJson        Json?     @map("raw_json")
+  syncedAt       DateTime  @map("synced_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  deletedAt      DateTime? @map("deleted_at")
+
+  // Relations
+  account   AdAccount  @relation(fields: [accountId], references: [id])
+  creatives Creative[]
+
+  @@index([accountId])
+  @@map("ad_images")
+}
+
+// ============================================================================
+// AD VIDEOS
+// ============================================================================
+
+model AdVideo {
+  id                     String    @id @map("id")
+  accountId              String    @map("account_id")
+  title                  String?   @map("title")
+  description            String?   @map("description")
+  source                 String?   @map("source")
+  picture                String?   @map("picture")
+  embedHtml              String?   @map("embed_html")
+  length                 Float?    @map("length")
+  format                 Json?     @map("format")
+  status                 Json?     @map("status")
+  adBreaks               Json?     @map("ad_breaks")
+  contentCategory        String?   @map("content_category")
+  universalVideoId       String?   @map("universal_video_id")
+  isCrosspostingEligible Boolean?  @map("is_crossposting_eligible")
+  isInstagramEligible    Boolean?  @map("is_instagram_eligible")
+  createdTime            DateTime? @map("created_time")
+  updatedTime            DateTime? @map("updated_time")
+  rawJson                Json?     @map("raw_json")
+  syncedAt               DateTime  @map("synced_at")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  deletedAt              DateTime? @map("deleted_at")
+
+  // Relations
+  account   AdAccount  @relation(fields: [accountId], references: [id])
+  creatives Creative[]
+
+  @@index([accountId])
+  @@map("ad_videos")
+}
+
+// ============================================================================
+// AD INSIGHTS - DAILY (Main insights table with all metrics)
+// ============================================================================
+
+model AdInsightsDaily {
+  id         Int      @id @default(autoincrement())
+  date       DateTime @map("date") @db.Date
+  adId       String   @map("ad_id")
+  adsetId    String?  @map("adset_id")
+  campaignId String?  @map("campaign_id")
+  accountId  String   @map("account_id")
+
+  // Reach & Frequency
+  impressions BigInt?  @map("impressions")
+  reach       BigInt?  @map("reach")
+  frequency   Decimal? @map("frequency") @db.Decimal(10, 4)
+
+  // Clicks
+  clicks                 BigInt? @map("clicks")
+  uniqueClicks           BigInt? @map("unique_clicks")
+  inlineLinkClicks       BigInt? @map("inline_link_clicks")
+  uniqueInlineLinkClicks BigInt? @map("unique_inline_link_clicks")
+  outboundClicks         Json?   @map("outbound_clicks")
+  uniqueOutboundClicks   Json?   @map("unique_outbound_clicks")
+
+  // CTR
+  ctr                 Decimal? @map("ctr") @db.Decimal(10, 4)
+  uniqueCtr           Decimal? @map("unique_ctr") @db.Decimal(10, 4)
+  inlineLinkClickCtr  Decimal? @map("inline_link_click_ctr") @db.Decimal(10, 4)
+  uniqueLinkClicksCtr Decimal? @map("unique_link_clicks_ctr") @db.Decimal(10, 4)
+  outboundClicksCtr   Json?    @map("outbound_clicks_ctr")
+
+  // Cost
+  spend                        Decimal? @map("spend") @db.Decimal(20, 4)
+  cpc                          Decimal? @map("cpc") @db.Decimal(20, 4)
+  cpm                          Decimal? @map("cpm") @db.Decimal(20, 4)
+  cpp                          Decimal? @map("cpp") @db.Decimal(20, 4)
+  costPerUniqueClick           Decimal? @map("cost_per_unique_click") @db.Decimal(20, 4)
+  costPerInlineLinkClick       Decimal? @map("cost_per_inline_link_click") @db.Decimal(20, 4)
+  costPerUniqueInlineLinkClick Decimal? @map("cost_per_unique_inline_link_click") @db.Decimal(20, 4)
+  costPerOutboundClick         Json?    @map("cost_per_outbound_click")
+  costPerUniqueOutboundClick   Json?    @map("cost_per_unique_outbound_click")
+
+  // Actions & Conversions
+  actions                 Json? @map("actions")
+  actionValues            Json? @map("action_values")
+  conversions             Json? @map("conversions")
+  conversionValues        Json? @map("conversion_values")
+  costPerActionType       Json? @map("cost_per_action_type")
+  costPerConversion       Json? @map("cost_per_conversion")
+  costPerUniqueActionType Json? @map("cost_per_unique_action_type")
+
+  // ROAS
+  purchaseRoas          Json? @map("purchase_roas")
+  websitePurchaseRoas   Json? @map("website_purchase_roas")
+  mobileAppPurchaseRoas Json? @map("mobile_app_purchase_roas")
+
+  // Video Metrics
+  videoPlayActions                  Json? @map("video_play_actions")
+  videoP25WatchedActions            Json? @map("video_p25_watched_actions")
+  videoP50WatchedActions            Json? @map("video_p50_watched_actions")
+  videoP75WatchedActions            Json? @map("video_p75_watched_actions")
+  videoP95WatchedActions            Json? @map("video_p95_watched_actions")
+  videoP100WatchedActions           Json? @map("video_p100_watched_actions")
+  video30SecWatchedActions          Json? @map("video_30_sec_watched_actions")
+  videoAvgTimeWatchedActions        Json? @map("video_avg_time_watched_actions")
+  videoTimeWatchedActions           Json? @map("video_time_watched_actions")
+  videoPlayCurveActions             Json? @map("video_play_curve_actions")
+  videoThruplayWatchedActions       Json? @map("video_thruplay_watched_actions")
+  videoContinuous2SecWatchedActions Json? @map("video_continuous_2_sec_watched_actions")
+
+  // Engagement
+  socialSpend                Decimal? @map("social_spend") @db.Decimal(20, 4)
+  inlinePostEngagement       BigInt?  @map("inline_post_engagement")
+  uniqueInlinePostEngagement BigInt?  @map("unique_inline_post_engagement")
+
+  // Quality Ranking
+  qualityRanking        String? @map("quality_ranking")
+  engagementRateRanking String? @map("engagement_rate_ranking")
+  conversionRateRanking String? @map("conversion_rate_ranking")
+
+  // Canvas/Instant Experience
+  canvasAvgViewTime    Decimal? @map("canvas_avg_view_time") @db.Decimal(10, 4)
+  canvasAvgViewPercent Decimal? @map("canvas_avg_view_percent") @db.Decimal(10, 4)
+
+  // Catalog
+  catalogSegmentActions Json? @map("catalog_segment_actions")
+  catalogSegmentValue   Json? @map("catalog_segment_value")
+
+  // Others
+  estimatedAdRecallers            BigInt?  @map("estimated_ad_recallers")
+  estimatedAdRecallRate           Decimal? @map("estimated_ad_recall_rate") @db.Decimal(10, 4)
+  instantExperienceClicksToOpen   Json?    @map("instant_experience_clicks_to_open")
+  instantExperienceClicksToStart  Json?    @map("instant_experience_clicks_to_start")
+  instantExperienceOutboundClicks Json?    @map("instant_experience_outbound_clicks")
+  fullViewReach                   BigInt?  @map("full_view_reach")
+  fullViewImpressions             BigInt?  @map("full_view_impressions")
+
+  // Metadata
+  dateStart DateTime? @map("date_start") @db.Date
+  dateStop  DateTime? @map("date_stop") @db.Date
+  syncedAt  DateTime  @map("synced_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  account AdAccount @relation(fields: [accountId], references: [id])
+  ad      Ad        @relation(fields: [adId], references: [id])
+
+  @@unique([date, adId])
+  @@index([adId, date])
+  @@index([date])
+  @@index([accountId, date])
+  @@map("ad_insights_daily")
+}
+
+// ============================================================================
+// AD INSIGHTS - DEVICE BREAKDOWN
+// ============================================================================
+
+model AdInsightsDeviceDaily {
+  id                          Int      @id @default(autoincrement())
+  date                        DateTime @map("date") @db.Date
+  adId                        String   @map("ad_id")
+  accountId                   String   @map("account_id")
+  devicePlatform              String   @map("device_platform") // mobile, desktop, tablet
+  impressions                 BigInt?  @map("impressions")
+  reach                       BigInt?  @map("reach")
+  clicks                      BigInt?  @map("clicks")
+  uniqueClicks                BigInt?  @map("unique_clicks")
+  spend                       Decimal? @map("spend") @db.Decimal(20, 4)
+  actions                     Json?    @map("actions")
+  actionValues                Json?    @map("action_values")
+  conversions                 Json?    @map("conversions")
+  costPerActionType           Json?    @map("cost_per_action_type")
+  videoThruplayWatchedActions Json?    @map("video_thruplay_watched_actions")
+  syncedAt                    DateTime @map("synced_at")
+  createdAt                   DateTime @default(now()) @map("created_at")
+
+  // Relations
+  account AdAccount @relation(fields: [accountId], references: [id])
+  ad      Ad        @relation(fields: [adId], references: [id])
+
+  @@unique([date, adId, devicePlatform])
+  @@index([adId, date])
+  @@map("ad_insights_device_daily")
+}
+
+// ============================================================================
+// AD INSIGHTS - PLACEMENT BREAKDOWN
+// ============================================================================
+
+model AdInsightsPlacementDaily {
+  id                          Int      @id @default(autoincrement())
+  date                        DateTime @map("date") @db.Date
+  adId                        String   @map("ad_id")
+  accountId                   String   @map("account_id")
+  publisherPlatform           String   @map("publisher_platform") // facebook, instagram, messenger, audience_network
+  platformPosition            String   @map("platform_position") // feed, story, reels, right_column, etc.
+  impressionDevice            String?  @map("impression_device")
+  impressions                 BigInt?  @map("impressions")
+  reach                       BigInt?  @map("reach")
+  clicks                      BigInt?  @map("clicks")
+  uniqueClicks                BigInt?  @map("unique_clicks")
+  spend                       Decimal? @map("spend") @db.Decimal(20, 4)
+  actions                     Json?    @map("actions")
+  actionValues                Json?    @map("action_values")
+  conversions                 Json?    @map("conversions")
+  costPerActionType           Json?    @map("cost_per_action_type")
+  videoThruplayWatchedActions Json?    @map("video_thruplay_watched_actions")
+  syncedAt                    DateTime @map("synced_at")
+  createdAt                   DateTime @default(now()) @map("created_at")
+
+  // Relations
+  account AdAccount @relation(fields: [accountId], references: [id])
+  ad      Ad        @relation(fields: [adId], references: [id])
+
+  @@unique([date, adId, publisherPlatform, platformPosition])
+  @@index([adId, date])
+  @@map("ad_insights_placement_daily")
+}
+
+// ============================================================================
+// AD INSIGHTS - AGE & GENDER BREAKDOWN
+// ============================================================================
+
+model AdInsightsAgeGenderDaily {
+  id                Int      @id @default(autoincrement())
+  date              DateTime @map("date") @db.Date
+  adId              String   @map("ad_id")
+  accountId         String   @map("account_id")
+  age               String   @map("age") // 13-17, 18-24, 25-34, 35-44, 45-54, 55-64, 65+
+  gender            String   @map("gender") // male, female, unknown
+  impressions       BigInt?  @map("impressions")
+  reach             BigInt?  @map("reach")
+  clicks            BigInt?  @map("clicks")
+  uniqueClicks      BigInt?  @map("unique_clicks")
+  spend             Decimal? @map("spend") @db.Decimal(20, 4)
+  actions           Json?    @map("actions")
+  actionValues      Json?    @map("action_values")
+  conversions       Json?    @map("conversions")
+  costPerActionType Json?    @map("cost_per_action_type")
+  syncedAt          DateTime @map("synced_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  // Relations
+  account AdAccount @relation(fields: [accountId], references: [id])
+  ad      Ad        @relation(fields: [adId], references: [id])
+
+  @@unique([date, adId, age, gender])
+  @@index([adId, date])
+  @@map("ad_insights_age_gender_daily")
+}
+
+// ============================================================================
+// AD INSIGHTS - REGION BREAKDOWN
+// ============================================================================
+
+model AdInsightsRegionDaily {
+  id                Int      @id @default(autoincrement())
+  date              DateTime @map("date") @db.Date
+  adId              String   @map("ad_id")
+  accountId         String   @map("account_id")
+  country           String   @map("country") // Country code (VN, US)
+  region            String?  @map("region") // State/Province
+  impressions       BigInt?  @map("impressions")
+  reach             BigInt?  @map("reach")
+  clicks            BigInt?  @map("clicks")
+  uniqueClicks      BigInt?  @map("unique_clicks")
+  spend             Decimal? @map("spend") @db.Decimal(20, 4)
+  actions           Json?    @map("actions")
+  actionValues      Json?    @map("action_values")
+  conversions       Json?    @map("conversions")
+  costPerActionType Json?    @map("cost_per_action_type")
+  syncedAt          DateTime @map("synced_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  // Relations
+  account AdAccount @relation(fields: [accountId], references: [id])
+  ad      Ad        @relation(fields: [adId], references: [id])
+
+  @@unique([date, adId, country, region])
+  @@index([adId, date])
+  @@map("ad_insights_region_daily")
+}
+
+// ============================================================================
+// AD INSIGHTS - HOURLY BREAKDOWN (Full metrics + Growth tracking)
+// ============================================================================
+
+model AdInsightsHourly {
+  id                                        Int      @id @default(autoincrement())
+  date                                      DateTime @map("date") @db.Date
+  adId                                      String   @map("ad_id")
+  adsetId                                   String?  @map("adset_id")
+  campaignId                                String?  @map("campaign_id")
+  accountId                                 String   @map("account_id")
+  hourlyStatsAggregatedByAdvertiserTimeZone String   @map("hourly_stats_aggregated_by_advertiser_time_zone") // 00:00:00 - 00:59:59
+
+  // Reach & Frequency
+  impressions       BigInt?  @map("impressions")
+  impressionsGrowth BigInt?  @map("impressions_growth")
+  reach             BigInt?  @map("reach")
+  reachGrowth       BigInt?  @map("reach_growth")
+  frequency         Decimal? @map("frequency") @db.Decimal(10, 4)
+  frequencyGrowth   Decimal? @map("frequency_growth") @db.Decimal(10, 4)
+
+  // Clicks
+  clicks                       BigInt?  @map("clicks")
+  clicksGrowth                 BigInt?  @map("clicks_growth")
+  uniqueClicks                 BigInt?  @map("unique_clicks")
+  uniqueClicksGrowth           BigInt?  @map("unique_clicks_growth")
+  inlineLinkClicks             BigInt?  @map("inline_link_clicks")
+  inlineLinkClicksGrowth       BigInt?  @map("inline_link_clicks_growth")
+  uniqueInlineLinkClicks       BigInt?  @map("unique_inline_link_clicks")
+  uniqueInlineLinkClicksGrowth BigInt?  @map("unique_inline_link_clicks_growth")
+  outboundClicks               Json?    @map("outbound_clicks")
+  uniqueOutboundClicks         Json?    @map("unique_outbound_clicks")
+
+  // CTR
+  ctr                 Decimal? @map("ctr") @db.Decimal(10, 4)
+  ctrGrowth           Decimal? @map("ctr_growth") @db.Decimal(10, 4)
+  uniqueCtr           Decimal? @map("unique_ctr") @db.Decimal(10, 4)
+  uniqueCtrGrowth     Decimal? @map("unique_ctr_growth") @db.Decimal(10, 4)
+  inlineLinkClickCtr  Decimal? @map("inline_link_click_ctr") @db.Decimal(10, 4)
+  uniqueLinkClicksCtr Decimal? @map("unique_link_clicks_ctr") @db.Decimal(10, 4)
+  outboundClicksCtr   Json?    @map("outbound_clicks_ctr")
+
+  // Cost
+  spend                              Decimal? @map("spend") @db.Decimal(20, 4)
+  spendGrowth                        Decimal? @map("spend_growth") @db.Decimal(20, 4)
+  cpc                                Decimal? @map("cpc") @db.Decimal(20, 4)
+  cpcGrowth                          Decimal? @map("cpc_growth") @db.Decimal(20, 4)
+  cpm                                Decimal? @map("cpm") @db.Decimal(20, 4)
+  cpmGrowth                          Decimal? @map("cpm_growth") @db.Decimal(20, 4)
+  cpp                                Decimal? @map("cpp") @db.Decimal(20, 4)
+  costPerUniqueClick                 Decimal? @map("cost_per_unique_click") @db.Decimal(20, 4)
+  costPerInlineLinkClick             Decimal? @map("cost_per_inline_link_click") @db.Decimal(20, 4)
+  costPerUniqueInlineLinkClick       Decimal? @map("cost_per_unique_inline_link_click") @db.Decimal(20, 4)
+  costPerOutboundClick               Json?    @map("cost_per_outbound_click")
+  costPerUniqueOutboundClick         Json?    @map("cost_per_unique_outbound_click")
+
+  // Actions & Conversions
+  actions                 Json?  @map("actions")
+  actionsGrowth           Json?  @map("actions_growth")
+  actionValues            Json?  @map("action_values")
+  actionValuesGrowth      Json?  @map("action_values_growth")
+  conversions             Json?  @map("conversions")
+  conversionsGrowth       Json?  @map("conversions_growth")
+  conversionValues        Json?  @map("conversion_values")
+  conversionValuesGrowth  Json?  @map("conversion_values_growth")
+  costPerActionType       Json?  @map("cost_per_action_type")
+  costPerConversion       Json?  @map("cost_per_conversion")
+  costPerUniqueActionType Json?  @map("cost_per_unique_action_type")
+
+  // ROAS
+  purchaseRoas            Json?    @map("purchase_roas")
+  purchaseRoasGrowth      Decimal? @map("purchase_roas_growth") @db.Decimal(20, 4)
+  websitePurchaseRoas     Json?    @map("website_purchase_roas")
+  mobileAppPurchaseRoas   Json?    @map("mobile_app_purchase_roas")
+
+  // Video Metrics
+  videoPlayActions                  Json? @map("video_play_actions")
+  videoP25WatchedActions            Json? @map("video_p25_watched_actions")
+  videoP50WatchedActions            Json? @map("video_p50_watched_actions")
+  videoP75WatchedActions            Json? @map("video_p75_watched_actions")
+  videoP95WatchedActions            Json? @map("video_p95_watched_actions")
+  videoP100WatchedActions           Json? @map("video_p100_watched_actions")
+  video30SecWatchedActions          Json? @map("video_30_sec_watched_actions")
+  videoAvgTimeWatchedActions        Json? @map("video_avg_time_watched_actions")
+  videoTimeWatchedActions           Json? @map("video_time_watched_actions")
+  videoPlayCurveActions             Json? @map("video_play_curve_actions")
+  videoThruplayWatchedActions       Json? @map("video_thruplay_watched_actions")
+  videoContinuous2SecWatchedActions Json? @map("video_continuous_2_sec_watched_actions")
+
+  // Engagement
+  socialSpend                      Decimal? @map("social_spend") @db.Decimal(20, 4)
+  inlinePostEngagement             BigInt?  @map("inline_post_engagement")
+  inlinePostEngagementGrowth       BigInt?  @map("inline_post_engagement_growth")
+  uniqueInlinePostEngagement       BigInt?  @map("unique_inline_post_engagement")
+  uniqueInlinePostEngagementGrowth BigInt?  @map("unique_inline_post_engagement_growth")
+
+  // Quality Ranking
+  qualityRanking        String? @map("quality_ranking")
+  engagementRateRanking String? @map("engagement_rate_ranking")
+  conversionRateRanking String? @map("conversion_rate_ranking")
+
+  // Canvas/Instant Experience
+  canvasAvgViewTime               Decimal? @map("canvas_avg_view_time") @db.Decimal(10, 4)
+  canvasAvgViewPercent            Decimal? @map("canvas_avg_view_percent") @db.Decimal(10, 4)
+  catalogSegmentActions           Json?    @map("catalog_segment_actions")
+  catalogSegmentValue             Json?    @map("catalog_segment_value")
+  estimatedAdRecallers            BigInt?  @map("estimated_ad_recallers")
+  estimatedAdRecallRate           Decimal? @map("estimated_ad_recall_rate") @db.Decimal(10, 4)
+  instantExperienceClicksToOpen   Json?    @map("instant_experience_clicks_to_open")
+  instantExperienceClicksToStart  Json?    @map("instant_experience_clicks_to_start")
+  instantExperienceOutboundClicks Json?    @map("instant_experience_outbound_clicks")
+  fullViewReach                   BigInt?  @map("full_view_reach")
+  fullViewImpressions             BigInt?  @map("full_view_impressions")
+
+  // Metadata
+  dateStart DateTime? @map("date_start") @db.Date
+  dateStop  DateTime? @map("date_stop") @db.Date
+  syncedAt  DateTime  @map("synced_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  account AdAccount @relation(fields: [accountId], references: [id])
+  ad      Ad        @relation(fields: [adId], references: [id])
+
+  @@unique([date, adId, hourlyStatsAggregatedByAdvertiserTimeZone])
+  @@index([adId, date])
+  @@index([accountId, date])
+  @@map("ad_insights_hourly")
+}
+
+// ============================================================================
+// CRAWL JOBS - Track crawling progress
+// ============================================================================
+
+model CrawlJob {
+  id               Int            @id @default(autoincrement())
+  accountId        String         @map("account_id")
+  jobType          CrawlJobType   @map("job_type")
+  status           CrawlJobStatus @default(PENDING) @map("status")
+  dateStart        DateTime?      @map("date_start") @db.Date
+  dateEnd          DateTime?      @map("date_end") @db.Date
+  breakdown        String?        @map("breakdown")
+  level            String?        @map("level")
+  totalRecords     Int?           @map("total_records")
+  processedRecords Int?           @map("processed_records")
+  errorMessage     String?        @map("error_message")
+  errorCode        String?        @map("error_code")
+  retryCount       Int            @default(0) @map("retry_count")
+  startedAt        DateTime?      @map("started_at")
+  completedAt      DateTime?      @map("completed_at")
+  createdAt        DateTime       @default(now()) @map("created_at")
+  deletedAt        DateTime?      @map("deleted_at")
+
+  // Relations
+  account AdAccount @relation(fields: [accountId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([accountId, jobType])
+  @@map("crawl_jobs")
+}
+
+// ============================================================================
+// TELEGRAM SUBSCRIBERS - For marketing notifications
+// ============================================================================
+
+model TelegramSubscriber {
+  id        Int      @id @default(autoincrement())
+  chatId    String   @unique @map("chat_id")
+  name      String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("telegram_subscribers")
+}
+
