@@ -1,0 +1,2 @@
+docker compose -f ./docker-compose-db-only.yml up --build -d
+

@@ -1,0 +1,24 @@
+services:
+  facebook-postgres:
+    container_name: facebook-postgres
+    image: postgres:latest
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "${DB_PORT}:5432"
+    volumes:
+      - postgres:/var/lib/postgresql
+
+  redis:
+    container_name: facebook-redis
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres:
+    driver: local

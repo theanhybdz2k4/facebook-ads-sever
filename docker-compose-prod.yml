@@ -1,0 +1,25 @@
+version: "3.3"
+
+services:
+  app:
+    container_name: aams-app-server
+    build:
+      context: ./
+      dockerfile: ./Dockerfile
+    working_dir: /home/node/app
+    command: [ "npm", "run", "start:prod" ]
+    restart: unless-stopped
+    tty: true
+    env_file:
+      - .env
+    volumes:
+      - ./:/home/node/app
+    ports:
+      - ${PORT}:${PORT}
+    networks:
+      - aams-app-network
+
+networks:
+  aams-app-network:
+    driver: bridge
+
