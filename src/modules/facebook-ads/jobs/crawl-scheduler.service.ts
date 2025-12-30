@@ -28,7 +28,7 @@ export class CrawlSchedulerService {
     // These crons only sync campaigns, adsets, ads, creatives
 
     // 2:05 AM - Sync campaigns
-    @Cron('5 2 * * *')
+    // @Cron('5 2 * * *') // DISABLED: Backend 512MB limit
     async syncCampaigns() {
         this.logger.log('[CRON] Starting campaigns sync');
         const accounts = await this.getActiveAccounts();
@@ -43,7 +43,7 @@ export class CrawlSchedulerService {
     }
 
     // 2:10 AM - Sync adsets
-    @Cron('10 2 * * *')
+    // @Cron('10 2 * * *') // DISABLED: Backend 512MB limit
     async syncAdsets() {
         this.logger.log('[CRON] Starting adsets sync');
         const accounts = await this.getActiveAccounts();
@@ -58,7 +58,7 @@ export class CrawlSchedulerService {
     }
 
     // 2:15 AM - Sync ads
-    @Cron('15 2 * * *')
+    // @Cron('15 2 * * *') // DISABLED: Backend 512MB limit
     async syncAds() {
         this.logger.log('[CRON] Starting ads sync');
         const accounts = await this.getActiveAccounts();
@@ -73,7 +73,7 @@ export class CrawlSchedulerService {
     }
 
     // 2:20 AM - Sync creatives
-    @Cron('20 2 * * *')
+    // @Cron('20 2 * * *') // DISABLED: Backend 512MB limit
     async syncCreatives() {
         this.logger.log('[CRON] Starting creatives sync');
         const accounts = await this.getActiveAccounts();
@@ -90,7 +90,7 @@ export class CrawlSchedulerService {
     // ==================== INSIGHTS SYNC (Hourly, except 2:00 AM) ====================
 
     // Every hour at :00 (except 2:00 AM)
-    @Cron('0 0-1,3-23 * * *')
+    // @Cron('0 0-1,3-23 * * *') // DISABLED: Backend 512MB limit
     async syncHourlyInsights() {
         const now = new Date();
         const minute = now.getMinutes();
