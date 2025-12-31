@@ -456,9 +456,11 @@ export class EntitySyncService {
             linkUrl: data.link_url,
             linkDestinationDisplayUrl: data.link_destination_display_url,
             callToActionType: data.call_to_action_type,
-            imageHash: data.image_hash,
+            // Set imageHash and videoId to null to avoid FK constraint errors
+            // The raw image_hash and video_id are preserved in rawJson
+            imageHash: null,
             imageUrl: data.image_url,
-            videoId: data.video_id,
+            videoId: null,
             thumbnailUrl: data.thumbnail_url,
             objectStorySpec: data.object_story_spec,
             objectStoryId: data.object_story_id,

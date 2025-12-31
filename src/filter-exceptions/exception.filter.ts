@@ -107,6 +107,29 @@ export class AllExceptionFilter implements ExceptionFilter {
     if (exception instanceof BaseWsException) {
       return exception.getError() as BaseErrorFormat;
     }
+    
+    // Handle standard NestJS HttpExceptions (UnauthorizedException, ForbiddenException, etc.)
+    if (exception instanceof HttpException) {
+      const response = exception.getResponse();
+      const status = exception.getStatus();
+      
+      if (typeof response === 'string') {
+        return {
+          message: response,
+          statusCode: status,
+          errorCode: `HTTP_${status}`,
+        };
+      }
+      
+      if (typeof response === 'object' && response !== null) {
+        const responseObj = response as Record<string, any>;
+        return {
+          message: responseObj.message || 'An error occurred',
+          statusCode: status,
+          errorCode: responseObj.error || `HTTP_${status}`,
+        };
+      }
+    }
 
     return Errors.DEFAULT;
   }
