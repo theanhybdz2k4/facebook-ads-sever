@@ -516,6 +516,12 @@ model AdInsightsDaily {
   costPerConversion       Json? @map("cost_per_conversion")
   costPerUniqueActionType Json? @map("cost_per_unique_action_type")
 
+  // Messaging & Results (extracted from actions for easier querying)
+  messagingStarted    BigInt?  @map("messaging_started") // onsite_conversion.messaging_conversation_started_7d
+  costPerMessaging    Decimal? @map("cost_per_messaging") @db.Decimal(20, 4)
+  results             BigInt?  @map("results") // Total results (messaging + leads + registrations)
+  costPerResult       Decimal? @map("cost_per_result") @db.Decimal(20, 4)
+
   // ROAS
   purchaseRoas          Json? @map("purchase_roas")
   websitePurchaseRoas   Json? @map("website_purchase_roas")
@@ -777,6 +783,12 @@ model AdInsightsHourly {
   costPerActionType       Json?  @map("cost_per_action_type")
   costPerConversion       Json?  @map("cost_per_conversion")
   costPerUniqueActionType Json?  @map("cost_per_unique_action_type")
+
+  // Messaging & Results (extracted from actions for easier querying)
+  messagingStarted    BigInt?  @map("messaging_started") // onsite_conversion.messaging_conversation_started_7d
+  costPerMessaging    Decimal? @map("cost_per_messaging") @db.Decimal(20, 4)
+  results             BigInt?  @map("results") // Total results (messaging + leads + registrations)
+  costPerResult       Decimal? @map("cost_per_result") @db.Decimal(20, 4)
 
   // ROAS
   purchaseRoas            Json?    @map("purchase_roas")

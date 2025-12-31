@@ -600,18 +600,32 @@ export class InsightsSyncService {
             return cost ? Number(cost.value || 0) : 0;
         };
 
+        // Helper to get total results (messaging + leads + other conversions)
+        const getResults = (actions: any[]): number => {
+            if (!actions || !Array.isArray(actions)) return 0;
+            const messagingTypes = [
+                'onsite_conversion.messaging_conversation_started_7d',
+                'onsite_conversion.messaging_first_reply',
+                'lead',
+                'omni_complete_registration',
+            ];
+            return messagingTypes.reduce((sum, type) => sum + getActionValue(actions, type), 0);
+        };
+
         // Calculate totals
-        let totalSpend = 0, totalImpr = 0, totalClicks = 0, totalMessaging = 0;
+        let totalSpend = 0, totalImpr = 0, totalClicks = 0, totalNewMsg = 0, totalResults = 0;
         for (const { insight } of insightsData) {
             totalSpend += Number(insight.spend || 0);
             totalImpr += Number(insight.impressions || 0);
             totalClicks += Number(insight.clicks || 0);
-            totalMessaging += getActionValue(insight.actions, 'onsite_conversion.messaging_conversation_started_7d');
+            totalNewMsg += getActionValue(insight.actions, 'onsite_conversion.messaging_conversation_started_7d');
+            totalResults += getResults(insight.actions);
         }
         const totalCtr = totalImpr > 0 ? (totalClicks / totalImpr) * 100 : 0;
         const totalCpc = totalClicks > 0 ? totalSpend / totalClicks : 0;
         const totalCpm = totalImpr > 0 ? (totalSpend / totalImpr) * 1000 : 0;
-        const totalCostPerMessaging = totalMessaging > 0 ? totalSpend / totalMessaging : 0;
+        const totalCPR = totalResults > 0 ? totalSpend / totalResults : 0;
+        const totalCostPerNewMsg = totalNewMsg > 0 ? totalSpend / totalNewMsg : 0;
 
         // Message 1: Summary/Totals
         let summaryMsg = `📊 <b>HOURLY INSIGHTS - ${date} ${hour}</b>\n\n`;
@@ -621,11 +635,13 @@ export class InsightsSyncService {
         summaryMsg += `├── 💵 Spend: <b>${formatMoney(totalSpend)}</b>\n`;
         summaryMsg += `├── 👁 Impressions: ${formatNum(totalImpr)}\n`;
         summaryMsg += `├── 👆 Clicks: ${formatNum(totalClicks)}\n`;
-        summaryMsg += `├── 💬 Messaging: <b>${formatNum(totalMessaging)}</b>\n`;
+        summaryMsg += `├── 🎯 Results: <b>${formatNum(totalResults)}</b>\n`;
+        summaryMsg += `├── 💬 New Message: <b>${formatNum(totalNewMsg)}</b>\n`;
         summaryMsg += `├── 📊 CTR: ${totalCtr.toFixed(2)}%\n`;
         summaryMsg += `├── 💳 CPC: ${formatMoney(totalCpc)}\n`;
         summaryMsg += `├── 📈 CPM: ${formatMoney(totalCpm)}\n`;
-        summaryMsg += `└── 💬 Cost/Msg: <b>${formatMoney(totalCostPerMessaging)}</b>`;
+        summaryMsg += `├── 🎯 CPR: <b>${formatMoney(totalCPR)}</b>\n`;
+        summaryMsg += `└── 💬 Cost/New Msg: <b>${formatMoney(totalCostPerNewMsg)}</b>`;
 
         await this.telegramService.sendMessage(summaryMsg);
 
@@ -639,8 +655,10 @@ export class InsightsSyncService {
             const spend = Number(insight.spend || 0);
             const impr = Number(insight.impressions || 0);
             const clicks = Number(insight.clicks || 0);
-            const messaging = getActionValue(insight.actions, 'onsite_conversion.messaging_conversation_started_7d');
-            const costPerMessaging = getCostPerAction(insight.cost_per_action_type, 'onsite_conversion.messaging_conversation_started_7d');
+            const results = getResults(insight.actions);
+            const newMsg = getActionValue(insight.actions, 'onsite_conversion.messaging_conversation_started_7d');
+            const cpr = getCostPerAction(insight.cost_per_action_type, 'onsite_conversion.messaging_conversation_started_7d') || (results > 0 ? spend / results : 0);
+            const costPerNewMsg = getCostPerAction(insight.cost_per_action_type, 'onsite_conversion.messaging_conversation_started_7d');
             const ctr = impr > 0 ? (clicks / impr) * 100 : 0;
             const cpc = clicks > 0 ? spend / clicks : 0;
             const cpm = impr > 0 ? (spend / impr) * 1000 : 0;
@@ -654,11 +672,13 @@ export class InsightsSyncService {
             adMsg += `├── 💵 Spend: <b>${formatMoney(spend)}</b>\n`;
             adMsg += `├── 👁 Impressions: ${formatNum(impr)}\n`;
             adMsg += `├── 👆 Clicks: ${formatNum(clicks)}\n`;
-            adMsg += `├── 💬 Messaging: <b>${formatNum(messaging)}</b>\n`;
+            adMsg += `├── 🎯 Results: <b>${formatNum(results)}</b>\n`;
+            adMsg += `├── 💬 New Message: <b>${formatNum(newMsg)}</b>\n`;
             adMsg += `├── 📊 CTR: ${ctr.toFixed(2)}%\n`;
             adMsg += `├── 💳 CPC: ${formatMoney(cpc)}\n`;
             adMsg += `├── 📈 CPM: ${formatMoney(cpm)}\n`;
-            adMsg += `└── 💬 Cost/Msg: <b>${formatMoney(costPerMessaging)}</b>`;
+            adMsg += `├── 🎯 CPR: <b>${formatMoney(cpr)}</b>\n`;
+            adMsg += `└── 💬 Cost/New Msg: <b>${formatMoney(costPerNewMsg)}</b>`;
             
             if (previewLink) {
                 adMsg += `\n\n🔗 <a href="${previewLink}">Preview Ad</a>`;
@@ -667,6 +687,7 @@ export class InsightsSyncService {
             await this.telegramService.sendMessage(adMsg);
         }
     }
+
 
     // ==================== SYNC ALL INSIGHTS ====================
 
@@ -918,6 +939,39 @@ export class InsightsSyncService {
     // ==================== MAPPERS ====================
 
     private mapInsightMetrics(data: any) {
+        // Helper to extract action value from actions array
+        const getActionValue = (actions: any[], actionType: string): number => {
+            if (!actions || !Array.isArray(actions)) return 0;
+            const action = actions.find((a: any) => a.action_type === actionType);
+            return action ? Number(action.value || 0) : 0;
+        };
+
+        // Helper to extract cost per action
+        const getCostPerAction = (costPerActions: any[], actionType: string): number => {
+            if (!costPerActions || !Array.isArray(costPerActions)) return 0;
+            const cost = costPerActions.find((c: any) => c.action_type === actionType);
+            return cost ? Number(cost.value || 0) : 0;
+        };
+
+        // Helper to get total results (messaging + leads + registrations)
+        const getResults = (actions: any[]): number => {
+            if (!actions || !Array.isArray(actions)) return 0;
+            const resultTypes = [
+                'onsite_conversion.messaging_conversation_started_7d',
+                'onsite_conversion.messaging_first_reply',
+                'lead',
+                'omni_complete_registration',
+            ];
+            return resultTypes.reduce((sum, type) => sum + getActionValue(actions, type), 0);
+        };
+
+        // Extract messaging metrics
+        const messagingStarted = getActionValue(data.actions, 'onsite_conversion.messaging_conversation_started_7d');
+        const costPerMessaging = getCostPerAction(data.cost_per_action_type, 'onsite_conversion.messaging_conversation_started_7d');
+        const results = getResults(data.actions);
+        const spend = Number(data.spend || 0);
+        const costPerResult = results > 0 ? spend / results : 0;
+
         return {
             impressions: data.impressions ? BigInt(data.impressions) : null,
             reach: data.reach ? BigInt(data.reach) : null,
@@ -949,6 +1003,11 @@ export class InsightsSyncService {
             costPerActionType: data.cost_per_action_type,
             costPerConversion: data.cost_per_conversion,
             costPerUniqueActionType: data.cost_per_unique_action_type,
+            // Messaging & Results (extracted from actions for easier querying)
+            messagingStarted: messagingStarted > 0 ? BigInt(messagingStarted) : null,
+            costPerMessaging: costPerMessaging > 0 ? costPerMessaging : null,
+            results: results > 0 ? BigInt(results) : null,
+            costPerResult: costPerResult > 0 ? costPerResult : null,
             purchaseRoas: data.purchase_roas,
             websitePurchaseRoas: data.website_purchase_roas,
             mobileAppPurchaseRoas: data.mobile_app_purchase_roas,

@@ -374,5 +374,109 @@ export class FacebookAdsController {
         });
         return { success: true, subscriberCount: this.telegramService.getChatIds().length };
     }
+
+    // ==================== PUBLIC CRON ENDPOINTS (for n8n) ====================
+    // No authentication required - designed for external cron services
+
+    @Get('health')
+    @ApiOperation({ summary: 'Health check endpoint' })
+    async healthCheck() {
+        return { 
+            status: 'ok', 
+            timestamp: new Date().toISOString(),
+            timezone: process.env.TZ || 'Asia/Ho_Chi_Minh',
+        };
+    }
+
+    @Post('cron/sync-campaigns')
+    @ApiOperation({ summary: '[n8n] Sync campaigns from all ACTIVE ad accounts' })
+    async cronSyncCampaigns() {
+        const accounts = await this.prisma.adAccount.findMany({
+            where: { accountStatus: 1 }, // ACTIVE accounts only
+            select: { id: true, name: true },
+        });
+
+        for (const account of accounts) {
+            await this.schedulerService.triggerEntitySync(account.id, 'campaigns');
+        }
+
+        return {
+            success: true,
+            message: `Campaigns sync jobs queued for ${accounts.length} active accounts`,
+            accounts: accounts.map(a => ({ id: a.id, name: a.name })),
+        };
+    }
+
+    @Post('cron/sync-adsets')
+    @ApiOperation({ summary: '[n8n] Sync adsets from all ACTIVE campaigns' })
+    async cronSyncAdsets() {
+        const campaigns = await this.prisma.campaign.findMany({
+            where: { effectiveStatus: 'ACTIVE' },
+            select: { id: true, name: true, accountId: true },
+        });
+
+        for (const campaign of campaigns) {
+            await this.schedulerService.triggerAdsetsSyncByCampaign(campaign.id);
+        }
+
+        return {
+            success: true,
+            message: `Adsets sync jobs queued for ${campaigns.length} active campaigns`,
+            campaigns: campaigns.map(c => ({ id: c.id, name: c.name })),
+        };
+    }
+
+    @Post('cron/sync-ads')
+    @ApiOperation({ summary: '[n8n] Sync ads from all ACTIVE adsets' })
+    async cronSyncAds() {
+        const adsets = await this.prisma.adset.findMany({
+            where: { effectiveStatus: 'ACTIVE' },
+            select: { id: true, name: true, campaignId: true },
+        });
+
+        for (const adset of adsets) {
+            await this.schedulerService.triggerAdsSyncByAdset(adset.id);
+        }
+
+        return {
+            success: true,
+            message: `Ads sync jobs queued for ${adsets.length} active adsets`,
+            adsets: adsets.map(a => ({ id: a.id, name: a.name })),
+        };
+    }
+
+    @Post('cron/sync-insights')
+    @ApiOperation({ summary: '[n8n] Sync insights from all ACTIVE ads (today)' })
+    async cronSyncInsights(
+        @Query('dateStart') dateStartParam?: string,
+        @Query('dateEnd') dateEndParam?: string,
+        @Query('breakdown') breakdown?: string,
+    ) {
+        const today = new Date().toISOString().split('T')[0];
+        const dateStart = dateStartParam || today;
+        const dateEnd = dateEndParam || today;
+
+        const ads = await this.prisma.ad.findMany({
+            where: { effectiveStatus: 'ACTIVE' },
+            select: { id: true, name: true, accountId: true },
+        });
+
+        for (const ad of ads) {
+            await this.schedulerService.triggerInsightsSyncByAd(
+                ad.id,
+                dateStart,
+                dateEnd,
+                breakdown || 'all',
+            );
+        }
+
+        return {
+            success: true,
+            message: `Insights sync jobs queued for ${ads.length} active ads`,
+            dateRange: `${dateStart} to ${dateEnd}`,
+            breakdown: breakdown || 'all',
+            adsCount: ads.length,
+        };
+    }
 }
 
