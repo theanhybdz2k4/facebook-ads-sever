@@ -1,7 +1,7 @@
 # Build stage
 FROM node:22-slim AS builder
 
-# Install dependencies for Prisma
+# Install system dependencies
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
     libssl-dev \
@@ -15,12 +15,6 @@ COPY package.json yarn.lock ./
 
 # Install dependencies with yarn
 RUN yarn install --frozen-lockfile
-
-# Copy prisma schema
-COPY prisma ./prisma/
-
-# Generate Prisma client
-RUN yarn prisma generate
 
 # Copy source code
 COPY . .
@@ -46,10 +40,6 @@ COPY package.json yarn.lock ./
 
 # Install production dependencies only
 RUN yarn install --frozen-lockfile --production
-
-# Copy prisma schema and generate client
-COPY prisma ./prisma/
-RUN yarn prisma generate
 
 # Copy built application from builder
 COPY --from=builder /app/dist ./dist
