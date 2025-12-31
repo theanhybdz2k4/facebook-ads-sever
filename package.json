@@ -58,7 +58,7 @@
     "module-alias": "^2.2.3",
     "moment": "^2.30.1",
     "moment-timezone": "^0.5.45",
-    "nestjs-cls": "^4.5.0",
+    "nestjs-cls": "^5.4.3",
     "nestjs-pino": "^4.0.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
