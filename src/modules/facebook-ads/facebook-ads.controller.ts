@@ -288,7 +288,7 @@ export class FacebookAdsController {
         @Query('effectiveStatus') effectiveStatus?: string,
         @Query('search') search?: string,
     ) {
-        return this.prisma.ad.findMany({
+        const ads = await this.prisma.ad.findMany({
             where: {
                 ...(accountId && { accountId }),
                 ...(adsetId && { adsetId }),
@@ -301,8 +301,45 @@ export class FacebookAdsController {
                 }),
                 account: { fbAccount: { userId: req.user.id } },
             },
+            include: {
+                creativeRef: {
+                    select: {
+                        imageUrl: true,
+                        thumbnailUrl: true,
+                    },
+                },
+            },
             orderBy: { syncedAt: 'desc' },
             take: 100,
+        });
+
+        // Map ads to include thumbnailUrl from creative data
+        return ads.map((ad) => {
+            let thumbnailUrl: string | null = null;
+
+            // Priority 1: From creativeRef relation
+            if (ad.creativeRef) {
+                thumbnailUrl = ad.creativeRef.thumbnailUrl || ad.creativeRef.imageUrl || null;
+            }
+
+            // Priority 2: From embedded creative JSON
+            if (!thumbnailUrl && ad.creative) {
+                const creative = ad.creative as Record<string, any>;
+                // Try various paths in the creative JSON
+                thumbnailUrl =
+                    creative.thumbnail_url ||
+                    creative.image_url ||
+                    creative.object_story_spec?.link_data?.image_url ||
+                    creative.object_story_spec?.link_data?.picture ||
+                    creative.object_story_spec?.video_data?.image_url ||
+                    null;
+            }
+
+            return {
+                ...ad,
+                thumbnailUrl,
+                creativeRef: undefined, // Remove creativeRef to clean up response
+            };
         });
     }
 
@@ -381,8 +418,8 @@ export class FacebookAdsController {
     @Get('health')
     @ApiOperation({ summary: 'Health check endpoint' })
     async healthCheck() {
-        return { 
-            status: 'ok', 
+        return {
+            status: 'ok',
             timestamp: new Date().toISOString(),
             timezone: process.env.TZ || 'Asia/Ho_Chi_Minh',
         };
