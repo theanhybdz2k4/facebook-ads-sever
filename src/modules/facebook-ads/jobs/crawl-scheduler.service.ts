@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
+import { PgBossService } from '../../../pgboss/pgboss.service';
 import { PrismaService } from '@n-database/prisma/prisma.service';
 import { TelegramService } from '../services/telegram.service';
 import { EntitySyncJobData } from '../processors/entity.processor';
@@ -19,8 +18,7 @@ export class CrawlSchedulerService {
     constructor(
         private readonly prisma: PrismaService,
         private readonly telegramService: TelegramService,
-        @InjectQueue('fb-entity-sync') private readonly entityQueue: Queue<EntitySyncJobData>,
-        @InjectQueue('fb-insights-sync') private readonly insightsQueue: Queue<InsightsSyncJobData>,
+        private readonly pgBoss: PgBossService,
     ) { }
 
     // ==================== ENTITY SYNC (Daily staggered) ====================
@@ -34,10 +32,10 @@ export class CrawlSchedulerService {
         const accounts = await this.getActiveAccounts();
 
         for (let i = 0; i < accounts.length; i++) {
-            await this.entityQueue.add(
-                'sync-campaigns',
+            await this.pgBoss.addJob<EntitySyncJobData>(
+                'fb-entity-sync',
                 { accountId: accounts[i].id, entityType: 'campaigns' },
-                { delay: i * ACCOUNT_DELAY_MS },
+                { startAfter: Math.floor(i * ACCOUNT_DELAY_MS / 1000) },
             );
         }
     }
@@ -49,10 +47,10 @@ export class CrawlSchedulerService {
         const accounts = await this.getActiveAccounts();
 
         for (let i = 0; i < accounts.length; i++) {
-            await this.entityQueue.add(
-                'sync-adsets',
+            await this.pgBoss.addJob<EntitySyncJobData>(
+                'fb-entity-sync',
                 { accountId: accounts[i].id, entityType: 'adsets' },
-                { delay: i * ACCOUNT_DELAY_MS },
+                { startAfter: Math.floor(i * ACCOUNT_DELAY_MS / 1000) },
             );
         }
     }
@@ -64,10 +62,10 @@ export class CrawlSchedulerService {
         const accounts = await this.getActiveAccounts();
 
         for (let i = 0; i < accounts.length; i++) {
-            await this.entityQueue.add(
-                'sync-ads',
+            await this.pgBoss.addJob<EntitySyncJobData>(
+                'fb-entity-sync',
                 { accountId: accounts[i].id, entityType: 'ads' },
-                { delay: i * ACCOUNT_DELAY_MS },
+                { startAfter: Math.floor(i * ACCOUNT_DELAY_MS / 1000) },
             );
         }
     }
@@ -79,10 +77,10 @@ export class CrawlSchedulerService {
         const accounts = await this.getActiveAccounts();
 
         for (let i = 0; i < accounts.length; i++) {
-            await this.entityQueue.add(
-                'sync-creatives',
+            await this.pgBoss.addJob<EntitySyncJobData>(
+                'fb-entity-sync',
                 { accountId: accounts[i].id, entityType: 'creatives' },
-                { delay: i * ACCOUNT_DELAY_MS },
+                { startAfter: Math.floor(i * ACCOUNT_DELAY_MS / 1000) },
             );
         }
     }
@@ -114,15 +112,15 @@ export class CrawlSchedulerService {
         const accounts = await this.getActiveAccounts();
 
         for (let i = 0; i < accounts.length; i++) {
-            await this.insightsQueue.add(
-                'sync-insights-hourly',
+            await this.pgBoss.addJob<InsightsSyncJobData>(
+                'fb-insights-sync',
                 {
                     accountId: accounts[i].id,
                     dateStart: today,
                     dateEnd: today,
                     breakdown: 'all',
                 },
-                { delay: i * ACCOUNT_DELAY_MS },
+                { startAfter: Math.floor(i * ACCOUNT_DELAY_MS / 1000) },
             );
         }
     }
@@ -143,21 +141,21 @@ export class CrawlSchedulerService {
     // ==================== MANUAL TRIGGERS ====================
 
     async triggerEntitySync(accountId: string, entityType: string) {
-        return this.entityQueue.add('manual-entity-sync', {
+        return this.pgBoss.addJob<EntitySyncJobData>('fb-entity-sync', {
             accountId,
             entityType: entityType as any,
         });
     }
 
     async triggerAdsetsSyncByCampaign(campaignId: string) {
-        return this.entityQueue.add('sync-adsets-by-campaign', {
+        return this.pgBoss.addJob<EntitySyncJobData>('fb-entity-sync', {
             campaignId,
             entityType: 'adsets-by-campaign',
         });
     }
 
     async triggerAdsSyncByAdset(adsetId: string) {
-        return this.entityQueue.add('sync-ads-by-adset', {
+        return this.pgBoss.addJob<EntitySyncJobData>('fb-entity-sync', {
             adsetId,
             entityType: 'ads-by-adset',
         });
@@ -169,7 +167,7 @@ export class CrawlSchedulerService {
         dateEnd: string,
         breakdown?: string,
     ) {
-        return this.insightsQueue.add('manual-insights-sync', {
+        return this.pgBoss.addJob<InsightsSyncJobData>('fb-insights-sync', {
             accountId,
             dateStart,
             dateEnd,
@@ -183,7 +181,7 @@ export class CrawlSchedulerService {
         dateEnd: string,
         breakdown?: string,
     ) {
-        return this.insightsQueue.add('sync-insights-by-ad', {
+        return this.pgBoss.addJob<InsightsSyncJobData>('fb-insights-sync', {
             adId,
             dateStart,
             dateEnd,
@@ -234,4 +232,3 @@ export class CrawlSchedulerService {
         });
     }
 }
-

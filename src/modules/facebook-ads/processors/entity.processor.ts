@@ -1,6 +1,5 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Logger } from '@nestjs/common';
-import { Job } from 'bullmq';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { PgBossService } from '../../../pgboss/pgboss.service';
 import { EntitySyncService } from '../services/entity-sync.service';
 
 export interface EntitySyncJobData {
@@ -10,16 +9,30 @@ export interface EntitySyncJobData {
     entityType: 'campaigns' | 'adsets' | 'ads' | 'creatives' | 'all' | 'adsets-by-campaign' | 'ads-by-adset';
 }
 
-@Processor('fb-entity-sync')
-export class EntityProcessor extends WorkerHost {
+@Injectable()
+export class EntityProcessor implements OnModuleInit {
     private readonly logger = new Logger(EntityProcessor.name);
 
-    constructor(private readonly entitySyncService: EntitySyncService) {
-        super();
+    constructor(
+        private readonly pgBoss: PgBossService,
+        private readonly entitySyncService: EntitySyncService,
+    ) { }
+
+    async onModuleInit() {
+        try {
+            await this.pgBoss.work<EntitySyncJobData>('fb-entity-sync', async (job) => {
+                this.logger.log(`Processing job ${job.id}: ${job.data.entityType}`);
+                await this.process(job.data);
+                this.logger.log(`Completed job ${job.id}`);
+            });
+            this.logger.log('EntityProcessor worker registered for fb-entity-sync');
+        } catch (error) {
+            this.logger.error(`EntityProcessor: Failed to register worker: ${error.message}`, error.stack);
+        }
     }
 
-    async process(job: Job<EntitySyncJobData>): Promise<any> {
-        const { accountId, campaignId, adsetId, entityType } = job.data;
+    async process(data: EntitySyncJobData): Promise<any> {
+        const { accountId, campaignId, adsetId, entityType } = data;
         this.logger.log(`Processing entity sync job: ${entityType} for ${adsetId || campaignId || accountId}`);
 
         try {
@@ -54,4 +67,3 @@ export class EntityProcessor extends WorkerHost {
         }
     }
 }
-

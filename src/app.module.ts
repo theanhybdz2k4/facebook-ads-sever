@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
-import { BullModule } from '@nestjs/bullmq';
 import { AppController } from './app.controller';
 import databaseConfig from '@n-configs/env/database.config';
 import { AppService } from './app.service';
@@ -19,6 +18,7 @@ import { ResponseInterceptor } from '@n-interceptors/response.interceptor';
 import { AllExceptionFilter } from './filter-exceptions/exception.filter';
 import { AuthModule } from './modules/auth/auth.module';
 import { FacebookAdsModule } from './modules/facebook-ads/facebook-ads.module';
+import { PgBossModule } from './pgboss/pgboss.module';
 
 @Module({
   imports: [
@@ -28,12 +28,7 @@ import { FacebookAdsModule } from './modules/facebook-ads/facebook-ads.module';
       load: [appConfig, databaseConfig],
       validate,
     }),
-    BullModule.forRoot({
-      connection: {
-        host: process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.REDIS_PORT || '6379'),
-      },
-    }),
+    PgBossModule,
     LoggerModule.forRoot(LoggerOptions),
     ClsModule.forRoot({
       plugins: [

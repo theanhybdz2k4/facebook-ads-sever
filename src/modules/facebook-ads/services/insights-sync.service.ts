@@ -547,11 +547,13 @@ export class InsightsSyncService {
             this.logger.log(`prevHourInsights count: ${prevHourInsights.length} for hour ${prevHour}`);
             if (prevHourInsights.length > 0) {
                 this.logger.log(`Sending Telegram report for ${prevHourInsights.length} ads...`);
+                // Use today's date for Telegram message
+                const today = new Date().toISOString().split('T')[0];
                 await this.sendConsolidatedHourlyReport(
                     prevHourInsights,
                     account?.name || accountId,
                     account?.currency || 'VND',
-                    dateStart,
+                    today,
                     `${prevHour.toString().padStart(2, '0')}:00`,
                 );
                 this.logger.log(`Telegram report sent!`);
@@ -584,16 +586,32 @@ export class InsightsSyncService {
         const formatNum = (n: number) => n?.toLocaleString('vi-VN') || '0';
         const formatMoney = (n: number) => `${formatNum(n)} ${currency}`;
 
+        // Helper to extract action value from actions array
+        const getActionValue = (actions: any[], actionType: string): number => {
+            if (!actions || !Array.isArray(actions)) return 0;
+            const action = actions.find((a: any) => a.action_type === actionType);
+            return action ? Number(action.value || 0) : 0;
+        };
+
+        // Helper to extract cost per action from cost_per_action_type array
+        const getCostPerAction = (costPerActions: any[], actionType: string): number => {
+            if (!costPerActions || !Array.isArray(costPerActions)) return 0;
+            const cost = costPerActions.find((c: any) => c.action_type === actionType);
+            return cost ? Number(cost.value || 0) : 0;
+        };
+
         // Calculate totals
-        let totalSpend = 0, totalImpr = 0, totalClicks = 0;
+        let totalSpend = 0, totalImpr = 0, totalClicks = 0, totalMessaging = 0;
         for (const { insight } of insightsData) {
             totalSpend += Number(insight.spend || 0);
             totalImpr += Number(insight.impressions || 0);
             totalClicks += Number(insight.clicks || 0);
+            totalMessaging += getActionValue(insight.actions, 'onsite_conversion.messaging_conversation_started_7d');
         }
         const totalCtr = totalImpr > 0 ? (totalClicks / totalImpr) * 100 : 0;
         const totalCpc = totalClicks > 0 ? totalSpend / totalClicks : 0;
         const totalCpm = totalImpr > 0 ? (totalSpend / totalImpr) * 1000 : 0;
+        const totalCostPerMessaging = totalMessaging > 0 ? totalSpend / totalMessaging : 0;
 
         // Message 1: Summary/Totals
         let summaryMsg = `📊 <b>HOURLY INSIGHTS - ${date} ${hour}</b>\n\n`;
@@ -603,9 +621,11 @@ export class InsightsSyncService {
         summaryMsg += `├── 💵 Spend: <b>${formatMoney(totalSpend)}</b>\n`;
         summaryMsg += `├── 👁 Impressions: ${formatNum(totalImpr)}\n`;
         summaryMsg += `├── 👆 Clicks: ${formatNum(totalClicks)}\n`;
+        summaryMsg += `├── 💬 Messaging: <b>${formatNum(totalMessaging)}</b>\n`;
         summaryMsg += `├── 📊 CTR: ${totalCtr.toFixed(2)}%\n`;
         summaryMsg += `├── 💳 CPC: ${formatMoney(totalCpc)}\n`;
-        summaryMsg += `└── 📈 CPM: ${formatMoney(totalCpm)}`;
+        summaryMsg += `├── 📈 CPM: ${formatMoney(totalCpm)}\n`;
+        summaryMsg += `└── 💬 Cost/Msg: <b>${formatMoney(totalCostPerMessaging)}</b>`;
 
         await this.telegramService.sendMessage(summaryMsg);
 
@@ -619,11 +639,13 @@ export class InsightsSyncService {
             const spend = Number(insight.spend || 0);
             const impr = Number(insight.impressions || 0);
             const clicks = Number(insight.clicks || 0);
+            const messaging = getActionValue(insight.actions, 'onsite_conversion.messaging_conversation_started_7d');
+            const costPerMessaging = getCostPerAction(insight.cost_per_action_type, 'onsite_conversion.messaging_conversation_started_7d');
             const ctr = impr > 0 ? (clicks / impr) * 100 : 0;
             const cpc = clicks > 0 ? spend / clicks : 0;
             const cpm = impr > 0 ? (spend / impr) * 1000 : 0;
 
-            let adMsg = `📊 <b>AD INSIGHT - ${date}</b>\n\n`;
+            let adMsg = `📊 <b>AD INSIGHT - ${date} ${hour}</b>\n\n`;
             adMsg += `📈 Account: ${accountName}\n`;
             adMsg += `📁 Campaign: ${campaignName}\n`;
             adMsg += `📂 Adset: ${adsetName}\n`;
@@ -632,9 +654,11 @@ export class InsightsSyncService {
             adMsg += `├── 💵 Spend: <b>${formatMoney(spend)}</b>\n`;
             adMsg += `├── 👁 Impressions: ${formatNum(impr)}\n`;
             adMsg += `├── 👆 Clicks: ${formatNum(clicks)}\n`;
+            adMsg += `├── 💬 Messaging: <b>${formatNum(messaging)}</b>\n`;
             adMsg += `├── 📊 CTR: ${ctr.toFixed(2)}%\n`;
             adMsg += `├── 💳 CPC: ${formatMoney(cpc)}\n`;
-            adMsg += `└── 📈 CPM: ${formatMoney(cpm)}`;
+            adMsg += `├── 📈 CPM: ${formatMoney(cpm)}\n`;
+            adMsg += `└── 💬 Cost/Msg: <b>${formatMoney(costPerMessaging)}</b>`;
             
             if (previewLink) {
                 adMsg += `\n\n🔗 <a href="${previewLink}">Preview Ad</a>`;

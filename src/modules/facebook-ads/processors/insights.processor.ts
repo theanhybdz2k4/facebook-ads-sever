@@ -1,6 +1,5 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Logger } from '@nestjs/common';
-import { Job } from 'bullmq';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { PgBossService } from '../../../pgboss/pgboss.service';
 import { InsightsSyncService } from '../services/insights-sync.service';
 
 export interface InsightsSyncJobData {
@@ -11,16 +10,24 @@ export interface InsightsSyncJobData {
     breakdown?: 'daily' | 'device' | 'placement' | 'age_gender' | 'region' | 'hourly' | 'all';
 }
 
-@Processor('fb-insights-sync')
-export class InsightsProcessor extends WorkerHost {
+@Injectable()
+export class InsightsProcessor implements OnModuleInit {
     private readonly logger = new Logger(InsightsProcessor.name);
 
-    constructor(private readonly insightsSyncService: InsightsSyncService) {
-        super();
+    constructor(
+        private readonly pgBoss: PgBossService,
+        private readonly insightsSyncService: InsightsSyncService,
+    ) { }
+
+    async onModuleInit() {
+        await this.pgBoss.work<InsightsSyncJobData>('fb-insights-sync', async (job) => {
+            await this.process(job.data);
+        });
+        this.logger.log('InsightsProcessor worker registered for fb-insights-sync');
     }
 
-    async process(job: Job<InsightsSyncJobData>): Promise<any> {
-        const { accountId, adId, dateStart, dateEnd, breakdown = 'all' } = job.data;
+    async process(data: InsightsSyncJobData): Promise<any> {
+        const { accountId, adId, dateStart, dateEnd, breakdown = 'all' } = data;
 
         // Handle sync by adId
         if (adId) {
@@ -63,4 +70,3 @@ export class InsightsProcessor extends WorkerHost {
         }
     }
 }
-
