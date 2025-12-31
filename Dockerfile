@@ -1,5 +1,5 @@
 # Build stage
-FROM node:20-slim AS builder
+FROM node:22-slim AS builder
 
 # Install dependencies for Prisma
 RUN apt-get update \
@@ -29,7 +29,7 @@ COPY . .
 RUN yarn build
 
 # Production stage
-FROM node:20-slim AS production
+FROM node:22-slim AS production
 
 # Install runtime dependencies
 RUN apt-get update \
