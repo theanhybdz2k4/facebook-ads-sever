@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { FacebookAdsController } from './facebook-ads.controller';
+import { TelegramController } from './telegram.controller';
 import { FacebookApiService } from './services/facebook-api.service';
 import { RateLimiterService } from './services/rate-limiter.service';
 import { TokenService } from './services/token.service';
@@ -26,7 +27,7 @@ export const INSIGHTS_QUEUE = 'fb-insights-sync';
       maxRedirects: 5,
     }),
   ],
-  controllers: [FacebookAdsController],
+  controllers: [FacebookAdsController, TelegramController],
   providers: [
     FacebookApiService,
     RateLimiterService,

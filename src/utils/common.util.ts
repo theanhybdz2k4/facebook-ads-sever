@@ -31,7 +31,7 @@ export function makePaginationResponse(
 export function isValidDateRange(startDate: string, endDate: string): boolean {
   const start = new Date(startDate);
   const end = new Date(endDate);
-  
+
   return start <= end;
 }
 
@@ -43,6 +43,26 @@ export function randomString(length: number = 32) {
 // convert date to vietnam timezone
 export function convertToVietnamTimezone(date: Date) {
   return moment(date).tz('Asia/Ho_Chi_Minh').toDate();
+}
+
+// Get date string (YYYY-MM-DD) in Vietnam timezone
+export function getVietnamDateString(date: Date = new Date()): string {
+  return moment(date).tz('Asia/Ho_Chi_Minh').format('YYYY-MM-DD');
+}
+
+// Get current hour in Vietnam timezone (0-23)
+export function getVietnamHour(date: Date = new Date()): number {
+  return moment(date).tz('Asia/Ho_Chi_Minh').hour();
+}
+
+// Get current minute in Vietnam timezone (0-59)
+export function getVietnamMinute(date: Date = new Date()): number {
+  return moment(date).tz('Asia/Ho_Chi_Minh').minute();
+}
+
+// Get moment object in Vietnam timezone
+export function getVietnamMoment(date: Date = new Date()) {
+  return moment(date).tz('Asia/Ho_Chi_Minh');
 }
 
 export function getDateAgo(days: number) {

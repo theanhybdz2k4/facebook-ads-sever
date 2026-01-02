@@ -10,6 +10,7 @@ import {
     ENTITY_SYNC_PAUSE_HOUR,
     ACCOUNT_DELAY_MS,
 } from '../constants/facebook-api.constants';
+import { getVietnamHour, getVietnamMinute, getVietnamDateString } from '@n-utils';
 
 @Injectable()
 export class CrawlSchedulerService {
@@ -90,9 +91,8 @@ export class CrawlSchedulerService {
     // Every hour at :00 (except 2:00 AM)
     // @Cron('0 0-1,3-23 * * *') // DISABLED: Backend 512MB limit
     async syncHourlyInsights() {
-        const now = new Date();
-        const minute = now.getMinutes();
-        const hour = now.getHours();
+        const minute = getVietnamMinute();
+        const hour = getVietnamHour();
 
         // Buffer check - don't start sync after :50
         if (minute >= INSIGHTS_SYNC_BUFFER_MINUTE) {
@@ -108,7 +108,7 @@ export class CrawlSchedulerService {
 
         this.logger.log('[CRON] Starting hourly insights sync');
 
-        const today = this.formatDate(now);
+        const today = getVietnamDateString();
         const accounts = await this.getActiveAccounts();
 
         for (let i = 0; i < accounts.length; i++) {
@@ -135,7 +135,11 @@ export class CrawlSchedulerService {
     }
 
     private formatDate(date: Date): string {
-        return date.toISOString().split('T')[0];
+        // Use local timezone instead of UTC
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
     }
 
     // ==================== MANUAL TRIGGERS ====================

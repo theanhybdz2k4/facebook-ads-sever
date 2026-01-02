@@ -5,6 +5,7 @@ import { TokenService } from './token.service';
 import { CrawlJobService } from './crawl-job.service';
 import { TelegramService } from './telegram.service';
 import { CrawlJobType } from '@prisma/client';
+import { getVietnamDateString, getVietnamHour } from '@n-utils';
 
 @Injectable()
 export class InsightsSyncService {
@@ -17,6 +18,15 @@ export class InsightsSyncService {
         private readonly crawlJobService: CrawlJobService,
         private readonly telegramService: TelegramService,
     ) { }
+
+    /**
+     * Parse YYYY-MM-DD date string as LOCAL timezone date, not UTC
+     * This ensures dates from Facebook API are stored/queried correctly
+     */
+    private parseLocalDate(dateStr: string): Date {
+        const [year, month, day] = dateStr.split('-').map(Number);
+        return new Date(year, month - 1, day); // Local midnight
+    }
 
     // ==================== SYNC BY AD ID ====================
 
@@ -488,7 +498,7 @@ export class InsightsSyncService {
             await this.crawlJobService.startJob(job.id);
             const now = new Date();
             let totalInsights = 0;
-            const currentHour = new Date().getHours();
+            const currentHour = getVietnamHour();
             const prevHour = currentHour - 1;
 
             // Get account info for telegram message
@@ -547,8 +557,8 @@ export class InsightsSyncService {
             this.logger.log(`prevHourInsights count: ${prevHourInsights.length} for hour ${prevHour}`);
             if (prevHourInsights.length > 0) {
                 this.logger.log(`Sending Telegram report for ${prevHourInsights.length} ads...`);
-                // Use today's date for Telegram message
-                const today = new Date().toISOString().split('T')[0];
+                // Use today's date for Telegram message (in Vietnam timezone)
+                const today = getVietnamDateString();
                 await this.sendConsolidatedHourlyReport(
                     prevHourInsights,
                     account?.name || accountId,
@@ -711,7 +721,7 @@ export class InsightsSyncService {
     // ==================== UPSERT METHODS ====================
 
     private async upsertDailyInsight(data: any, accountId: string, syncedAt: Date) {
-        const date = new Date(data.date_start);
+        const date = this.parseLocalDate(data.date_start);
         const adId = data.ad_id;
 
         await this.prisma.adInsightsDaily.upsert({
@@ -733,7 +743,7 @@ export class InsightsSyncService {
     }
 
     private async upsertDeviceInsight(data: any, accountId: string, syncedAt: Date) {
-        const date = new Date(data.date_start);
+        const date = this.parseLocalDate(data.date_start);
         const adId = data.ad_id;
         const devicePlatform = data.device_platform || 'unknown';
 
@@ -755,7 +765,7 @@ export class InsightsSyncService {
     }
 
     private async upsertPlacementInsight(data: any, accountId: string, syncedAt: Date) {
-        const date = new Date(data.date_start);
+        const date = this.parseLocalDate(data.date_start);
         const adId = data.ad_id;
         const publisherPlatform = data.publisher_platform || 'unknown';
         const platformPosition = data.platform_position || 'unknown';
@@ -788,7 +798,7 @@ export class InsightsSyncService {
     }
 
     private async upsertAgeGenderInsight(data: any, accountId: string, syncedAt: Date) {
-        const date = new Date(data.date_start);
+        const date = this.parseLocalDate(data.date_start);
         const adId = data.ad_id;
         const age = data.age || 'unknown';
         const gender = data.gender || 'unknown';
@@ -812,7 +822,7 @@ export class InsightsSyncService {
     }
 
     private async upsertRegionInsight(data: any, accountId: string, syncedAt: Date) {
-        const date = new Date(data.date_start);
+        const date = this.parseLocalDate(data.date_start);
         const adId = data.ad_id;
         const country = data.country || 'unknown';
         const region = data.region || null;
@@ -836,7 +846,7 @@ export class InsightsSyncService {
     }
 
     private async upsertHourlyInsight(data: any, accountId: string, syncedAt: Date) {
-        const date = new Date(data.date_start);
+        const date = this.parseLocalDate(data.date_start);
         const adId = data.ad_id;
         const hourlyStats = data.hourly_stats_aggregated_by_advertiser_time_zone || '00:00:00 - 00:59:59';
 
@@ -1040,8 +1050,8 @@ export class InsightsSyncService {
             instantExperienceOutboundClicks: data.instant_experience_outbound_clicks,
             fullViewReach: data.full_view_reach ? BigInt(data.full_view_reach) : null,
             fullViewImpressions: data.full_view_impressions ? BigInt(data.full_view_impressions) : null,
-            dateStart: data.date_start ? new Date(data.date_start) : null,
-            dateStop: data.date_stop ? new Date(data.date_stop) : null,
+            dateStart: data.date_start ? this.parseLocalDate(data.date_start) : null,
+            dateStop: data.date_stop ? this.parseLocalDate(data.date_stop) : null,
         };
     }
 

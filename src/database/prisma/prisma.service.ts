@@ -81,9 +81,13 @@ export class PrismaService
       let simplifiedQuery = inputQuery;
 
       paramsObject.forEach((param, index) => {
+        // Serialize objects/arrays properly for logging instead of [object Object]
+        const paramStr = typeof param === 'object' && param !== null
+          ? JSON.stringify(param)
+          : String(param);
         simplifiedQuery = simplifiedQuery.replace(
           `$${index + 1}`,
-          `'${param}'`,
+          `'${paramStr}'`,
         );
       });
 
@@ -133,7 +137,7 @@ export class PrismaService
     if (['findUnique', 'findFirst', 'findMany', 'count'].includes(params.action)) {
       // Only add deletedAt filter if the model has this field
       const modelHasDeletedAt = this.modelsWithDeletedAt.has(params.model || '');
-      
+
       if (modelHasDeletedAt) {
         const hasDeleted = params.args?.where && this.hasDeletedCondition(params.args.where);
         if (!hasDeleted) {
