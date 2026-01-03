@@ -87,14 +87,17 @@ export class PgBossService implements OnModuleInit, OnModuleDestroy {
     async work<T extends object>(
         queueName: string,
         handler: (job: Job<T>) => Promise<void>,
+        options?: { batchSize?: number },
     ): Promise<string> {
-        // pg-boss v10+ passes jobs as an array
-        return this.boss.work(queueName, async (jobs: any) => {
+        const batchSize = options?.batchSize || 5; // Process 5 jobs per batch
+        
+        // pg-boss v10+ uses batchSize to fetch multiple jobs at once
+        return this.boss.work(queueName, { batchSize }, async (jobs: any) => {
             // Handle both array (v10+) and single job formats
             const jobList = Array.isArray(jobs) ? jobs : [jobs];
-            for (const job of jobList) {
-                await handler(job as Job<T>);
-            }
+            
+            // Process jobs in parallel for speed
+            await Promise.all(jobList.map(job => handler(job as Job<T>)));
         });
     }
 

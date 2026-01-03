@@ -792,5 +792,57 @@ export class FacebookAdsController {
             adsCount: ads.length,
         };
     }
+
+    @Post('cron/full-sync')
+    @ApiOperation({ summary: '[n8n] Full sync: entities + 7 days insights for all accounts' })
+    async cronFullSync(@Query('days') daysParam?: string) {
+        const days = parseInt(daysParam || '7', 10);
+
+        // Calculate date range (last N days) in Vietnam timezone
+        const dateEnd = getVietnamDateString();
+        // Parse dateEnd to get a local date, then subtract days
+        const [year, month, day] = dateEnd.split('-').map(Number);
+        const startDate = new Date(year, month - 1, day);
+        startDate.setDate(startDate.getDate() - days + 1);
+        const dateStart = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}-${String(startDate.getDate()).padStart(2, '0')}`;
+
+        // Get all ACTIVE ad accounts
+        const accounts = await this.prisma.adAccount.findMany({
+            where: { accountStatus: 1 },
+            select: { id: true, name: true },
+        });
+
+        if (accounts.length === 0) {
+            return {
+                success: false,
+                message: 'No active ad accounts found. Please add FB account and sync ad accounts first.',
+            };
+        }
+
+        // Queue jobs per ACCOUNT (not per ad) - much faster!
+        for (const account of accounts) {
+            // 1. Entity sync (campaigns → adsets → ads → creatives)
+            await this.schedulerService.triggerEntitySync(account.id, 'all');
+            
+            // 2. Insights sync for the entire account (gets all ads in one API call)
+            await this.schedulerService.triggerInsightsSync(
+                account.id,
+                dateStart,
+                dateEnd,
+                'all',
+            );
+        }
+
+        return {
+            success: true,
+            message: `Full sync initiated for ${accounts.length} accounts`,
+            summary: {
+                accounts: accounts.length,
+                dateRange: `${dateStart} to ${dateEnd}`,
+                days,
+            },
+            note: 'Using account-level insights sync for better performance.',
+        };
+    }
 }
 

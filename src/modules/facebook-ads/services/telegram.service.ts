@@ -45,6 +45,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         try {
             const commands = [
                 { command: 'start', description: 'Bắt đầu' },
+                { command: 'subscribe', description: '🔔 Bật nhận thông báo tự động' },
+                { command: 'unsubscribe', description: '🔕 Tắt nhận thông báo tự động' },
                 { command: 'report', description: 'Báo cáo Ads' },
                 { command: 'hour', description: 'Báo cáo giờ vừa qua' },
                 { command: 'today', description: 'Báo cáo hôm nay' },
@@ -153,6 +155,10 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             // Handle commands
             if (text.startsWith('/start')) {
                 await this.handleStartCommand(chatId, firstName);
+            } else if (text.startsWith('/subscribe')) {
+                await this.handleSubscribeCommand(chatId);
+            } else if (text.startsWith('/unsubscribe')) {
+                await this.handleUnsubscribeCommand(chatId);
             } else if (text.startsWith('/report')) {
                 await this.handleReportCommand(chatId);
             } else if (text.startsWith('/hour')) {
@@ -174,12 +180,23 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     // ==================== COMMAND HANDLERS ====================
 
     private async handleStartCommand(chatId: string, firstName: string) {
+        // Check if user is subscribed
+        const subscriber = await this.prisma.telegramSubscriber.findUnique({
+            where: { chatId },
+        });
+        const isSubscribed = subscriber?.receiveNotifications ?? false;
+        const statusText = isSubscribed 
+            ? '✅ Bạn đang nhận thông báo tự động' 
+            : '⚠️ Bạn chưa bật nhận thông báo tự động. Dùng /subscribe để bật';
+
         await this.sendMessageTo(chatId, `
 👋 <b>Xin chào ${firstName}!</b>
 
-Bạn đã đăng ký nhận thông báo từ <b>Facebook Ads Monitor</b>.
+${statusText}
 
 📌 <b>Các lệnh có sẵn:</b>
+/subscribe - 🔔 Bật nhận thông báo tự động
+/unsubscribe - 🔕 Tắt nhận thông báo tự động
 /report - Báo cáo tổng quan Ads
 /hour - Báo cáo giờ vừa qua
 /today - Báo cáo hôm nay (từng bài)
@@ -187,6 +204,46 @@ Bạn đã đăng ký nhận thông báo từ <b>Facebook Ads Monitor</b>.
 /budget - Xem ngân sách
 /help - Hướng dẫn sử dụng
         `);
+    }
+
+    private async handleSubscribeCommand(chatId: string) {
+        try {
+            await this.prisma.telegramSubscriber.update({
+                where: { chatId },
+                data: { receiveNotifications: true },
+            });
+            await this.sendMessageTo(chatId, `
+🔔 <b>Đã bật nhận thông báo tự động!</b>
+
+Bạn sẽ nhận được:
+• Báo cáo sync insights theo giờ
+• Cảnh báo hệ thống
+• Tổng kết hàng ngày
+
+Dùng /unsubscribe để tắt thông báo.
+            `);
+        } catch (error) {
+            await this.sendMessageTo(chatId, '❌ Có lỗi khi đăng ký. Vui lòng thử lại.');
+        }
+    }
+
+    private async handleUnsubscribeCommand(chatId: string) {
+        try {
+            await this.prisma.telegramSubscriber.update({
+                where: { chatId },
+                data: { receiveNotifications: false },
+            });
+            await this.sendMessageTo(chatId, `
+🔕 <b>Đã tắt nhận thông báo tự động!</b>
+
+Bạn vẫn có thể dùng các lệnh:
+/report /hour /today /week /budget
+
+Dùng /subscribe để bật lại thông báo.
+            `);
+        } catch (error) {
+            await this.sendMessageTo(chatId, '❌ Có lỗi khi hủy đăng ký. Vui lòng thử lại.');
+        }
     }
 
     private async handleReportCommand(chatId: string) {
@@ -688,17 +745,22 @@ ${budgetInfo}
     }
 
     async sendMessage(message: string): Promise<void> {
-        // Refresh chat IDs from Telegram API to update DB
-        await this.refreshChatIds();
+        // Only refresh from getUpdates if NOT using webhook (avoid 409 conflict)
+        if (!this.useWebhook) {
+            await this.refreshChatIds();
+        }
 
-        // Get chat IDs from database (source of truth)
+        // Get only subscribers who have opted-in to receive notifications
         const subscribers = await this.prisma.telegramSubscriber.findMany({
-            where: { isActive: true },
+            where: { 
+                isActive: true,
+                receiveNotifications: true,  // Only send to users who subscribed
+            },
             select: { chatId: true },
         });
 
         if (subscribers.length === 0) {
-            this.logger.warn('No subscribers in database. Send any message to the bot first.');
+            this.logger.warn('No subscribers with notifications enabled. Users need to use /subscribe command.');
             return;
         }
 
@@ -707,7 +769,7 @@ ${budgetInfo}
             this.sendMessageTo(chatId, message)
         );
         await Promise.all(promises);
-        this.logger.log(`Sent message to ${chatIds.length} subscribers from DB`);
+        this.logger.log(`Sent message to ${chatIds.length} subscribed users`);
     }
 
     // ==================== UTILITY ====================

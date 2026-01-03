@@ -131,4 +131,27 @@ export class CrawlJobService {
         });
         return !!job;
     }
+
+    /**
+     * Cleanup old crawl jobs - keep only last 7 days
+     * This prevents database from growing too large for Supabase free tier
+     */
+    async cleanupOldJobs(): Promise<number> {
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - 7);
+
+        const result = await this.prisma.crawlJob.deleteMany({
+            where: {
+                createdAt: {
+                    lt: cutoffDate,
+                },
+            },
+        });
+
+        if (result.count > 0) {
+            this.logger.log(`Cleaned up ${result.count} old crawl jobs (keeping last 7 days)`);
+        }
+
+        return result.count;
+    }
 }

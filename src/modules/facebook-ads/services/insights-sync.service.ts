@@ -5,7 +5,7 @@ import { TokenService } from './token.service';
 import { CrawlJobService } from './crawl-job.service';
 import { TelegramService } from './telegram.service';
 import { CrawlJobType } from '@prisma/client';
-import { getVietnamDateString, getVietnamHour } from '@n-utils';
+import { getVietnamDateString, getVietnamHour, getVietnamMinute } from '@n-utils';
 
 @Injectable()
 export class InsightsSyncService {
@@ -176,6 +176,13 @@ export class InsightsSyncService {
             }
 
             await this.crawlJobService.completeJob(job.id, totalInsights);
+            
+            // Cleanup old daily insights (keep 30 days)
+            await this.cleanupOldDailyInsights(accountId);
+            
+            // Cleanup old crawl jobs (keep 7 days)
+            await this.crawlJobService.cleanupOldJobs();
+            
             this.logger.log(`Synced ${totalInsights} daily insights for ${ads.length} ads in ${accountId}`);
             return totalInsights;
         } catch (error) {
@@ -262,6 +269,10 @@ export class InsightsSyncService {
             }
 
             await this.crawlJobService.completeJob(job.id, totalInsights);
+            
+            // Cleanup old breakdown insights (keep 7 days)
+            await this.cleanupOldBreakdownInsights(accountId);
+            
             return totalInsights;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
@@ -325,6 +336,10 @@ export class InsightsSyncService {
             }
 
             await this.crawlJobService.completeJob(job.id, totalInsights);
+            
+            // Cleanup old breakdown insights (keep 7 days)
+            await this.cleanupOldBreakdownInsights(accountId);
+            
             return totalInsights;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
@@ -388,6 +403,10 @@ export class InsightsSyncService {
             }
 
             await this.crawlJobService.completeJob(job.id, totalInsights);
+            
+            // Cleanup old breakdown insights (keep 7 days)
+            await this.cleanupOldBreakdownInsights(accountId);
+            
             return totalInsights;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
@@ -451,6 +470,10 @@ export class InsightsSyncService {
             }
 
             await this.crawlJobService.completeJob(job.id, totalInsights);
+            
+            // Cleanup old breakdown insights (keep 7 days)
+            await this.cleanupOldBreakdownInsights(accountId);
+            
             return totalInsights;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
@@ -499,7 +522,7 @@ export class InsightsSyncService {
             const now = new Date();
             let totalInsights = 0;
             const currentHour = getVietnamHour();
-            const prevHour = currentHour - 1;
+            const currentMinute = getVietnamMinute();
 
             // Get account info for telegram message
             const account = await this.prisma.adAccount.findUnique({
@@ -507,8 +530,8 @@ export class InsightsSyncService {
                 select: { name: true, currency: true },
             });
 
-            // Collect insights for the previous hour
-            const prevHourInsights: Array<{
+            // Collect insights for the current hour (send partial data even if hour is not complete)
+            const currentHourInsights: Array<{
                 insight: any;
                 adName: string;
                 campaignName: string;
@@ -534,12 +557,15 @@ export class InsightsSyncService {
                         await this.upsertHourlyInsight(insight, accountId, now);
                         totalInsights++;
 
-                        // Collect for Telegram (only previous hour)
+                        // Collect for Telegram (current hour of TODAY only)
                         const hourRange = insight.hourly_stats_aggregated_by_advertiser_time_zone;
                         const insightHour = hourRange ? parseInt(hourRange.split(':')[0]) : -1;
+                        const insightDate = insight.date_start; // YYYY-MM-DD format
+                        const todayStr = getVietnamDateString();
                         
-                        if (insightHour === prevHour && Number(insight.spend || 0) > 0) {
-                            prevHourInsights.push({
+                        // Only collect if: same hour + today's date + has spend
+                        if (insightHour === currentHour && insightDate === todayStr && Number(insight.spend || 0) > 0) {
+                            currentHourInsights.push({
                                 insight,
                                 adName: ad.name || ad.id,
                                 campaignName: ad.campaign?.name || 'N/A',
@@ -553,23 +579,26 @@ export class InsightsSyncService {
                 }
             }
 
-            // Send consolidated Telegram report
-            this.logger.log(`prevHourInsights count: ${prevHourInsights.length} for hour ${prevHour}`);
-            if (prevHourInsights.length > 0) {
-                this.logger.log(`Sending Telegram report for ${prevHourInsights.length} ads...`);
+            // Send consolidated Telegram report for current hour
+            this.logger.log(`currentHourInsights count: ${currentHourInsights.length} for hour ${currentHour} (at minute ${currentMinute})`);
+            if (currentHourInsights.length > 0) {
+                this.logger.log(`Sending Telegram report for ${currentHourInsights.length} ads...`);
                 // Use today's date for Telegram message (in Vietnam timezone)
                 const today = getVietnamDateString();
                 await this.sendConsolidatedHourlyReport(
-                    prevHourInsights,
+                    currentHourInsights,
                     account?.name || accountId,
                     account?.currency || 'VND',
                     today,
-                    `${prevHour.toString().padStart(2, '0')}:00`,
+                    `${currentHour.toString().padStart(2, '0')}:00`,
                 );
                 this.logger.log(`Telegram report sent!`);
             } else {
-                this.logger.log(`No ads with spend > 0 for hour ${prevHour}, skipping Telegram`);
+                this.logger.log(`No ads with spend > 0 for hour ${currentHour}, skipping Telegram`);
             }
+
+            // Cleanup old hourly insights - only keep today and yesterday
+            await this.cleanupOldHourlyInsights(accountId);
 
             await this.crawlJobService.completeJob(job.id, totalInsights);
             return totalInsights;
@@ -660,8 +689,8 @@ export class InsightsSyncService {
             Number(b.insight.spend || 0) - Number(a.insight.spend || 0)
         );
 
-        // Send individual ad messages (ALL ads)
-        for (const { insight, adName, campaignName, adsetName, previewLink } of sortedAds) {
+        const top10Ads = sortedAds.slice(0, 10);
+        for (const { insight, adName, campaignName, adsetName, previewLink } of top10Ads) {
             const spend = Number(insight.spend || 0);
             const impr = Number(insight.impressions || 0);
             const clicks = Number(insight.clicks || 0);
@@ -695,6 +724,11 @@ export class InsightsSyncService {
             }
 
             await this.telegramService.sendMessage(adMsg);
+        }
+
+        // Notify if there are more ads
+        if (sortedAds.length > 10) {
+            await this.telegramService.sendMessage(`\n➕ Còn <b>${sortedAds.length - 10}</b> ads khác có chi tiêu trong giờ này.`);
         }
     }
 
@@ -891,6 +925,121 @@ export class InsightsSyncService {
                 syncedAt,
             },
         });
+    }
+
+    /**
+     * Cleanup old hourly insights - only keep today and yesterday
+     * This prevents database from growing too large
+     */
+    private async cleanupOldHourlyInsights(accountId: string): Promise<number> {
+        // Get today's date in Vietnam timezone (local midnight)
+        const todayStr = getVietnamDateString();
+        const today = this.parseLocalDate(todayStr);
+        
+        // Calculate yesterday
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+
+        // Delete all hourly insights older than yesterday
+        const result = await this.prisma.adInsightsHourly.deleteMany({
+            where: {
+                accountId,
+                date: {
+                    lt: yesterday,
+                },
+            },
+        });
+
+        if (result.count > 0) {
+            this.logger.log(`Cleaned up ${result.count} old hourly insights for account ${accountId} (keeping only ${todayStr} and yesterday)`);
+        }
+
+        return result.count;
+    }
+
+    /**
+     * Cleanup old daily insights - keep only last 30 days
+     * This prevents database from growing too large for Supabase free tier
+     */
+    private async cleanupOldDailyInsights(accountId: string): Promise<number> {
+        const todayStr = getVietnamDateString();
+        const today = this.parseLocalDate(todayStr);
+        
+        // Calculate cutoff date (30 days ago)
+        const cutoffDate = new Date(today);
+        cutoffDate.setDate(cutoffDate.getDate() - 30);
+
+        const result = await this.prisma.adInsightsDaily.deleteMany({
+            where: {
+                accountId,
+                date: {
+                    lt: cutoffDate,
+                },
+            },
+        });
+
+        if (result.count > 0) {
+            this.logger.log(`Cleaned up ${result.count} old daily insights for account ${accountId} (keeping last 30 days)`);
+        }
+
+        return result.count;
+    }
+
+    /**
+     * Cleanup old breakdown insights - keep only last 7 days
+     * Breakdowns (Device, Placement, AgeGender, Region) are less critical for long-term analysis
+     */
+    private async cleanupOldBreakdownInsights(accountId: string): Promise<number> {
+        const todayStr = getVietnamDateString();
+        const today = this.parseLocalDate(todayStr);
+        
+        // Calculate cutoff date (7 days ago)
+        const cutoffDate = new Date(today);
+        cutoffDate.setDate(cutoffDate.getDate() - 7);
+
+        let totalDeleted = 0;
+
+        // Device insights
+        const deviceResult = await this.prisma.adInsightsDeviceDaily.deleteMany({
+            where: {
+                accountId,
+                date: { lt: cutoffDate },
+            },
+        });
+        totalDeleted += deviceResult.count;
+
+        // Placement insights
+        const placementResult = await this.prisma.adInsightsPlacementDaily.deleteMany({
+            where: {
+                accountId,
+                date: { lt: cutoffDate },
+            },
+        });
+        totalDeleted += placementResult.count;
+
+        // Age/Gender insights
+        const ageGenderResult = await this.prisma.adInsightsAgeGenderDaily.deleteMany({
+            where: {
+                accountId,
+                date: { lt: cutoffDate },
+            },
+        });
+        totalDeleted += ageGenderResult.count;
+
+        // Region insights
+        const regionResult = await this.prisma.adInsightsRegionDaily.deleteMany({
+            where: {
+                accountId,
+                date: { lt: cutoffDate },
+            },
+        });
+        totalDeleted += regionResult.count;
+
+        if (totalDeleted > 0) {
+            this.logger.log(`Cleaned up ${totalDeleted} old breakdown insights for account ${accountId} (keeping last 7 days)`);
+        }
+
+        return totalDeleted;
     }
 
     private getPreviousHourSlot(currentHourSlot: string, currentDate: Date): { date: Date; hourSlot: string } {

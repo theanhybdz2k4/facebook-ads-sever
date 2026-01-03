@@ -1,10 +1,10 @@
 // Facebook Graph API Base URL
-export const FB_GRAPH_API_URL = 'https://graph.facebook.com/v21.0';
+export const FB_GRAPH_API_URL = 'https://graph.facebook.com/v24.0';
 
 // Rate Limit Thresholds
 export const RATE_LIMIT_THRESHOLD = 70; // Pause when usage > 70%
 export const RATE_LIMIT_PAUSE_MS = 30000; // 30 seconds pause
-export const ACCOUNT_DELAY_MS = 5000; // 5 seconds delay between accounts
+export const ACCOUNT_DELAY_MS = 2000; // 2 seconds delay between accounts (reduced for speed)
 
 // Sync timing
 export const INSIGHTS_SYNC_BUFFER_MINUTE = 50; // Stop insights sync at :50

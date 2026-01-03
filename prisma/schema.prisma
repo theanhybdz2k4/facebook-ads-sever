@@ -887,12 +887,13 @@ model CrawlJob {
 // ============================================================================
 
 model TelegramSubscriber {
-  id        Int      @id @default(autoincrement())
-  chatId    String   @unique @map("chat_id")
-  name      String?
-  isActive  Boolean  @default(true) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id                   Int      @id @default(autoincrement())
+  chatId               String   @unique @map("chat_id")
+  name                 String?
+  isActive             Boolean  @default(true) @map("is_active")
+  receiveNotifications Boolean  @default(false) @map("receive_notifications") // User must subscribe to receive auto notifications
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
 
   @@map("telegram_subscribers")
 }

@@ -58,13 +58,16 @@ export class EntitySyncService {
             const campaigns = await this.facebookApi.getCampaigns(accountId, accessToken);
             const now = new Date();
 
-            for (const campaign of campaigns) {
-                await this.prisma.campaign.upsert({
-                    where: { id: campaign.id },
-                    create: this.mapCampaign(campaign, accountId, now),
-                    update: this.mapCampaign(campaign, accountId, now),
-                });
-            }
+            // Batch upsert all campaigns in a single transaction
+            await this.prisma.$transaction(
+                campaigns.map((campaign) =>
+                    this.prisma.campaign.upsert({
+                        where: { id: campaign.id },
+                        create: this.mapCampaign(campaign, accountId, now),
+                        update: this.mapCampaign(campaign, accountId, now),
+                    })
+                )
+            );
 
             await this.crawlJobService.completeJob(job.id, campaigns.length);
             this.logger.log(`Synced ${campaigns.length} campaigns for ${accountId}`);
@@ -93,13 +96,16 @@ export class EntitySyncService {
             const adsets = await this.facebookApi.getAdsets(accountId, accessToken);
             const now = new Date();
 
-            for (const adset of adsets) {
-                await this.prisma.adset.upsert({
-                    where: { id: adset.id },
-                    create: this.mapAdset(adset, accountId, now),
-                    update: this.mapAdset(adset, accountId, now),
-                });
-            }
+            // Batch upsert all adsets in a single transaction
+            await this.prisma.$transaction(
+                adsets.map((adset) =>
+                    this.prisma.adset.upsert({
+                        where: { id: adset.id },
+                        create: this.mapAdset(adset, accountId, now),
+                        update: this.mapAdset(adset, accountId, now),
+                    })
+                )
+            );
 
             await this.crawlJobService.completeJob(job.id, adsets.length);
             this.logger.log(`Synced ${adsets.length} adsets for ${accountId}`);
@@ -136,13 +142,16 @@ export class EntitySyncService {
             const adsets = await this.facebookApi.getAdsetsByCampaign(campaignId, accessToken, accountId);
             const now = new Date();
 
-            for (const adset of adsets) {
-                await this.prisma.adset.upsert({
-                    where: { id: adset.id },
-                    create: this.mapAdset(adset, accountId, now),
-                    update: this.mapAdset(adset, accountId, now),
-                });
-            }
+            // Batch upsert all adsets in a single transaction
+            await this.prisma.$transaction(
+                adsets.map((adset) =>
+                    this.prisma.adset.upsert({
+                        where: { id: adset.id },
+                        create: this.mapAdset(adset, accountId, now),
+                        update: this.mapAdset(adset, accountId, now),
+                    })
+                )
+            );
 
             await this.crawlJobService.completeJob(job.id, adsets.length);
             this.logger.log(`Synced ${adsets.length} adsets for campaign ${campaignId}`);
@@ -274,13 +283,16 @@ export class EntitySyncService {
             const creatives = await this.facebookApi.getAdCreatives(accountId, accessToken);
             const now = new Date();
 
-            for (const creative of creatives) {
-                await this.prisma.creative.upsert({
-                    where: { id: creative.id },
-                    create: this.mapCreative(creative, accountId, now),
-                    update: this.mapCreative(creative, accountId, now),
-                });
-            }
+            // Batch upsert all creatives in a single transaction
+            await this.prisma.$transaction(
+                creatives.map((creative) =>
+                    this.prisma.creative.upsert({
+                        where: { id: creative.id },
+                        create: this.mapCreative(creative, accountId, now),
+                        update: this.mapCreative(creative, accountId, now),
+                    })
+                )
+            );
 
             await this.crawlJobService.completeJob(job.id, creatives.length);
             this.logger.log(`Synced ${creatives.length} creatives for ${accountId}`);
@@ -336,7 +348,7 @@ export class EntitySyncService {
             createdTime: data.created_time ? new Date(data.created_time) : null,
             endAdvertiser: data.end_advertiser,
             endAdvertiserName: data.end_advertiser_name,
-            rawJson: data,
+            // rawJson removed to save Supabase storage
             syncedAt,
         };
     }
@@ -370,7 +382,7 @@ export class EntitySyncService {
             isSkadnetworkAttribution: data.is_skadnetwork_attribution,
             issuesInfo: data.issues_info,
             recommendations: data.recommendations,
-            rawJson: data,
+            // rawJson removed to save Supabase storage
             syncedAt,
         };
     }
@@ -411,7 +423,7 @@ export class EntitySyncService {
             sourceAdsetId: data.source_adset_id,
             issuesInfo: data.issues_info,
             recommendations: data.recommendations,
-            rawJson: data,
+            // rawJson removed to save Supabase storage
             syncedAt,
         };
     }
@@ -440,7 +452,7 @@ export class EntitySyncService {
             engagementAudience: data.engagement_audience,
             issuesInfo: data.issues_info,
             recommendations: data.recommendations,
-            rawJson: data,
+            // rawJson removed to save Supabase storage
             syncedAt,
         };
     }
@@ -481,7 +493,7 @@ export class EntitySyncService {
             runStatus: data.run_status,
             status: data.status,
             createdTime: data.created_time ? new Date(data.created_time) : null,
-            rawJson: data,
+            // rawJson removed to save Supabase storage
             syncedAt,
         };
     }
