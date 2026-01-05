@@ -148,6 +148,11 @@ export class TelegramController {
     @Post('webhook')
     @ApiOperation({ summary: 'Legacy webhook endpoint - auto-detect bot from token or find first active bot' })
     async handleLegacyWebhook(@Body() update: any) {
+        return this.handleLegacyWebhookInternal(update);
+    }
+
+    // Internal method to handle legacy webhook (can be called from app controller without prefix)
+    async handleLegacyWebhookInternal(update: any) {
         try {
             console.log('[Webhook] Legacy webhook called', JSON.stringify(update));
             

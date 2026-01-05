@@ -998,27 +998,86 @@ export class InsightsSyncService {
         date: string;
         hour: string;
     } | null> {
-        const currentHour = hour !== undefined ? hour : getVietnamHour();
         const todayStr = getVietnamDateString();
         const today = this.parseLocalDate(todayStr);
         
-        // Format hour for query
-        const hourString = currentHour.toString().padStart(2, '0');
-        const hourlyTimeZone = `${hourString}:00:00 - ${hourString}:59:59`;
-
-        // Get hourly insights for current hour with spend > 0
-        const rawInsights = await this.prisma.adInsightsHourly.findMany({
-            where: {
-                date: today,
-                hourlyStatsAggregatedByAdvertiserTimeZone: hourlyTimeZone,
-                spend: { gt: 0 },
-            },
-            orderBy: { spend: 'desc' },
-        });
+        let targetHour = hour;
+        let rawInsights: any[] = [];
+        
+        // If hour is specified, use it directly
+        if (targetHour !== undefined) {
+            const hourString = targetHour.toString().padStart(2, '0');
+            const hourlyTimeZone = `${hourString}:00:00 - ${hourString}:59:59`;
+            
+            rawInsights = await this.prisma.adInsightsHourly.findMany({
+                where: {
+                    date: today,
+                    hourlyStatsAggregatedByAdvertiserTimeZone: hourlyTimeZone,
+                    spend: { gt: 0 },
+                },
+                orderBy: { spend: 'desc' },
+            });
+        }
+        
+        // If no insights found for specified hour, or hour not specified, find latest hour with data
+        if (rawInsights.length === 0) {
+            // Find the latest hour that has insights data (even if it's from previous hour due to crawl delay)
+            const latestInsight = await this.prisma.adInsightsHourly.findFirst({
+                where: {
+                    date: today,
+                    spend: { gt: 0 },
+                },
+                orderBy: { syncedAt: 'desc' },
+                select: {
+                    hourlyStatsAggregatedByAdvertiserTimeZone: true,
+                },
+            });
+            
+            if (latestInsight && latestInsight.hourlyStatsAggregatedByAdvertiserTimeZone) {
+                // Extract hour from timezone string (format: "HH:00:00 - HH:59:59")
+                const hourMatch = latestInsight.hourlyStatsAggregatedByAdvertiserTimeZone.match(/^(\d{2}):00:00/);
+                if (hourMatch) {
+                    targetHour = parseInt(hourMatch[1], 10);
+                    const hourString = targetHour.toString().padStart(2, '0');
+                    const hourlyTimeZone = `${hourString}:00:00 - ${hourString}:59:59`;
+                    
+                    rawInsights = await this.prisma.adInsightsHourly.findMany({
+                        where: {
+                            date: today,
+                            hourlyStatsAggregatedByAdvertiserTimeZone: hourlyTimeZone,
+                            spend: { gt: 0 },
+                        },
+                        orderBy: { spend: 'desc' },
+                    });
+                }
+            }
+        }
+        
+        // If still no insights, try previous hour (in case crawl is delayed)
+        if (rawInsights.length === 0 && targetHour !== undefined) {
+            const previousHour = targetHour > 0 ? targetHour - 1 : 23;
+            const hourString = previousHour.toString().padStart(2, '0');
+            const hourlyTimeZone = `${hourString}:00:00 - ${hourString}:59:59`;
+            
+            rawInsights = await this.prisma.adInsightsHourly.findMany({
+                where: {
+                    date: today,
+                    hourlyStatsAggregatedByAdvertiserTimeZone: hourlyTimeZone,
+                    spend: { gt: 0 },
+                },
+                orderBy: { spend: 'desc' },
+            });
+            
+            if (rawInsights.length > 0) {
+                targetHour = previousHour;
+            }
+        }
 
         if (rawInsights.length === 0) {
             return null;
         }
+        
+        const hourString = (targetHour !== undefined ? targetHour : getVietnamHour()).toString().padStart(2, '0');
 
         // Get ad details
         const adIds = [...new Set(rawInsights.map(i => i.adId))];
