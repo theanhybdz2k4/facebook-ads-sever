@@ -1,10 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '@n-database/prisma/prisma.service';
-import { FacebookApiService } from './facebook-api.service';
-import { TokenService } from './token.service';
-import { CrawlJobService } from './crawl-job.service';
+import { FacebookApiService } from '../../shared/services/facebook-api.service';
+import { TokensService } from '../../tokens/services/tokens.service';
+import { CrawlJobService } from '../../jobs/services/crawl-job.service';
 import { CrawlJobType } from '@prisma/client';
-import { ACCOUNT_DELAY_MS } from '../constants/facebook-api.constants';
+import { ACCOUNT_DELAY_MS } from '../../shared/constants/facebook-api.constants';
 
 @Injectable()
 export class EntitySyncService {
@@ -13,7 +13,7 @@ export class EntitySyncService {
     constructor(
         private readonly prisma: PrismaService,
         private readonly facebookApi: FacebookApiService,
-        private readonly tokenService: TokenService,
+        private readonly tokensService: TokensService,
         private readonly crawlJobService: CrawlJobService,
     ) { }
 
@@ -28,12 +28,17 @@ export class EntitySyncService {
         const accounts = await this.facebookApi.getAdAccounts(accessToken);
         const now = new Date();
 
-        for (const account of accounts) {
-            await this.prisma.adAccount.upsert({
-                where: { id: account.id },
-                create: this.mapAdAccount(account, now),
-                update: this.mapAdAccount(account, now),
-            });
+        // Batch upsert all accounts in single transaction
+        if (accounts.length > 0) {
+            await this.prisma.$transaction(
+                accounts.map((account) =>
+                    this.prisma.adAccount.upsert({
+                        where: { id: account.id },
+                        create: this.mapAdAccount(account, now),
+                        update: this.mapAdAccount(account, now),
+                    })
+                )
+            );
         }
 
         this.logger.log(`Synced ${accounts.length} ad accounts`);
@@ -43,7 +48,8 @@ export class EntitySyncService {
     // ==================== CAMPAIGNS ====================
 
     async syncCampaigns(accountId: string): Promise<number> {
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId);
+        // Internal use - called from processors/cron without userId context
+        const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -81,7 +87,8 @@ export class EntitySyncService {
     // ==================== ADSETS ====================
 
     async syncAdsets(accountId: string): Promise<number> {
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId);
+        // Internal use - called from processors/cron without userId context
+        const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -127,7 +134,8 @@ export class EntitySyncService {
         }
 
         const accountId = campaign.accountId;
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId);
+        // Internal use - called from processors/cron without userId context
+        const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -165,7 +173,8 @@ export class EntitySyncService {
     // ==================== ADS ====================
 
     async syncAds(accountId: string): Promise<number> {
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId);
+        // Internal use - called from processors/cron without userId context
+        const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -180,31 +189,37 @@ export class EntitySyncService {
             const ads = await this.facebookApi.getAds(accountId, accessToken);
             const now = new Date();
 
-            let successCount = 0;
-            let skippedCount = 0;
+            // Pre-fetch existing adset IDs to filter out orphan ads
+            const existingAdsets = await this.prisma.adset.findMany({
+                where: { accountId },
+                select: { id: true },
+            });
+            const adsetIds = new Set(existingAdsets.map(a => a.id));
 
-            for (const ad of ads) {
-                try {
-                    await this.prisma.ad.upsert({
-                        where: { id: ad.id },
-                        create: this.mapAd(ad, accountId, now),
-                        update: this.mapAd(ad, accountId, now),
-                    });
-                    successCount++;
-                } catch (error) {
-                    // Skip ads with missing parent adsets/campaigns (FK constraint errors)
-                    if (error.code === 'P2003') {
-                        this.logger.warn(`Skipping ad ${ad.id}: parent adset/campaign not synced yet`);
-                        skippedCount++;
-                    } else {
-                        throw error;
-                    }
-                }
+            // Filter ads that have valid parent adsets
+            const validAds = ads.filter(ad => adsetIds.has(ad.adset_id));
+            const skippedCount = ads.length - validAds.length;
+
+            if (skippedCount > 0) {
+                this.logger.warn(`Skipping ${skippedCount} ads with missing parent adsets`);
             }
 
-            await this.crawlJobService.completeJob(job.id, successCount);
-            this.logger.log(`Synced ${successCount} ads for ${accountId} (skipped ${skippedCount})`);
-            return successCount;
+            // Batch upsert all valid ads in single transaction
+            if (validAds.length > 0) {
+                await this.prisma.$transaction(
+                    validAds.map((ad) =>
+                        this.prisma.ad.upsert({
+                            where: { id: ad.id },
+                            create: this.mapAd(ad, accountId, now),
+                            update: this.mapAd(ad, accountId, now),
+                        })
+                    )
+                );
+            }
+
+            await this.crawlJobService.completeJob(job.id, validAds.length);
+            this.logger.log(`Synced ${validAds.length} ads for ${accountId} (skipped ${skippedCount})`);
+            return validAds.length;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
             throw error;
@@ -222,7 +237,8 @@ export class EntitySyncService {
         }
 
         const accountId = adset.accountId;
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId);
+        // Internal use - called from processors/cron without userId context
+        const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -237,30 +253,22 @@ export class EntitySyncService {
             const ads = await this.facebookApi.getAdsByAdset(adsetId, accessToken, accountId);
             const now = new Date();
 
-            let successCount = 0;
-            let skippedCount = 0;
-
-            for (const ad of ads) {
-                try {
-                    await this.prisma.ad.upsert({
-                        where: { id: ad.id },
-                        create: this.mapAd(ad, accountId, now),
-                        update: this.mapAd(ad, accountId, now),
-                    });
-                    successCount++;
-                } catch (error) {
-                    if (error.code === 'P2003') {
-                        this.logger.warn(`Skipping ad ${ad.id}: parent adset/campaign not synced yet`);
-                        skippedCount++;
-                    } else {
-                        throw error;
-                    }
-                }
+            // Since we're syncing by adset, the adset already exists - just batch upsert
+            if (ads.length > 0) {
+                await this.prisma.$transaction(
+                    ads.map((ad) =>
+                        this.prisma.ad.upsert({
+                            where: { id: ad.id },
+                            create: this.mapAd(ad, accountId, now),
+                            update: this.mapAd(ad, accountId, now),
+                        })
+                    )
+                );
             }
 
-            await this.crawlJobService.completeJob(job.id, successCount);
-            this.logger.log(`Synced ${successCount} ads for adset ${adsetId} (skipped ${skippedCount})`);
-            return successCount;
+            await this.crawlJobService.completeJob(job.id, ads.length);
+            this.logger.log(`Synced ${ads.length} ads for adset ${adsetId}`);
+            return ads.length;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
             throw error;
@@ -268,7 +276,8 @@ export class EntitySyncService {
     }
 
     async syncCreatives(accountId: string): Promise<number> {
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId);
+        // Internal use - called from processors/cron without userId context
+        const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }

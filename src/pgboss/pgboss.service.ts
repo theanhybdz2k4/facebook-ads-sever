@@ -89,16 +89,26 @@ export class PgBossService implements OnModuleInit, OnModuleDestroy {
         handler: (job: Job<T>) => Promise<void>,
         options?: { batchSize?: number },
     ): Promise<string> {
-        const batchSize = options?.batchSize || 5; // Process 5 jobs per batch
+        // Use batchSize of 1 to avoid rate limiting with Facebook API
+        const batchSize = options?.batchSize || 1;
         
-        // pg-boss v10+ uses batchSize to fetch multiple jobs at once
         return this.boss.work(queueName, { batchSize }, async (jobs: any) => {
             // Handle both array (v10+) and single job formats
             const jobList = Array.isArray(jobs) ? jobs : [jobs];
             
-            // Process jobs in parallel for speed
-            await Promise.all(jobList.map(job => handler(job as Job<T>)));
+            // Process jobs SEQUENTIALLY to avoid Facebook rate limits
+            for (const job of jobList) {
+                await handler(job as Job<T>);
+                // Add delay between jobs to respect rate limits
+                if (jobList.length > 1) {
+                    await this.delay(2000); // 2 seconds between jobs
+                }
+            }
         });
+    }
+
+    private delay(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     getBoss(): PgBoss {

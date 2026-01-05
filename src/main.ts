@@ -21,14 +21,22 @@ async function bootstrap() {
   const port = process.env.PORT || 3000;
 
   app.use(cookieParser());
+  const frontendUrl = process.env.FRONTEND_URL;
+  const allowedOrigins = [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://localhost:3001',
+  ];
+
+  if (frontendUrl) {
+    allowedOrigins.push(frontendUrl);
+  } else if (process.env.APP_ENV === 'production') {
+    throw new Error('FRONTEND_URL is required in production environment');
+  }
+
   app.enableCors({
     credentials: true,
-    origin: [
-      'http://localhost:3000',
-      'http://localhost:5173',
-      'http://localhost:3001',
-      process.env.FRONTEND_URL || '*',
-    ],
+    origin: allowedOrigins,
   });
 
   app.useGlobalPipes(
@@ -48,7 +56,7 @@ async function bootstrap() {
     }),
   );
 
-  const globalPrefix = 'api';
+  const globalPrefix = 'api/v1';
   app.setGlobalPrefix(globalPrefix);
   setupOpenApi(app);
 

@@ -3,6 +3,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RegisterDto, LoginDto, RefreshTokenDto } from './dtos';
+import { RateLimit, RateLimitGuard } from '../shared/guards/rate-limit.guard';
 
 @ApiTags('Auth')
 @Controller('auth')
@@ -10,12 +11,16 @@ export class AuthController {
     constructor(private readonly authService: AuthService) { }
 
     @Post('register')
+    @UseGuards(RateLimitGuard)
+    @RateLimit({ ttl: 60, limit: 5 }) // 5 requests per minute
     @ApiOperation({ summary: 'Register new user' })
     async register(@Body() dto: RegisterDto) {
         return this.authService.register(dto.email, dto.password, dto.name);
     }
 
     @Post('login')
+    @UseGuards(RateLimitGuard)
+    @RateLimit({ ttl: 60, limit: 10 }) // 10 requests per minute
     @ApiOperation({ summary: 'Login' })
     async login(@Body() dto: LoginDto) {
         return this.authService.login(dto.email, dto.password);

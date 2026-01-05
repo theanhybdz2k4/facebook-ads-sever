@@ -1,0 +1,597 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { HttpService } from '@nestjs/axios';
+import { firstValueFrom } from 'rxjs';
+import { PrismaService } from '@n-database/prisma/prisma.service';
+import { getVietnamHour } from '@n-utils';
+
+/**
+ * TelegramService - Per-User Bot Architecture with Multiple Subscribers
+ * 
+ * Each user/business adds their own bot token.
+ * Team members subscribe via /subscribe command.
+ * Notifications sent to all subscribers of that bot.
+ */
+@Injectable()
+export class TelegramService {
+    private readonly logger = new Logger(TelegramService.name);
+
+    constructor(
+        private readonly httpService: HttpService,
+        private readonly prisma: PrismaService,
+    ) { }
+
+    // ==================== BOT VALIDATION & SETUP ====================
+
+    /**
+     * Validate a bot token and get bot info
+     */
+    async validateBotToken(botToken: string): Promise<{ valid: boolean; botInfo?: any; error?: string }> {
+        try {
+            const response = await firstValueFrom(
+                this.httpService.get(`https://api.telegram.org/bot${botToken}/getMe`),
+            );
+
+            if (response.data?.ok) {
+                return { valid: true, botInfo: response.data.result };
+            }
+            return { valid: false, error: 'Invalid response from Telegram' };
+        } catch (error) {
+            return { valid: false, error: error.message };
+        }
+    }
+
+    /**
+     * Set bot commands menu
+     */
+    async setBotCommands(botToken: string): Promise<boolean> {
+        try {
+            const commands = [
+                { command: 'start', description: 'Bắt đầu' },
+                { command: 'subscribe', description: '🔔 Bật nhận thông báo tự động' },
+                { command: 'unsubscribe', description: '🔕 Tắt nhận thông báo tự động' },
+                { command: 'report', description: 'Báo cáo Ads' },
+                { command: 'hour', description: 'Báo cáo giờ vừa qua' },
+                { command: 'today', description: 'Báo cáo hôm nay' },
+                { command: 'week', description: 'Báo cáo 7 ngày' },
+                { command: 'budget', description: 'Ngân sách' },
+                { command: 'help', description: 'Hỗ trợ' },
+            ];
+
+            await firstValueFrom(
+                this.httpService.post(`https://api.telegram.org/bot${botToken}/setMyCommands`, { commands }),
+            );
+            return true;
+        } catch (error) {
+            this.logger.error(`Failed to set bot commands: ${error.message}`);
+            return false;
+        }
+    }
+
+    async setWebhookForBot(botToken: string, botId: number): Promise<{ success: boolean; error?: string }> {
+        try {
+            // Get base URL from environment or use default
+            const baseUrl = process.env.BASE_URL || process.env.RAILWAY_PUBLIC_DOMAIN
+                ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+                : 'https://your-domain.com'; // Should be configured in prod
+
+            const webhookUrl = `${baseUrl}/api/v1/telegram/webhook/${botId}`;
+
+            const response = await firstValueFrom(
+                this.httpService.post(`https://api.telegram.org/bot${botToken}/setWebhook`, {
+                    url: webhookUrl,
+                    allowed_updates: ['message', 'callback_query'],
+                }),
+            );
+
+            if (response.data?.ok) {
+                this.logger.log(`Webhook registered for bot ${botId}: ${webhookUrl}`);
+                return { success: true };
+            }
+            return { success: false, error: 'Telegram API returned error' };
+        } catch (error) {
+            this.logger.error(`Failed to set webhook for bot ${botId}: ${error.message}`);
+            return { success: false, error: error.message };
+        }
+    }
+
+    // ==================== WEBHOOK PROCESSING ====================
+
+    /**
+     * Process incoming webhook update for a specific bot
+     */
+    async processWebhookUpdate(botId: number, update: any): Promise<void> {
+        try {
+            const message = update.message;
+            if (!message) return;
+
+            const chatId = message.chat?.id?.toString();
+            const text = message.text || '';
+            const firstName = message.from?.first_name || 'User';
+
+            if (!chatId) return;
+
+            const bot = await this.prisma.userTelegramBot.findUnique({
+                where: { id: botId },
+            });
+
+            if (!bot || !bot.isActive) return;
+
+            // Auto-register user as subscriber
+            await this.ensureSubscriber(botId, chatId, firstName);
+
+            // Handle commands
+            if (text.startsWith('/start')) {
+                await this.handleStartCommand(bot.botToken, botId, chatId, firstName);
+            } else if (text.startsWith('/subscribe')) {
+                await this.handleSubscribeCommand(bot.botToken, botId, chatId);
+            } else if (text.startsWith('/unsubscribe')) {
+                await this.handleUnsubscribeCommand(bot.botToken, botId, chatId);
+            } else if (text.startsWith('/report')) {
+                await this.handleReportCommand(bot, chatId);
+            } else if (text.startsWith('/hour')) {
+                await this.handleHourCommand(bot, chatId);
+            } else if (text.startsWith('/today')) {
+                await this.handleTodayCommand(bot, chatId);
+            } else if (text.startsWith('/week')) {
+                await this.handleWeekCommand(bot, chatId);
+            } else if (text.startsWith('/budget')) {
+                await this.handleBudgetCommand(bot, chatId);
+            } else if (text.startsWith('/help')) {
+                await this.handleHelpCommand(bot.botToken, chatId);
+            }
+        } catch (error) {
+            this.logger.error(`Error processing update: ${error.message}`);
+        }
+    }
+
+    // ==================== SUBSCRIBER MANAGEMENT ====================
+
+    private async ensureSubscriber(botId: number, chatId: string, name?: string) {
+        await this.prisma.telegramBotSubscriber.upsert({
+            where: { botId_chatId: { botId, chatId } },
+            create: { botId, chatId, name, isActive: true },
+            update: { isActive: true, name },
+        });
+    }
+
+    async getSubscribers(botId: number) {
+        return this.prisma.telegramBotSubscriber.findMany({
+            where: { botId, isActive: true, receiveNotifications: true },
+        });
+    }
+
+    // ==================== COMMAND HANDLERS ====================
+
+    private async handleStartCommand(botToken: string, botId: number, chatId: string, firstName: string) {
+        const subscriber = await this.prisma.telegramBotSubscriber.findUnique({
+            where: { botId_chatId: { botId, chatId } },
+        });
+        const isSubscribed = subscriber?.receiveNotifications ?? false;
+        const statusText = isSubscribed
+            ? '✅ Bạn đang nhận thông báo tự động'
+            : '⚠️ Bạn chưa bật nhận thông báo tự động. Dùng /subscribe để bật';
+
+        await this.sendMessageTo(botToken, chatId, `
+👋 <b>Xin chào ${firstName}!</b>
+
+${statusText}
+
+📌 <b>Các lệnh có sẵn:</b>
+/subscribe - 🔔 Bật nhận thông báo tự động
+/unsubscribe - 🔕 Tắt nhận thông báo tự động
+/report - Báo cáo tổng quan Ads
+/hour - Báo cáo giờ vừa qua
+/today - Báo cáo hôm nay (từng bài)
+/week - Báo cáo 7 ngày (từng bài)
+/budget - Xem ngân sách
+/help - Hướng dẫn sử dụng
+        `);
+    }
+
+    private async handleSubscribeCommand(botToken: string, botId: number, chatId: string) {
+        await this.prisma.telegramBotSubscriber.update({
+            where: { botId_chatId: { botId, chatId } },
+            data: { receiveNotifications: true },
+        });
+        await this.sendMessageTo(botToken, chatId, `
+🔔 <b>Đã bật nhận thông báo tự động!</b>
+
+Bạn sẽ nhận được:
+• Báo cáo sync insights theo giờ
+• Cảnh báo hệ thống
+• Tổng kết hàng ngày
+
+Dùng /unsubscribe để tắt thông báo.
+        `);
+    }
+
+    private async handleUnsubscribeCommand(botToken: string, botId: number, chatId: string) {
+        await this.prisma.telegramBotSubscriber.update({
+            where: { botId_chatId: { botId, chatId } },
+            data: { receiveNotifications: false },
+        });
+        await this.sendMessageTo(botToken, chatId, `
+🔕 <b>Đã tắt nhận thông báo tự động!</b>
+
+Bạn vẫn có thể dùng các lệnh:
+/report /hour /today /week /budget
+
+Dùng /subscribe để bật lại thông báo.
+        `);
+    }
+
+    private async handleReportCommand(bot: any, chatId: string) {
+        try {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
+            // Get stats for user's ad accounts
+            const activeAdsCount = await this.prisma.ad.count({
+                where: {
+                    status: 'ACTIVE',
+                    account: { fbAccount: { userId: bot.userId } },
+                },
+            });
+
+            const accountCount = await this.prisma.adAccount.count({
+                where: { fbAccount: { userId: bot.userId } },
+            });
+
+            const todayInsights = await this.prisma.adInsightsDaily.aggregate({
+                where: {
+                    date: { gte: today },
+                    account: { fbAccount: { userId: bot.userId } },
+                },
+                _sum: {
+                    spend: true,
+                    impressions: true,
+                    clicks: true,
+                    reach: true,
+                },
+            });
+
+            const totalSpend = Number(todayInsights._sum.spend || 0);
+            const totalImpressions = Number(todayInsights._sum.impressions || 0);
+            const totalClicks = Number(todayInsights._sum.clicks || 0);
+            const totalReach = Number(todayInsights._sum.reach || 0);
+
+            const ctr = totalImpressions > 0 ? ((totalClicks / totalImpressions) * 100).toFixed(2) : '0';
+            const cpm = totalImpressions > 0 ? ((totalSpend / totalImpressions) * 1000).toFixed(0) : '0';
+
+            await this.sendMessageTo(bot.botToken, chatId, `
+📊 <b>Báo cáo tổng quan Ads</b>
+📅 ${today.toLocaleDateString('vi-VN')}
+
+📁 Ad Accounts: <b>${accountCount}</b>
+🎯 Active Ads: <b>${activeAdsCount}</b>
+
+💰 <b>Hiệu suất hôm nay:</b>
+• Chi tiêu: <b>${totalSpend.toLocaleString()} VND</b>
+• Impressions: <b>${totalImpressions.toLocaleString()}</b>
+• Reach: <b>${totalReach.toLocaleString()}</b>
+• Clicks: <b>${totalClicks.toLocaleString()}</b>
+
+📈 <b>Chỉ số:</b>
+• CTR: <b>${ctr}%</b>
+• CPM: <b>${cpm} VND</b>
+            `);
+        } catch (error) {
+            await this.sendMessageTo(bot.botToken, chatId, '❌ Có lỗi khi lấy báo cáo. Vui lòng thử lại sau.');
+        }
+    }
+
+    private async handleHourCommand(bot: any, chatId: string) {
+        await this.sendMessageTo(bot.botToken, chatId, '⏰ Tính năng báo cáo theo giờ sẽ được cập nhật sớm.');
+    }
+
+    private async handleTodayCommand(bot: any, chatId: string) {
+        await this.sendMessageTo(bot.botToken, chatId, '📊 Tính năng báo cáo hôm nay sẽ được cập nhật sớm.');
+    }
+
+    private async handleWeekCommand(bot: any, chatId: string) {
+        await this.sendMessageTo(bot.botToken, chatId, '📊 Tính năng báo cáo 7 ngày sẽ được cập nhật sớm.');
+    }
+
+    private async handleBudgetCommand(bot: any, chatId: string) {
+        await this.sendMessageTo(bot.botToken, chatId, '💰 Tính năng xem ngân sách sẽ được cập nhật sớm.');
+    }
+
+    private async handleHelpCommand(botToken: string, chatId: string) {
+        await this.sendMessageTo(botToken, chatId, `
+📖 <b>Hướng dẫn sử dụng</b>
+
+<b>📋 Các lệnh:</b>
+/start - Bắt đầu sử dụng bot
+/subscribe - 🔔 Bật nhận thông báo
+/unsubscribe - 🔕 Tắt nhận thông báo
+/report - Báo cáo tổng quan Ads
+/hour - Báo cáo giờ vừa qua
+/today - Báo cáo hôm nay
+/week - Báo cáo 7 ngày
+/budget - Xem ngân sách
+
+<b>🔔 Thông báo tự động:</b>
+• Báo cáo sync dữ liệu
+• Báo cáo insights theo giờ
+• Cảnh báo hệ thống
+        `);
+    }
+
+    // ==================== SEND MESSAGES ====================
+
+    async sendMessageTo(botToken: string, chatId: string, message: string): Promise<boolean> {
+        try {
+            await firstValueFrom(
+                this.httpService.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+                    chat_id: chatId,
+                    text: message.trim(),
+                    parse_mode: 'HTML',
+                }),
+            );
+            return true;
+        } catch (error) {
+            this.logger.error(`Failed to send to ${chatId}: ${error.message}`);
+            return false;
+        }
+    }
+
+    /**
+     * Send message to all subscribers of a bot
+     * Checks if bot has notification settings and respects allowed hours
+     */
+    async sendToAllSubscribers(botId: number, message: string, hour?: number): Promise<number> {
+        const bot = await this.prisma.userTelegramBot.findUnique({
+            where: { id: botId },
+        });
+
+        if (!bot || !bot.isActive) return 0;
+
+        // Check if bot has notification settings
+        const setting = await this.prisma.userTelegramBotSettings.findUnique({
+            where: { userId_botId: { userId: bot.userId, botId } },
+        });
+
+        if (setting) {
+            if (!setting.enabled) {
+                this.logger.log(`Bot ${botId} notifications disabled, skipping`);
+                return 0;
+            }
+
+            // Check if current hour is allowed (use provided hour or get current hour)
+            const currentHour = hour !== undefined ? hour : getVietnamHour();
+            if (!setting.allowedHours.includes(currentHour)) {
+                this.logger.log(`Bot ${botId} notifications not allowed at hour ${currentHour}, skipping`);
+                return 0;
+            }
+        }
+
+        const subscribers = await this.getSubscribers(botId);
+        let sent = 0;
+
+        for (const sub of subscribers) {
+            const success = await this.sendMessageTo(bot.botToken, sub.chatId, message);
+            if (success) sent++;
+        }
+
+        return sent;
+    }
+
+    // ==================== NOTIFICATIONS FOR INSIGHTS ====================
+
+    /**
+     * Send insights sync report to all subscribers of bots for this ad account
+     * Respects bot notification settings (allowed hours)
+     */
+    async sendInsightsSyncReportToAdAccount(
+        adAccountId: string,
+        data: {
+            accountName: string;
+            date: string;
+            adsCount: number;
+            totalSpend: number;
+            totalImpressions: number;
+            totalClicks: number;
+            totalReach: number;
+            currency: string;
+        },
+    ) {
+        const bots = await this.prisma.userTelegramBot.findMany({
+            where: {
+                isActive: true,
+                OR: [
+                    { adAccountId },
+                    { adAccountId: null },
+                ],
+            },
+        });
+
+        if (bots.length === 0) return;
+
+        const ctr = data.totalImpressions > 0
+            ? ((data.totalClicks / data.totalImpressions) * 100).toFixed(2)
+            : '0';
+        const cpm = data.totalImpressions > 0
+            ? ((data.totalSpend / data.totalImpressions) * 1000).toFixed(0)
+            : '0';
+
+        const message = `
+📈 <b>Insights Sync Complete</b>
+
+📊 Account: <b>${data.accountName}</b>
+📅 Date: <b>${data.date}</b>
+🎯 Active Ads: <b>${data.adsCount}</b>
+
+💰 <b>Performance:</b>
+• Spend: <b>${data.totalSpend.toLocaleString()} ${data.currency}</b>
+• Impressions: <b>${data.totalImpressions.toLocaleString()}</b>
+• Reach: <b>${data.totalReach.toLocaleString()}</b>
+• Clicks: <b>${data.totalClicks.toLocaleString()}</b>
+
+📊 CTR: <b>${ctr}%</b> | CPM: <b>${cpm}</b>
+`;
+
+        for (const bot of bots) {
+            await this.sendToAllSubscribers(bot.id, message);
+        }
+    }
+
+    /**
+     * Send message to all bots with hour check
+     */
+    async sendMessageWithHour(message: string, hour: number): Promise<void> {
+        const bots = await this.prisma.userTelegramBot.findMany({
+            where: { isActive: true },
+        });
+
+        for (const bot of bots) {
+            await this.sendToAllSubscribers(bot.id, message, hour);
+        }
+    }
+
+    /**
+     * Send test message to verify bot works
+     */
+    async sendTestMessage(botToken: string, chatId: string): Promise<{ success: boolean; message: string }> {
+        const testMessage = `✅ <b>Test Message</b>\n\nBot is working correctly!\n\n🕐 ${new Date().toLocaleString('vi-VN')}`;
+        const success = await this.sendMessageTo(botToken, chatId, testMessage);
+        return {
+            success,
+            message: success ? 'Test message sent!' : 'Failed to send message',
+        };
+    }
+
+    // ==================== BACKWARD COMPATIBLE METHODS ====================
+
+    /**
+     * Send message to all active bots' subscribers (backward compatible)
+     * Respects bot notification settings (allowed hours)
+     */
+    async sendMessage(message: string): Promise<void> {
+        const bots = await this.prisma.userTelegramBot.findMany({
+            where: { isActive: true },
+        });
+
+        for (const bot of bots) {
+            await this.sendToAllSubscribers(bot.id, message);
+        }
+    }
+
+    /**
+     * Process incoming update - finds bot by token and processes
+     */
+    async processUpdate(update: any): Promise<void> {
+        // This is called for generic webhook - try to find the bot
+        const message = update.message;
+        if (!message) return;
+
+        // For now, just log - per-bot webhooks use processWebhookUpdate with botId
+        this.logger.log(`Received update from chat ${message.chat?.id}`);
+    }
+
+    /**
+     * Send daily summary (backward compatible)
+     */
+    async sendDailySummary(data: {
+        date: string;
+        accountsSynced: number;
+        totalSpend: number;
+        totalImpressions: number;
+        totalClicks: number;
+        topAds: Array<{ name: string; spend: number; clicks: number }>;
+        currency: string;
+    }): Promise<void> {
+        const topAdsText = data.topAds
+            .slice(0, 5)
+            .map((ad, i) => `${i + 1}. ${ad.name.substring(0, 30)}... - ${ad.spend.toLocaleString()} ${data.currency}`)
+            .join('\n');
+
+        const message = `
+📊 <b>Daily Summary - ${data.date}</b>
+
+👥 Accounts: <b>${data.accountsSynced}</b>
+💰 Total Spend: <b>${data.totalSpend.toLocaleString()} ${data.currency}</b>
+👁 Impressions: <b>${data.totalImpressions.toLocaleString()}</b>
+👆 Clicks: <b>${data.totalClicks.toLocaleString()}</b>
+
+🏆 <b>Top Performing Ads:</b>
+${topAdsText || 'No data'}
+`;
+
+        await this.sendMessage(message);
+    }
+
+    // ==================== WEBHOOK MANAGEMENT ====================
+
+    /**
+     * Set webhook URL for a bot token (uses env TELEGRAM_BOT_TOKEN for backward compat)
+     */
+    async setWebhook(webhookUrl: string): Promise<{ success: boolean; message: string; info?: any }> {
+        const botToken = process.env.TELEGRAM_BOT_TOKEN;
+        if (!botToken) {
+            return { success: false, message: 'No TELEGRAM_BOT_TOKEN configured' };
+        }
+
+        try {
+            const fullWebhookUrl = webhookUrl.endsWith('/webhook')
+                ? webhookUrl
+                : `${webhookUrl}/api/telegram/webhook`;
+
+            const response = await firstValueFrom(
+                this.httpService.post(`https://api.telegram.org/bot${botToken}/setWebhook`, {
+                    url: fullWebhookUrl,
+                    allowed_updates: ['message', 'callback_query'],
+                }),
+            );
+
+            if (response.data?.ok) {
+                this.logger.log(`Webhook set to: ${fullWebhookUrl}`);
+                return { success: true, message: `Webhook set to ${fullWebhookUrl}` };
+            }
+            return { success: false, message: 'Failed to set webhook' };
+        } catch (error) {
+            return { success: false, message: error.message };
+        }
+    }
+
+    /**
+     * Get webhook info
+     */
+    async getWebhookInfo(): Promise<any> {
+        const botToken = process.env.TELEGRAM_BOT_TOKEN;
+        if (!botToken) {
+            return { error: 'No TELEGRAM_BOT_TOKEN configured' };
+        }
+
+        try {
+            const response = await firstValueFrom(
+                this.httpService.get(`https://api.telegram.org/bot${botToken}/getWebhookInfo`),
+            );
+            return response.data?.result || {};
+        } catch (error) {
+            return { error: error.message };
+        }
+    }
+
+    /**
+     * Delete webhook
+     */
+    async deleteWebhook(): Promise<{ success: boolean; message: string }> {
+        const botToken = process.env.TELEGRAM_BOT_TOKEN;
+        if (!botToken) {
+            return { success: false, message: 'No TELEGRAM_BOT_TOKEN configured' };
+        }
+
+        try {
+            const response = await firstValueFrom(
+                this.httpService.post(`https://api.telegram.org/bot${botToken}/deleteWebhook`),
+            );
+
+            if (response.data?.ok) {
+                return { success: true, message: 'Webhook deleted' };
+            }
+            return { success: false, message: 'Failed to delete webhook' };
+        } catch (error) {
+            return { success: false, message: error.message };
+        }
+    }
+}

@@ -19,6 +19,17 @@ import { AllExceptionFilter } from './filter-exceptions/exception.filter';
 import { AuthModule } from './modules/auth/auth.module';
 import { FacebookAdsModule } from './modules/facebook-ads/facebook-ads.module';
 import { PgBossModule } from './pgboss/pgboss.module';
+import { SharedModule } from './modules/shared/shared.module';
+import { TokensModule } from './modules/tokens/tokens.module';
+import { FbAccountsModule } from './modules/fb-accounts/fb-accounts.module';
+import { JobsModule } from './modules/jobs/jobs.module';
+import { AdAccountsModule } from './modules/ad-accounts/ad-accounts.module';
+import { CampaignsModule } from './modules/campaigns/campaigns.module';
+import { AdSetsModule } from './modules/adsets/adsets.module';
+import { AdsModule } from './modules/ads/ads.module';
+import { InsightsModule } from './modules/insights/insights.module';
+import { TelegramModule } from './modules/telegram/telegram.module';
+import { CronModule } from './modules/cron/cron.module';
 
 @Module({
   imports: [
@@ -28,6 +39,7 @@ import { PgBossModule } from './pgboss/pgboss.module';
       load: [appConfig, databaseConfig],
       validate,
     }),
+    SharedModule,
     PgBossModule,
     LoggerModule.forRoot(LoggerOptions),
     ClsModule.forRoot({
@@ -45,6 +57,16 @@ import { PgBossModule } from './pgboss/pgboss.module';
     ScheduleModule.forRoot(),
     AuthModule,
     FacebookAdsModule,
+    TokensModule,
+    FbAccountsModule,
+    JobsModule,
+    AdAccountsModule,
+    CampaignsModule,
+    AdSetsModule,
+    AdsModule,
+    InsightsModule,
+    TelegramModule,
+    CronModule,
   ],
   controllers: [AppController],
   providers: [

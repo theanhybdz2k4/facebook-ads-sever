@@ -90,29 +90,45 @@ export class CrawlJobService {
     }
 
     /**
-     * Get recent jobs
+     * Get recent jobs for a user (filter by account ownership)
      */
-    async getRecentJobs(limit = 50) {
+    async getRecentJobsForUser(userId: number, limit = 50) {
         return this.prisma.crawlJob.findMany({
+            where: {
+                account: {
+                    fbAccount: { userId },
+                },
+            },
             orderBy: { createdAt: 'desc' },
             take: limit,
             include: {
                 account: {
-                    select: { id: true, name: true },
+                    select: {
+                        id: true,
+                        name: true,
+                    },
                 },
             },
         });
     }
 
     /**
-     * Get job by ID
+     * Get job by ID (with ownership check)
      */
-    async getJob(jobId: number) {
-        return this.prisma.crawlJob.findUnique({
-            where: { id: jobId },
+    async getJobById(jobId: number, userId: number) {
+        return this.prisma.crawlJob.findFirst({
+            where: {
+                id: jobId,
+                account: {
+                    fbAccount: { userId },
+                },
+            },
             include: {
                 account: {
-                    select: { id: true, name: true },
+                    select: {
+                        id: true,
+                        name: true,
+                    },
                 },
             },
         });
@@ -134,7 +150,6 @@ export class CrawlJobService {
 
     /**
      * Cleanup old crawl jobs - keep only last 7 days
-     * This prevents database from growing too large for Supabase free tier
      */
     async cleanupOldJobs(): Promise<number> {
         const cutoffDate = new Date();
@@ -155,3 +170,4 @@ export class CrawlJobService {
         return result.count;
     }
 }
+

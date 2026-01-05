@@ -2,14 +2,14 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PgBossService } from '../../../pgboss/pgboss.service';
 import { PrismaService } from '@n-database/prisma/prisma.service';
-import { TelegramService } from '../services/telegram.service';
-import { EntitySyncJobData } from '../processors/entity.processor';
-import { InsightsSyncJobData } from '../processors/insights.processor';
+import { TelegramService } from '../../telegram/services/telegram.service';
+import { EntitySyncJobData } from '../../facebook-ads/processors/entity.processor';
+import { InsightsSyncJobData } from '../../facebook-ads/processors/insights.processor';
 import {
     INSIGHTS_SYNC_BUFFER_MINUTE,
     ENTITY_SYNC_PAUSE_HOUR,
     ACCOUNT_DELAY_MS,
-} from '../constants/facebook-api.constants';
+} from '../../shared/constants/facebook-api.constants';
 import { getVietnamHour, getVietnamMinute, getVietnamDateString } from '@n-utils';
 
 @Injectable()

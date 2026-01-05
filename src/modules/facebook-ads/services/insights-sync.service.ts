@@ -1,11 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '@n-database/prisma/prisma.service';
-import { FacebookApiService } from './facebook-api.service';
-import { TokenService } from './token.service';
-import { CrawlJobService } from './crawl-job.service';
-import { TelegramService } from './telegram.service';
+import { FacebookApiService } from '../../shared/services/facebook-api.service';
+import { CrawlJobService } from '../../jobs/services/crawl-job.service';
+import { TelegramService } from '../../telegram/services/telegram.service';
 import { CrawlJobType } from '@prisma/client';
 import { getVietnamDateString, getVietnamHour, getVietnamMinute } from '@n-utils';
+import { TokensService } from '../../tokens/services/tokens.service';
 
 @Injectable()
 export class InsightsSyncService {
@@ -14,18 +14,14 @@ export class InsightsSyncService {
     constructor(
         private readonly prisma: PrismaService,
         private readonly facebookApi: FacebookApiService,
-        private readonly tokenService: TokenService,
+        private readonly tokensService: TokensService,
         private readonly crawlJobService: CrawlJobService,
         private readonly telegramService: TelegramService,
     ) { }
 
-    /**
-     * Parse YYYY-MM-DD date string as LOCAL timezone date, not UTC
-     * This ensures dates from Facebook API are stored/queried correctly
-     */
     private parseLocalDate(dateStr: string): Date {
-        const [year, month, day] = dateStr.split('-').map(Number);
-        return new Date(year, month - 1, day); // Local midnight
+        // Parse as UTC midnight for consistent storage across all environments
+        return new Date(`${dateStr}T00:00:00.000Z`);
     }
 
     // ==================== SYNC BY AD ID ====================
@@ -47,7 +43,8 @@ export class InsightsSyncService {
         }
 
         const accountId = ad.accountId;
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId);
+        // Internal use - called from processors/cron without userId context
+        const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -63,7 +60,6 @@ export class InsightsSyncService {
         try {
             await this.crawlJobService.startJob(job.id);
             const now = new Date();
-            let totalInsights = 0;
 
             const insights = await this.facebookApi.getAdInsights(
                 adId,
@@ -74,13 +70,18 @@ export class InsightsSyncService {
                 accountId,
             );
 
+            // Prepare all insights with proper IDs
             for (const insight of insights) {
                 insight.ad_id = ad.id;
                 insight.adset_id = ad.adsetId;
                 insight.campaign_id = ad.campaignId;
-                await this.upsertDailyInsight(insight, accountId, now);
-                totalInsights++;
             }
+
+            // Batch upsert daily insights
+            if (insights.length > 0) {
+                await this.batchUpsertDailyInsights(insights, accountId, now);
+            }
+            let totalInsights = insights.length;
 
             // If breakdown is 'all', sync other breakdowns as well
             if (breakdown === 'all') {
@@ -88,17 +89,21 @@ export class InsightsSyncService {
                 const deviceInsights = await this.facebookApi.getAdInsights(adId, accessToken, dateStart, dateEnd, 'device_platform', accountId);
                 for (const insight of deviceInsights) {
                     insight.ad_id = ad.id;
-                    await this.upsertDeviceInsight(insight, accountId, now);
-                    totalInsights++;
                 }
+                if (deviceInsights.length > 0) {
+                    await this.batchUpsertDeviceInsights(deviceInsights, accountId, now);
+                }
+                totalInsights += deviceInsights.length;
 
                 // Sync hourly insights
                 const hourlyInsights = await this.facebookApi.getAdInsights(adId, accessToken, dateStart, dateEnd, 'hourly_stats_aggregated_by_advertiser_time_zone', accountId);
                 for (const insight of hourlyInsights) {
                     insight.ad_id = ad.id;
-                    await this.upsertHourlyInsight(insight, accountId, now);
-                    totalInsights++;
                 }
+                if (hourlyInsights.length > 0) {
+                    await this.batchUpsertHourlyInsights(hourlyInsights, accountId, now);
+                }
+                totalInsights += hourlyInsights.length;
             }
 
             await this.crawlJobService.completeJob(job.id, totalInsights);
@@ -117,7 +122,8 @@ export class InsightsSyncService {
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId);
+        // Internal use - called from processors/cron without userId context
+        const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -146,8 +152,10 @@ export class InsightsSyncService {
 
         try {
             await this.crawlJobService.startJob(job.id);
-            const now = new Date();
-            let totalInsights = 0;
+            const syncedAt = new Date();
+            
+            // 1. Collect ALL insights first (NO DB writes here)
+            const allInsights: any[] = [];
 
             for (const ad of ads) {
                 try {
@@ -161,34 +169,64 @@ export class InsightsSyncService {
                     );
 
                     for (const insight of insights) {
-                        // Set ad/adset/campaign IDs from our database record
                         insight.ad_id = ad.id;
                         insight.adset_id = ad.adsetId;
                         insight.campaign_id = ad.campaignId;
-                        
-                        // Save to DB (upsert - create or update)
-                        await this.upsertDailyInsight(insight, accountId, now);
-                        totalInsights++;
+                        allInsights.push(insight);
                     }
                 } catch (error) {
                     this.logger.warn(`Failed to get insights for ad ${ad.id}: ${error.message}`);
                 }
             }
 
-            await this.crawlJobService.completeJob(job.id, totalInsights);
+            // 2. BATCH UPSERT all insights
+            this.logger.log(`[DailySync] Batch upserting ${allInsights.length} daily insights...`);
+            if (allInsights.length > 0) {
+                await this.batchUpsertDailyInsights(allInsights, accountId, syncedAt);
+            }
+
+            await this.crawlJobService.completeJob(job.id, allInsights.length);
             
-            // Cleanup old daily insights (keep 30 days)
+            // Cleanup old data
             await this.cleanupOldDailyInsights(accountId);
-            
-            // Cleanup old crawl jobs (keep 7 days)
             await this.crawlJobService.cleanupOldJobs();
             
-            this.logger.log(`Synced ${totalInsights} daily insights for ${ads.length} ads in ${accountId}`);
-            return totalInsights;
+            this.logger.log(`[DailySync] Done! Saved ${allInsights.length} insights for ${ads.length} ads`);
+            return allInsights.length;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
             throw error;
         }
+    }
+
+    /**
+     * Batch upsert daily insights - single transaction for all records
+     */
+    private async batchUpsertDailyInsights(insights: any[], accountId: string, syncedAt: Date) {
+        await this.prisma.$transaction(
+            insights.map((data) => {
+                const date = this.parseLocalDate(data.date_start);
+                const adId = data.ad_id;
+                const metrics = this.mapInsightMetrics(data);
+
+                return this.prisma.adInsightsDaily.upsert({
+                    where: { date_adId: { date, adId } },
+                    create: {
+                        date,
+                        adId,
+                        accountId,
+                        adsetId: data.adset_id,
+                        campaignId: data.campaign_id,
+                        ...metrics,
+                        syncedAt,
+                    },
+                    update: {
+                        ...metrics,
+                        syncedAt,
+                    },
+                });
+            })
+        );
     }
 
     private async sendInsightToTelegram(insight: any, accountName: string, currency: string) {
@@ -219,7 +257,8 @@ export class InsightsSyncService {
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId);
+        // Internal use - called from processors/cron without userId context
+        const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -244,8 +283,8 @@ export class InsightsSyncService {
 
         try {
             await this.crawlJobService.startJob(job.id);
-            const now = new Date();
-            let totalInsights = 0;
+            const syncedAt = new Date();
+            const allInsights: any[] = [];
 
             for (const ad of ads) {
                 try {
@@ -260,24 +299,46 @@ export class InsightsSyncService {
 
                     for (const insight of insights) {
                         insight.ad_id = ad.id;
-                        await this.upsertDeviceInsight(insight, accountId, now);
-                        totalInsights++;
+                        allInsights.push(insight);
                     }
                 } catch (error) {
                     this.logger.warn(`Failed to get device insights for ad ${ad.id}: ${error.message}`);
                 }
             }
 
-            await this.crawlJobService.completeJob(job.id, totalInsights);
-            
-            // Cleanup old breakdown insights (keep 7 days)
+            // Batch upsert
+            this.logger.log(`[DeviceSync] Batch upserting ${allInsights.length} insights...`);
+            if (allInsights.length > 0) {
+                await this.batchUpsertDeviceInsights(allInsights, accountId, syncedAt);
+            }
+
+            await this.crawlJobService.completeJob(job.id, allInsights.length);
             await this.cleanupOldBreakdownInsights(accountId);
             
-            return totalInsights;
+            this.logger.log(`[DeviceSync] Done! Saved ${allInsights.length} insights`);
+            return allInsights.length;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
             throw error;
         }
+    }
+
+    private async batchUpsertDeviceInsights(insights: any[], accountId: string, syncedAt: Date) {
+        await this.prisma.$transaction(
+            insights.map((data) => {
+                const date = this.parseLocalDate(data.date_start);
+                const adId = data.ad_id;
+                const devicePlatform = data.device_platform || 'unknown';
+                return this.prisma.adInsightsDeviceDaily.upsert({
+                    where: { date_adId_devicePlatform: { date, adId, devicePlatform } },
+                    create: {
+                        date, adId, accountId, devicePlatform,
+                        ...this.mapBreakdownMetrics(data), syncedAt,
+                    },
+                    update: { ...this.mapBreakdownMetrics(data), syncedAt },
+                });
+            })
+        );
     }
 
     // ==================== PLACEMENT BREAKDOWN ====================
@@ -287,7 +348,7 @@ export class InsightsSyncService {
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId);
+        const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -311,8 +372,8 @@ export class InsightsSyncService {
 
         try {
             await this.crawlJobService.startJob(job.id);
-            const now = new Date();
-            let totalInsights = 0;
+            const syncedAt = new Date();
+            const allInsights: any[] = [];
 
             for (const ad of ads) {
                 try {
@@ -327,24 +388,48 @@ export class InsightsSyncService {
 
                     for (const insight of insights) {
                         insight.ad_id = ad.id;
-                        await this.upsertPlacementInsight(insight, accountId, now);
-                        totalInsights++;
+                        allInsights.push(insight);
                     }
                 } catch (error) {
                     this.logger.warn(`Failed to get placement insights for ad ${ad.id}: ${error.message}`);
                 }
             }
 
-            await this.crawlJobService.completeJob(job.id, totalInsights);
-            
-            // Cleanup old breakdown insights (keep 7 days)
+            // Batch upsert
+            this.logger.log(`[PlacementSync] Batch upserting ${allInsights.length} insights...`);
+            if (allInsights.length > 0) {
+                await this.batchUpsertPlacementInsights(allInsights, accountId, syncedAt);
+            }
+
+            await this.crawlJobService.completeJob(job.id, allInsights.length);
             await this.cleanupOldBreakdownInsights(accountId);
             
-            return totalInsights;
+            this.logger.log(`[PlacementSync] Done! Saved ${allInsights.length} insights`);
+            return allInsights.length;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
             throw error;
         }
+    }
+
+    private async batchUpsertPlacementInsights(insights: any[], accountId: string, syncedAt: Date) {
+        await this.prisma.$transaction(
+            insights.map((data) => {
+                const date = this.parseLocalDate(data.date_start);
+                const adId = data.ad_id;
+                const publisherPlatform = data.publisher_platform || 'unknown';
+                const platformPosition = data.platform_position || 'unknown';
+                return this.prisma.adInsightsPlacementDaily.upsert({
+                    where: { date_adId_publisherPlatform_platformPosition: { date, adId, publisherPlatform, platformPosition } },
+                    create: {
+                        date, adId, accountId, publisherPlatform, platformPosition,
+                        impressionDevice: data.impression_device,
+                        ...this.mapBreakdownMetrics(data), syncedAt,
+                    },
+                    update: { ...this.mapBreakdownMetrics(data), syncedAt },
+                });
+            })
+        );
     }
 
     // ==================== AGE GENDER BREAKDOWN ====================
@@ -354,7 +439,8 @@ export class InsightsSyncService {
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId);
+        // Internal use - called from processors/cron without userId context
+        const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -378,8 +464,8 @@ export class InsightsSyncService {
 
         try {
             await this.crawlJobService.startJob(job.id);
-            const now = new Date();
-            let totalInsights = 0;
+            const syncedAt = new Date();
+            const allInsights: any[] = [];
 
             for (const ad of ads) {
                 try {
@@ -394,24 +480,47 @@ export class InsightsSyncService {
 
                     for (const insight of insights) {
                         insight.ad_id = ad.id;
-                        await this.upsertAgeGenderInsight(insight, accountId, now);
-                        totalInsights++;
+                        allInsights.push(insight);
                     }
                 } catch (error) {
                     this.logger.warn(`Failed to get age/gender insights for ad ${ad.id}: ${error.message}`);
                 }
             }
 
-            await this.crawlJobService.completeJob(job.id, totalInsights);
-            
-            // Cleanup old breakdown insights (keep 7 days)
+            // Batch upsert
+            this.logger.log(`[AgeGenderSync] Batch upserting ${allInsights.length} insights...`);
+            if (allInsights.length > 0) {
+                await this.batchUpsertAgeGenderInsights(allInsights, accountId, syncedAt);
+            }
+
+            await this.crawlJobService.completeJob(job.id, allInsights.length);
             await this.cleanupOldBreakdownInsights(accountId);
             
-            return totalInsights;
+            this.logger.log(`[AgeGenderSync] Done! Saved ${allInsights.length} insights`);
+            return allInsights.length;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
             throw error;
         }
+    }
+
+    private async batchUpsertAgeGenderInsights(insights: any[], accountId: string, syncedAt: Date) {
+        await this.prisma.$transaction(
+            insights.map((data) => {
+                const date = this.parseLocalDate(data.date_start);
+                const adId = data.ad_id;
+                const age = data.age || 'unknown';
+                const gender = data.gender || 'unknown';
+                return this.prisma.adInsightsAgeGenderDaily.upsert({
+                    where: { date_adId_age_gender: { date, adId, age, gender } },
+                    create: {
+                        date, adId, accountId, age, gender,
+                        ...this.mapBreakdownMetrics(data), syncedAt,
+                    },
+                    update: { ...this.mapBreakdownMetrics(data), syncedAt },
+                });
+            })
+        );
     }
 
     // ==================== REGION BREAKDOWN ====================
@@ -421,7 +530,8 @@ export class InsightsSyncService {
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId);
+        // Internal use - called from processors/cron without userId context
+        const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -445,8 +555,8 @@ export class InsightsSyncService {
 
         try {
             await this.crawlJobService.startJob(job.id);
-            const now = new Date();
-            let totalInsights = 0;
+            const syncedAt = new Date();
+            const allInsights: any[] = [];
 
             for (const ad of ads) {
                 try {
@@ -461,24 +571,47 @@ export class InsightsSyncService {
 
                     for (const insight of insights) {
                         insight.ad_id = ad.id;
-                        await this.upsertRegionInsight(insight, accountId, now);
-                        totalInsights++;
+                        allInsights.push(insight);
                     }
                 } catch (error) {
                     this.logger.warn(`Failed to get region insights for ad ${ad.id}: ${error.message}`);
                 }
             }
 
-            await this.crawlJobService.completeJob(job.id, totalInsights);
-            
-            // Cleanup old breakdown insights (keep 7 days)
+            // Batch upsert
+            this.logger.log(`[RegionSync] Batch upserting ${allInsights.length} insights...`);
+            if (allInsights.length > 0) {
+                await this.batchUpsertRegionInsights(allInsights, accountId, syncedAt);
+            }
+
+            await this.crawlJobService.completeJob(job.id, allInsights.length);
             await this.cleanupOldBreakdownInsights(accountId);
             
-            return totalInsights;
+            this.logger.log(`[RegionSync] Done! Saved ${allInsights.length} insights`);
+            return allInsights.length;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
             throw error;
         }
+    }
+
+    private async batchUpsertRegionInsights(insights: any[], accountId: string, syncedAt: Date) {
+        await this.prisma.$transaction(
+            insights.map((data) => {
+                const date = this.parseLocalDate(data.date_start);
+                const adId = data.ad_id;
+                const country = data.country || 'unknown';
+                const region = data.region || null;
+                return this.prisma.adInsightsRegionDaily.upsert({
+                    where: { date_adId_country_region: { date, adId, country, region } },
+                    create: {
+                        date, adId, accountId, country, region,
+                        ...this.mapBreakdownMetrics(data), syncedAt,
+                    },
+                    update: { ...this.mapBreakdownMetrics(data), syncedAt },
+                });
+            })
+        );
     }
 
     // ==================== HOURLY BREAKDOWN ====================
@@ -488,7 +621,8 @@ export class InsightsSyncService {
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId);
+        // Internal use - called from processors/cron without userId context
+        const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -682,7 +816,9 @@ export class InsightsSyncService {
         summaryMsg += `├── 🎯 CPR: <b>${formatMoney(totalCPR)}</b>\n`;
         summaryMsg += `└── 💬 Cost/New Msg: <b>${formatMoney(totalCostPerNewMsg)}</b>`;
 
-        await this.telegramService.sendMessage(summaryMsg);
+        // Extract hour number from hour string (e.g., "07:00" -> 7)
+        const hourNumber = parseInt(hour.split(':')[0], 10);
+        await this.telegramService.sendMessageWithHour(summaryMsg, hourNumber);
 
         // Sort ads by spend and send each ad as separate message
         const sortedAds = [...insightsData].sort((a, b) => 
@@ -723,15 +859,242 @@ export class InsightsSyncService {
                 adMsg += `\n\n🔗 <a href="${previewLink}">Preview Ad</a>`;
             }
 
-            await this.telegramService.sendMessage(adMsg);
+            // Extract hour number from hour string (e.g., "07:00" -> 7)
+            const hourNumber = parseInt(hour.split(':')[0], 10);
+            await this.telegramService.sendMessageWithHour(adMsg, hourNumber);
         }
 
         // Notify if there are more ads
         if (sortedAds.length > 10) {
-            await this.telegramService.sendMessage(`\n➕ Còn <b>${sortedAds.length - 10}</b> ads khác có chi tiêu trong giờ này.`);
+            const hourNumber = parseInt(hour.split(':')[0], 10);
+            await this.telegramService.sendMessageWithHour(`\n➕ Còn <b>${sortedAds.length - 10}</b> ads khác có chi tiêu trong giờ này.`, hourNumber);
         }
     }
 
+    // ==================== QUICK HOURLY SYNC (OPTIMIZED) ====================
+
+    /**
+     * Quick sync of today's hourly insights only - OPTIMIZED VERSION
+     * - Only syncs today's data
+     * - Uses batch transaction for faster DB writes
+     * - No Telegram sending (decoupled)
+     */
+    async syncHourlyInsightsQuick(accountId: string): Promise<{ count: number; duration: number }> {
+        const startTime = Date.now();
+        const today = getVietnamDateString();
+        
+        // Internal use - called from processors/cron without userId context
+        const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
+        if (!accessToken) {
+            throw new Error(`No valid token for account ${accountId}`);
+        }
+
+        // Get all active ads
+        const ads = await this.prisma.ad.findMany({
+            where: { accountId, effectiveStatus: 'ACTIVE' },
+            select: { id: true, adsetId: true, campaignId: true },
+        });
+
+        if (ads.length === 0) {
+            return { count: 0, duration: Date.now() - startTime };
+        }
+
+        this.logger.log(`[QuickSync] Fetching hourly insights for ${ads.length} active ads...`);
+
+        // 1. Collect ALL insights first (NO DB writes here)
+        const allInsights: any[] = [];
+        const syncedAt = new Date();
+
+        for (const ad of ads) {
+            try {
+                const insights = await this.facebookApi.getAdInsights(
+                    ad.id,
+                    accessToken,
+                    today,
+                    today,
+                    'hourly_stats_aggregated_by_advertiser_time_zone',
+                    accountId,
+                );
+
+                for (const insight of insights) {
+                    insight.ad_id = ad.id;
+                    insight.adset_id = ad.adsetId;
+                    insight.campaign_id = ad.campaignId;
+                    allInsights.push(insight);
+                }
+            } catch (error) {
+                this.logger.warn(`[QuickSync] Failed to get insights for ad ${ad.id}: ${error.message}`);
+            }
+        }
+
+        this.logger.log(`[QuickSync] Collected ${allInsights.length} insights, batch saving to DB...`);
+
+        // 2. BATCH UPSERT in single transaction
+        if (allInsights.length > 0) {
+            await this.batchUpsertHourlyInsights(allInsights, accountId, syncedAt);
+        }
+
+        // 3. Cleanup old data
+        await this.cleanupOldHourlyInsights(accountId);
+
+        const duration = Date.now() - startTime;
+        this.logger.log(`[QuickSync] Done! Saved ${allInsights.length} insights in ${duration}ms`);
+
+        return { count: allInsights.length, duration };
+    }
+
+    /**
+     * Batch upsert hourly insights - single transaction for all records
+     */
+    private async batchUpsertHourlyInsights(insights: any[], accountId: string, syncedAt: Date) {
+        await this.prisma.$transaction(
+            insights.map((data) => {
+                const date = this.parseLocalDate(data.date_start);
+                const adId = data.ad_id;
+                const hourlyStats = data.hourly_stats_aggregated_by_advertiser_time_zone || '00:00:00 - 00:59:59';
+                const metrics = this.mapInsightMetrics(data);
+
+                return this.prisma.adInsightsHourly.upsert({
+                    where: {
+                        date_adId_hourlyStatsAggregatedByAdvertiserTimeZone: {
+                            date,
+                            adId,
+                            hourlyStatsAggregatedByAdvertiserTimeZone: hourlyStats,
+                        },
+                    },
+                    create: {
+                        date,
+                        adId,
+                        adsetId: data.adset_id,
+                        campaignId: data.campaign_id,
+                        accountId,
+                        hourlyStatsAggregatedByAdvertiserTimeZone: hourlyStats,
+                        ...metrics,
+                        syncedAt,
+                    },
+                    update: {
+                        ...metrics,
+                        syncedAt,
+                    },
+                });
+            })
+        );
+    }
+
+    /**
+     * Get latest hour's insights from DB for Telegram report
+     * Does NOT call Facebook API - just reads from DB
+     */
+    async getLatestHourInsights(hour?: number): Promise<{
+        insights: Array<{
+            insight: any;
+            adName: string;
+            campaignName: string;
+            adsetName: string;
+            previewLink: string | null;
+        }>;
+        accountName: string;
+        currency: string;
+        date: string;
+        hour: string;
+    } | null> {
+        const currentHour = hour !== undefined ? hour : getVietnamHour();
+        const todayStr = getVietnamDateString();
+        const today = this.parseLocalDate(todayStr);
+        
+        // Format hour for query
+        const hourString = currentHour.toString().padStart(2, '0');
+        const hourlyTimeZone = `${hourString}:00:00 - ${hourString}:59:59`;
+
+        // Get hourly insights for current hour with spend > 0
+        const rawInsights = await this.prisma.adInsightsHourly.findMany({
+            where: {
+                date: today,
+                hourlyStatsAggregatedByAdvertiserTimeZone: hourlyTimeZone,
+                spend: { gt: 0 },
+            },
+            orderBy: { spend: 'desc' },
+        });
+
+        if (rawInsights.length === 0) {
+            return null;
+        }
+
+        // Get ad details
+        const adIds = [...new Set(rawInsights.map(i => i.adId))];
+        const ads = await this.prisma.ad.findMany({
+            where: { id: { in: adIds } },
+            select: {
+                id: true,
+                name: true,
+                previewShareableLink: true,
+                adset: { select: { name: true } },
+                campaign: { select: { name: true } },
+                account: { select: { name: true, currency: true } },
+            },
+        });
+        const adMap = new Map(ads.map(a => [a.id, a]));
+
+        // Format insights
+        const insights = rawInsights.map(insight => {
+            const ad = adMap.get(insight.adId);
+            return {
+                insight: {
+                    ad_id: insight.adId,
+                    spend: insight.spend,
+                    impressions: insight.impressions,
+                    reach: insight.reach,
+                    clicks: insight.clicks,
+                    actions: insight.actions,
+                    cost_per_action_type: insight.costPerActionType,
+                },
+                adName: ad?.name || insight.adId,
+                campaignName: ad?.campaign?.name || 'N/A',
+                adsetName: ad?.adset?.name || 'N/A',
+                previewLink: ad?.previewShareableLink || null,
+            };
+        });
+
+        // Get account info from first ad
+        const firstAd = ads[0];
+        
+        return {
+            insights,
+            accountName: firstAd?.account?.name || 'Unknown',
+            currency: firstAd?.account?.currency || 'VND',
+            date: todayStr,
+            hour: `${hourString}:00`,
+        };
+    }
+
+    /**
+     * Send Telegram report for latest hour (reads from DB, no FB API call)
+     * @param hour Optional hour to check (0-23). If not provided, uses current hour
+     */
+    async sendLatestHourTelegramReport(hour?: number): Promise<{ success: boolean; message: string }> {
+        const data = await this.getLatestHourInsights(hour);
+        
+        if (!data || data.insights.length === 0) {
+            const hourStr = hour !== undefined ? `${hour.toString().padStart(2, '0')}:00` : `${getVietnamHour()}:00`;
+            return { 
+                success: false, 
+                message: `No insights with spend > 0 for hour ${hourStr}` 
+            };
+        }
+
+        await this.sendConsolidatedHourlyReport(
+            data.insights,
+            data.accountName,
+            data.currency,
+            data.date,
+            data.hour,
+        );
+
+        return { 
+            success: true, 
+            message: `Sent Telegram report for ${data.insights.length} ads at ${data.date} ${data.hour}` 
+        };
+    }
 
     // ==================== SYNC ALL INSIGHTS ====================
 
@@ -958,16 +1321,16 @@ export class InsightsSyncService {
     }
 
     /**
-     * Cleanup old daily insights - keep only last 30 days
+     * Cleanup old daily insights - keep only last 7 days
      * This prevents database from growing too large for Supabase free tier
      */
     private async cleanupOldDailyInsights(accountId: string): Promise<number> {
         const todayStr = getVietnamDateString();
         const today = this.parseLocalDate(todayStr);
         
-        // Calculate cutoff date (30 days ago)
+        // Calculate cutoff date (7 days ago)
         const cutoffDate = new Date(today);
-        cutoffDate.setDate(cutoffDate.getDate() - 30);
+        cutoffDate.setDate(cutoffDate.getDate() - 7);
 
         const result = await this.prisma.adInsightsDaily.deleteMany({
             where: {
@@ -979,7 +1342,7 @@ export class InsightsSyncService {
         });
 
         if (result.count > 0) {
-            this.logger.log(`Cleaned up ${result.count} old daily insights for account ${accountId} (keeping last 30 days)`);
+            this.logger.log(`Cleaned up ${result.count} old daily insights for account ${accountId} (keeping last 7 days)`);
         }
 
         return result.count;

@@ -1,0 +1,156 @@
+import { Injectable, Logger, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { PrismaService } from '@n-database/prisma/prisma.service';
+import { FacebookApiService } from '../../shared/services/facebook-api.service';
+import { TokensService } from '../../tokens/services/tokens.service';
+import { CrawlJobService } from '../../jobs/services/crawl-job.service';
+import { CrawlJobType } from '@prisma/client';
+
+@Injectable()
+export class AdSetsSyncService {
+    private readonly logger = new Logger(AdSetsSyncService.name);
+
+    constructor(
+        private readonly prisma: PrismaService,
+        private readonly facebookApi: FacebookApiService,
+        private readonly tokensService: TokensService,
+        private readonly crawlJobService: CrawlJobService,
+    ) { }
+
+    async syncAdsets(accountId: string, userId: number): Promise<number> {
+        const hasAccess = await this.verifyAccountAccess(userId, accountId);
+        if (!hasAccess) {
+            throw new ForbiddenException('Ad account not found or access denied');
+        }
+
+        const accessToken = await this.tokensService.getTokenForAdAccount(accountId, userId);
+        if (!accessToken) {
+            throw new BadRequestException(`No valid token for account ${accountId}`);
+        }
+
+        const job = await this.crawlJobService.createJob({
+            accountId,
+            jobType: CrawlJobType.ADSETS,
+        });
+
+        try {
+            await this.crawlJobService.startJob(job.id);
+            const adsets = await this.facebookApi.getAdsets(accountId, accessToken);
+            const now = new Date();
+
+            await this.prisma.$transaction(
+                adsets.map((adset) =>
+                    this.prisma.adset.upsert({
+                        where: { id: adset.id },
+                        create: this.mapAdset(adset, accountId, now),
+                        update: this.mapAdset(adset, accountId, now),
+                    })
+                )
+            );
+
+            await this.crawlJobService.completeJob(job.id, adsets.length);
+            this.logger.log(`Synced ${adsets.length} adsets for ${accountId}`);
+            return adsets.length;
+        } catch (error) {
+            await this.crawlJobService.failJob(job.id, error.message);
+            throw error;
+        }
+    }
+
+    async syncAdsetsByCampaign(campaignId: string, userId: number): Promise<number> {
+        const campaign = await this.prisma.campaign.findFirst({
+            where: {
+                id: campaignId,
+                account: { fbAccount: { userId } },
+            },
+        });
+
+        if (!campaign) {
+            throw new ForbiddenException('Campaign not found or access denied');
+        }
+
+        const accountId = campaign.accountId;
+        const accessToken = await this.tokensService.getTokenForAdAccount(accountId, userId);
+        if (!accessToken) {
+            throw new BadRequestException(`No valid token for account ${accountId}`);
+        }
+
+        const job = await this.crawlJobService.createJob({
+            accountId,
+            jobType: CrawlJobType.ADSETS,
+        });
+
+        try {
+            await this.crawlJobService.startJob(job.id);
+            const adsets = await this.facebookApi.getAdsetsByCampaign(campaignId, accessToken, accountId);
+            const now = new Date();
+
+            await this.prisma.$transaction(
+                adsets.map((adset) =>
+                    this.prisma.adset.upsert({
+                        where: { id: adset.id },
+                        create: this.mapAdset(adset, accountId, now),
+                        update: this.mapAdset(adset, accountId, now),
+                    })
+                )
+            );
+
+            await this.crawlJobService.completeJob(job.id, adsets.length);
+            this.logger.log(`Synced ${adsets.length} adsets for campaign ${campaignId}`);
+            return adsets.length;
+        } catch (error) {
+            await this.crawlJobService.failJob(job.id, error.message);
+            throw error;
+        }
+    }
+
+    private mapAdset(data: any, accountId: string, syncedAt: Date) {
+        return {
+            id: data.id,
+            campaignId: data.campaign_id,
+            accountId: accountId,
+            name: data.name,
+            status: data.status || 'UNKNOWN',
+            configuredStatus: data.configured_status,
+            effectiveStatus: data.effective_status,
+            dailyBudget: data.daily_budget,
+            lifetimeBudget: data.lifetime_budget,
+            budgetRemaining: data.budget_remaining,
+            bidAmount: data.bid_amount,
+            bidStrategy: data.bid_strategy,
+            billingEvent: data.billing_event,
+            optimizationGoal: data.optimization_goal,
+            optimizationSubEvent: data.optimization_sub_event,
+            pacingType: data.pacing_type,
+            targeting: data.targeting || {},
+            promotedObject: data.promoted_object,
+            destinationType: data.destination_type,
+            attributionSpec: data.attribution_spec,
+            startTime: data.start_time ? new Date(data.start_time) : null,
+            endTime: data.end_time ? new Date(data.end_time) : null,
+            createdTime: data.created_time ? new Date(data.created_time) : null,
+            updatedTime: data.updated_time ? new Date(data.updated_time) : null,
+            learningStageInfo: data.learning_stage_info,
+            isDynamicCreative: data.is_dynamic_creative,
+            useNewAppClick: data.use_new_app_click,
+            multiOptimizationGoalWeight: data.multi_optimization_goal_weight,
+            rfPredictionId: data.rf_prediction_id,
+            recurringBudgetSemantics: data.recurring_budget_semantics != null ? String(data.recurring_budget_semantics) : null,
+            reviewFeedback: data.review_feedback,
+            sourceAdsetId: data.source_adset_id,
+            issuesInfo: data.issues_info,
+            recommendations: data.recommendations,
+            syncedAt,
+        };
+    }
+
+    private async verifyAccountAccess(userId: number, accountId: string): Promise<boolean> {
+        const account = await this.prisma.adAccount.findFirst({
+            where: {
+                id: accountId,
+                fbAccount: { userId },
+            },
+        });
+        return !!account;
+    }
+}
+

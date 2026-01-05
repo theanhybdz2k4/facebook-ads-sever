@@ -85,6 +85,9 @@ class EnvironmentVariables {
   @IsString()
   REFRESH_TOKEN_EXPIRATION_TIME: string;
 
+  @IsString()
+  JWT_SECRET: string;
+
   @IsBoolean()
   ENABLE_SWAGGER: boolean;
 
@@ -97,6 +100,10 @@ class EnvironmentVariables {
   @IsString()
   @IsOptional()
   DIRECT_URL: string;
+
+  @IsString()
+  @IsOptional()
+  FRONTEND_URL: string;
 }
 
 function validate(config: Record<string, unknown>) {

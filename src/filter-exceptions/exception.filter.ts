@@ -67,10 +67,9 @@ export class AllExceptionFilter implements ExceptionFilter {
   catch(exception: Exceptions, host: ArgumentsHost) {
     const contextType = host.getType();
     const errorDetails = this.getErrorDetails(exception, contextType);
-    console.log(exception);
 
     const errorLog = this.createErrorLog(errorDetails, contextType, host);
-    this.logError(errorLog);
+    this.logError(errorLog, errorDetails.statusCode);
 
     return this.handleException(errorDetails, contextType, host);
   }
@@ -78,8 +77,8 @@ export class AllExceptionFilter implements ExceptionFilter {
   private getErrorDetails(exception: unknown, contextType: string): BaseErrorFormat {
     let errorDetails: BaseErrorFormat;
 
-    if (exception instanceof InternalServerErrorException || exception instanceof BadRequestException) {
-      errorDetails = this.handleInternalOrBadRequestException(exception, contextType);
+    if (exception instanceof InternalServerErrorException) {
+      errorDetails = this.handleInternalServerException(exception, contextType);
     } else if (exception instanceof HttpException || exception instanceof WsException || exception instanceof BaseException || exception instanceof BaseWsException) {
       errorDetails = this.handleHttpOrWsException(exception as Exceptions);
     } else {
@@ -93,7 +92,7 @@ export class AllExceptionFilter implements ExceptionFilter {
     return errorDetails;
   }
 
-  private handleInternalOrBadRequestException(exception: InternalServerErrorException | BadRequestException, contextType: string): BaseErrorFormat {
+  private handleInternalServerException(exception: InternalServerErrorException, contextType: string): BaseErrorFormat {
     if (contextType === 'http') {
       return new BaseException(Errors.DEFAULT, exception.stack).getResponse() as BaseErrorFormat;
     }
@@ -179,9 +178,18 @@ export class AllExceptionFilter implements ExceptionFilter {
     };
   }
 
-  private logError(errorLog: LoggingModel) {
-    this.logger.error(JSON.stringify(errorLog));
-    this.loggerTerminal.error(JSON.stringify(errorLog));
+  private logError(errorLog: LoggingModel, statusCode: number) {
+    // Client errors (4xx) are expected and should be logged as info/warn, not error
+    // Only server errors (5xx) should be logged as error
+    if (statusCode >= 400 && statusCode < 500) {
+      // Client errors - log as info (validation errors, not found, etc.)
+      this.logger.info(JSON.stringify(errorLog));
+      this.loggerTerminal.warn(JSON.stringify(errorLog));
+    } else {
+      // Server errors (5xx) and unexpected errors - log as error
+      this.logger.error(JSON.stringify(errorLog));
+      this.loggerTerminal.error(JSON.stringify(errorLog));
+    }
   }
 
   private handleException(errorDetails: BaseErrorFormat, contextType: string, host: ArgumentsHost) {

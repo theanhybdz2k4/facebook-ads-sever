@@ -61,8 +61,12 @@ model User {
   deletedAt DateTime? @map("deleted_at")
 
   // Relations
-  fbAccounts    FbAccount[]
-  refreshTokens RefreshToken[]
+  fbAccounts           FbAccount[]
+  refreshTokens        RefreshToken[]
+  cronSettings         UserCronSettings[]
+  userAdAccounts       UserAdAccount[]
+  telegramBots         UserTelegramBot[]
+  telegramBotSettings  UserTelegramBotSettings[]
 
   @@map("users")
 }
@@ -139,6 +143,114 @@ model RefreshToken {
 }
 
 // ============================================================================
+// USER CRON SETTINGS - Per-user sync schedule management
+// ============================================================================
+
+model UserCronSettings {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  cronType     String   @map("cron_type") // insight, ads, adset, campaign, ad_account
+  allowedHours Int[]    @map("allowed_hours") // [7, 12, 18]
+  enabled      Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, cronType], name: "userId_cronType")
+  @@index([userId])
+  @@map("user_cron_settings")
+}
+
+// ============================================================================
+// USER AD ACCOUNTS - Explicit permission mapping (user <-> ad account)
+// ============================================================================
+
+model UserAdAccount {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  adAccountId String   @map("ad_account_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  adAccount AdAccount @relation(fields: [adAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, adAccountId])
+  @@index([userId])
+  @@index([adAccountId])
+  @@map("user_ad_accounts")
+}
+
+// ============================================================================
+// USER TELEGRAM BOTS - Custom Telegram bot per user per ad account
+// ============================================================================
+
+model UserTelegramBot {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  adAccountId String?  @map("ad_account_id") // null = default bot for all accounts
+  botToken    String   @map("bot_token")
+  botName     String?  @map("bot_name") // Display name for the bot
+  botUsername String?  @map("bot_username") // @username for t.me link
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user        User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  adAccount   AdAccount?               @relation(fields: [adAccountId], references: [id], onDelete: Cascade)
+  subscribers TelegramBotSubscriber[]
+  settings    UserTelegramBotSettings[]
+
+  @@unique([userId, adAccountId])
+  @@index([userId])
+  @@index([adAccountId])
+  @@map("user_telegram_bots")
+}
+
+// ============================================================================
+// TELEGRAM BOT SUBSCRIBERS - People who subscribe to a user's bot
+// ============================================================================
+
+model TelegramBotSubscriber {
+  id                   Int      @id @default(autoincrement())
+  botId                Int      @map("bot_id")
+  chatId               String   @map("chat_id")
+  name                 String?  @map("name")
+  receiveNotifications Boolean  @default(true) @map("receive_notifications")
+  isActive             Boolean  @default(true) @map("is_active")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  bot UserTelegramBot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@unique([botId, chatId])
+  @@index([botId])
+  @@map("telegram_bot_subscribers")
+}
+
+// ============================================================================
+// USER TELEGRAM BOT SETTINGS - Per-user telegram bot notification schedule
+// ============================================================================
+
+model UserTelegramBotSettings {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  botId        Int      @map("bot_id")
+  allowedHours Int[]    @map("allowed_hours") // [7, 12, 18] - giờ được phép gửi notification
+  enabled      Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bot  UserTelegramBot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, botId], name: "userId_botId")
+  @@index([userId])
+  @@index([botId])
+  @@map("user_telegram_bot_settings")
+}
+
+// ============================================================================
 // AD ACCOUNTS
 // ============================================================================
 
@@ -185,6 +297,8 @@ model AdAccount {
   insightsRegion    AdInsightsRegionDaily[]
   insightsHourly    AdInsightsHourly[]
   crawlJobs         CrawlJob[]
+  userAdAccounts    UserAdAccount[]
+  telegramBots      UserTelegramBot[]
 
   @@index([fbAccountId])
   @@map("ad_accounts")

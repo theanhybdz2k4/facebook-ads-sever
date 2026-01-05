@@ -10,6 +10,7 @@ export default registerAs('app', () => ({
   accessTokenExpTime: process.env.ACCESS_TOKEN_EXPIRATION_TIME,
   refreshTokenSecret: process.env.REFRESH_TOKEN_SECRET,
   refreshTokenExpTime: process.env.REFRESH_TOKEN_EXPIRATION_TIME,
+  jwtSecret: process.env.JWT_SECRET,
   frontendUrl: process.env.FRONTEND_URL,
 }));
 

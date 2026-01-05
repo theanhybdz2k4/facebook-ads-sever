@@ -1,19 +1,20 @@
 import { Module } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
+import { ConfigModule } from '@nestjs/config';
+import { SharedModule } from '../shared/shared.module';
+import { JobsModule } from '../jobs/jobs.module';
+import { CronModule } from '../cron/cron.module';
+import { InsightsModule } from '../insights/insights.module';
+import { TelegramModule } from '../telegram/telegram.module';
 import { FacebookAdsController } from './facebook-ads.controller';
-import { TelegramController } from './telegram.controller';
-import { FacebookApiService } from './services/facebook-api.service';
-import { RateLimiterService } from './services/rate-limiter.service';
-import { TokenService } from './services/token.service';
-import { FbAccountService } from './services/fb-account.service';
+import { InternalN8nController } from './internal-n8n.controller';
 import { EntitySyncService } from './services/entity-sync.service';
 import { InsightsSyncService } from './services/insights-sync.service';
-import { CrawlJobService } from './services/crawl-job.service';
-import { TelegramService } from './services/telegram.service';
+import { TokensModule } from '../tokens/tokens.module';
 import { EntityProcessor } from './processors/entity.processor';
 import { InsightsProcessor } from './processors/insights.processor';
-import { CrawlSchedulerService } from './jobs/crawl-scheduler.service';
 import { PrismaModule } from '@n-database/prisma/prisma.module';
+import { InternalApiKeyGuard } from '../auth/guards';
 
 // Queue names
 export const ENTITY_QUEUE = 'fb-entity-sync';
@@ -21,33 +22,31 @@ export const INSIGHTS_QUEUE = 'fb-insights-sync';
 
 @Module({
   imports: [
+    SharedModule,
+    JobsModule,
+    CronModule,
+    InsightsModule,
+    TokensModule,
+    TelegramModule,
     PrismaModule,
+    ConfigModule,
     HttpModule.register({
       timeout: 60000,
       maxRedirects: 5,
     }),
   ],
-  controllers: [FacebookAdsController, TelegramController],
+  controllers: [FacebookAdsController, InternalN8nController],
   providers: [
-    FacebookApiService,
-    RateLimiterService,
-    TokenService,
-    FbAccountService,
     EntitySyncService,
     InsightsSyncService,
-    CrawlJobService,
-    TelegramService,
     EntityProcessor,
     InsightsProcessor,
-    CrawlSchedulerService,
+    InternalApiKeyGuard,
   ],
   exports: [
-    FacebookApiService,
-    TokenService,
-    FbAccountService,
     EntitySyncService,
     InsightsSyncService,
-    TelegramService,
   ],
 })
 export class FacebookAdsModule { }
+

@@ -1,10 +1,10 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '@n-database/prisma/prisma.service';
-import { FacebookApiService } from './facebook-api.service';
+import { FacebookApiService } from '../../shared/services/facebook-api.service';
 
 @Injectable()
-export class FbAccountService {
-    private readonly logger = new Logger(FbAccountService.name);
+export class FbAccountsService {
+    private readonly logger = new Logger(FbAccountsService.name);
 
     constructor(
         private readonly prisma: PrismaService,
@@ -47,7 +47,7 @@ export class FbAccountService {
             },
         });
 
-        return this.getFbAccountWithDetails(fbAccount.id);
+        return this.getFbAccountWithDetails(fbAccount.id, userId);
     }
 
     /**
@@ -73,11 +73,11 @@ export class FbAccountService {
     }
 
     /**
-     * Lấy chi tiết 1 FB account
+     * Lấy chi tiết 1 FB account (với ownership check)
      */
-    async getFbAccountWithDetails(fbAccountId: number) {
-        return this.prisma.fbAccount.findUnique({
-            where: { id: fbAccountId },
+    async getFbAccountWithDetails(fbAccountId: number, userId: number) {
+        const fbAccount = await this.prisma.fbAccount.findFirst({
+            where: { id: fbAccountId, userId },
             include: {
                 adAccounts: {
                     select: { id: true, name: true, accountStatus: true },
@@ -94,6 +94,12 @@ export class FbAccountService {
                 },
             },
         });
+
+        if (!fbAccount) {
+            throw new ForbiddenException('FB account not found or access denied');
+        }
+
+        return fbAccount;
     }
 
     /**
@@ -101,10 +107,20 @@ export class FbAccountService {
      */
     async addToken(
         fbAccountId: number,
+        userId: number,
         accessToken: string,
         name?: string,
         isDefault?: boolean,
     ) {
+        // Verify ownership
+        const fbAccount = await this.prisma.fbAccount.findFirst({
+            where: { id: fbAccountId, userId },
+        });
+
+        if (!fbAccount) {
+            throw new ForbiddenException('FB account not found or access denied');
+        }
+
         // Validate token
         try {
             await this.facebookApi.get<any>('/me', accessToken, { fields: 'id' });
@@ -157,14 +173,15 @@ export class FbAccountService {
     /**
      * Sync ad accounts từ FB
      */
-    async syncAdAccounts(fbAccountId: number) {
-        const fbAccount = await this.prisma.fbAccount.findUnique({
-            where: { id: fbAccountId },
+    async syncAdAccounts(fbAccountId: number, userId: number) {
+        // Verify ownership
+        const fbAccount = await this.prisma.fbAccount.findFirst({
+            where: { id: fbAccountId, userId },
             include: { tokens: { where: { isDefault: true, isValid: true } } },
         });
 
         if (!fbAccount) {
-            throw new NotFoundException('FB account not found');
+            throw new ForbiddenException('FB account not found or access denied');
         }
 
         const token = fbAccount.tokens[0];
@@ -175,42 +192,33 @@ export class FbAccountService {
         // Lấy danh sách ad accounts từ FB
         const accounts = await this.facebookApi.getAdAccounts(token.accessToken);
         const now = new Date();
-        let synced = 0;
 
-        for (const account of accounts) {
-            await this.prisma.adAccount.upsert({
-                where: { id: account.id },
-                create: {
-                    id: account.id,
-                    fbAccountId,
-                    name: account.name,
-                    accountStatus: account.account_status || 1,
-                    currency: account.currency || 'USD',
-                    syncedAt: now,
-                },
-                update: {
-                    fbAccountId,
-                    name: account.name,
-                    accountStatus: account.account_status || 1,
-                    currency: account.currency || 'USD',
-                    syncedAt: now,
-                },
-            });
-            synced++;
-        }
+        // Batch upsert all accounts in a single transaction
+        await this.prisma.$transaction(
+            accounts.map(account =>
+                this.prisma.adAccount.upsert({
+                    where: { id: account.id },
+                    create: {
+                        id: account.id,
+                        fbAccountId,
+                        name: account.name,
+                        accountStatus: account.account_status || 1,
+                        currency: account.currency || 'USD',
+                        syncedAt: now,
+                    },
+                    update: {
+                        fbAccountId,
+                        name: account.name,
+                        accountStatus: account.account_status || 1,
+                        currency: account.currency || 'USD',
+                        syncedAt: now,
+                    },
+                })
+            )
+        );
 
-        this.logger.log(`Synced ${synced} ad accounts for FbAccount #${fbAccountId}`);
-        return { synced, accounts: accounts.map(a => ({ id: a.id, name: a.name })) };
-    }
-
-    /**
-     * Lấy token mặc định của FB account
-     */
-    async getDefaultToken(fbAccountId: number): Promise<string | null> {
-        const token = await this.prisma.fbApiToken.findFirst({
-            where: { fbAccountId, isDefault: true, isValid: true },
-        });
-        return token?.accessToken || null;
+        this.logger.log(`Synced ${accounts.length} ad accounts for FbAccount #${fbAccountId}`);
+        return { synced: accounts.length, accounts: accounts.map(a => ({ id: a.id, name: a.name })) };
     }
 
     /**
@@ -226,3 +234,4 @@ export class FbAccountService {
         return !!adAccount;
     }
 }
+
