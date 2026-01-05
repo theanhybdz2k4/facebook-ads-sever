@@ -160,12 +160,7 @@ export class TelegramService {
             // Handle commands
             if (text.startsWith('/start')) {
                 this.logger.log(`[Webhook] Handling /start command for bot ${botId}, chatId: ${chatId}`);
-                try {
-                    await this.handleStartCommand(bot.botToken, botId, chatId, firstName);
-                } catch (error) {
-                    this.logger.error(`[Webhook] Error handling /start command: ${error.message}`, error.stack);
-                    await this.sendMessageTo(bot.botToken, chatId, '❌ Có lỗi xảy ra khi xử lý lệnh /start. Vui lòng thử lại sau.');
-                }
+                await this.handleStartCommand(bot.botToken, botId, chatId, firstName);
             } else if (text.startsWith('/subscribe')) {
                 this.logger.log(`Handling /subscribe command for bot ${botId}, chatId: ${chatId}`);
                 await this.handleSubscribeCommand(bot.botToken, botId, chatId);
@@ -216,20 +211,29 @@ export class TelegramService {
 
     // ==================== COMMAND HANDLERS ====================
 
-    private async handleStartCommand(botToken: string, botId: number, chatId: string, firstName: string) {
+    private async handleStartCommand(botToken: string, botId: number, chatId: string, firstName: string): Promise<void> {
         try {
             this.logger.log(`handleStartCommand called for bot ${botId}, chatId: ${chatId}, firstName: ${firstName}`);
             
-            const subscriber = await this.prisma.telegramBotSubscriber.findUnique({
-                where: { botId_chatId: { botId, chatId } },
-            });
-            const isSubscribed = subscriber?.receiveNotifications ?? false;
+            // Safe get subscriber - don't fail if query fails
+            let isSubscribed = false;
+            try {
+                const subscriber = await this.prisma.telegramBotSubscriber.findUnique({
+                    where: { botId_chatId: { botId, chatId } },
+                });
+                isSubscribed = subscriber?.receiveNotifications ?? false;
+            } catch (dbError) {
+                this.logger.warn(`Failed to query subscriber, defaulting to false: ${dbError.message}`);
+            }
+
             const statusText = isSubscribed
                 ? '✅ Bạn đang nhận thông báo tự động'
                 : '⚠️ Bạn chưa bật nhận thông báo tự động. Dùng /subscribe để bật';
 
-            const message = `
-👋 <b>Xin chào ${firstName}!</b>
+            // Escape HTML in firstName to prevent issues
+            const safeFirstName = (firstName || 'User').replace(/[<>&"']/g, '');
+
+            const message = `👋 <b>Xin chào ${safeFirstName}!</b>
 
 ${statusText}
 
@@ -241,18 +245,25 @@ ${statusText}
 /today - Báo cáo hôm nay (từng bài)
 /week - Báo cáo 7 ngày (từng bài)
 /budget - Xem ngân sách
-/help - Hướng dẫn sử dụng
-            `;
+/help - Hướng dẫn sử dụng`;
 
             const success = await this.sendMessageTo(botToken, chatId, message);
             if (!success) {
                 this.logger.error(`Failed to send start command response to chatId: ${chatId}`);
+                // Try to send a simple fallback message
+                await this.sendMessageTo(botToken, chatId, '👋 Xin chào! Dùng /help để xem các lệnh có sẵn.');
             } else {
                 this.logger.log(`Successfully sent start command response to chatId: ${chatId}`);
             }
-        } catch (error) {
-            this.logger.error(`Error in handleStartCommand: ${error.message}`, error.stack);
-            throw error;
+        } catch (error: any) {
+            this.logger.error(`Error in handleStartCommand: ${error?.message || 'Unknown error'}`, error?.stack);
+            // Don't throw - let the outer catch handle it
+            // Try to send error message, but don't fail if this also fails
+            try {
+                await this.sendMessageTo(botToken, chatId, '❌ Có lỗi xảy ra khi xử lý lệnh /start. Vui lòng thử lại sau.');
+            } catch (sendError) {
+                this.logger.error(`Failed to send error message: ${sendError}`);
+            }
         }
     }
 
