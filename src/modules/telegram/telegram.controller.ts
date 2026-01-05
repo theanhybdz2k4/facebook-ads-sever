@@ -484,5 +484,91 @@ Nếu bạn nhận được tin nhắn này, bot đang hoạt động đúng!`;
             message: 'Đã thêm subscriber thành công',
         };
     }
+
+    @Get('bots/:botId/webhook-info')
+    @UseGuards(JwtAuthGuard)
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Get webhook info for a bot' })
+    async getBotWebhookInfo(
+        @CurrentUser() user: any,
+        @Param('botId') botId: string,
+    ) {
+        const bot = await this.prisma.userTelegramBot.findFirst({
+            where: { id: parseInt(botId, 10), userId: user.id },
+        });
+
+        if (!bot) {
+            throw new BadRequestException('Bot not found');
+        }
+
+        // Get webhook info from Telegram
+        const webhookInfo = await this.telegramService.getWebhookInfoForBot(bot.botToken);
+        
+        return {
+            botId: bot.id,
+            botName: bot.botName,
+            botUsername: bot.botUsername,
+            isActive: bot.isActive,
+            webhookInfo,
+            expectedWebhookUrl: `${process.env.BASE_URL || process.env.RAILWAY_PUBLIC_DOMAIN}/api/v1/telegram/webhook/${bot.id}`,
+        };
+    }
+
+    @Post('bots/:botId/re-register-webhook')
+    @UseGuards(JwtAuthGuard)
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Re-register webhook for a bot' })
+    async reRegisterWebhook(
+        @CurrentUser() user: any,
+        @Param('botId') botId: string,
+    ) {
+        const bot = await this.prisma.userTelegramBot.findFirst({
+            where: { id: parseInt(botId, 10), userId: user.id },
+        });
+
+        if (!bot) {
+            throw new BadRequestException('Bot not found');
+        }
+
+        // Re-register webhook
+        const result = await this.telegramService.setWebhookForBot(bot.botToken, bot.id);
+        
+        // Get webhook info after registration
+        const webhookInfo = await this.telegramService.getWebhookInfoForBot(bot.botToken);
+
+        return {
+            success: result.success,
+            error: result.error,
+            webhookInfo,
+            message: result.success ? 'Webhook đã được đăng ký lại thành công' : 'Đăng ký webhook thất bại',
+        };
+    }
+
+    @Post('re-register-all-webhooks')
+    @UseGuards(JwtAuthGuard)
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Re-register webhooks for all user bots' })
+    async reRegisterAllWebhooks(@CurrentUser() user: any) {
+        const bots = await this.prisma.userTelegramBot.findMany({
+            where: { userId: user.id, isActive: true },
+        });
+
+        const results = [];
+        for (const bot of bots) {
+            const result = await this.telegramService.setWebhookForBot(bot.botToken, bot.id);
+            results.push({
+                botId: bot.id,
+                botName: bot.botName,
+                success: result.success,
+                error: result.error,
+            });
+        }
+
+        return {
+            success: results.every(r => r.success),
+            totalBots: bots.length,
+            results,
+        };
+    }
 }
 

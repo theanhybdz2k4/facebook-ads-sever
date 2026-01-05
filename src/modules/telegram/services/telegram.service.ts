@@ -797,6 +797,20 @@ ${topAdsText || 'No data'}
     }
 
     /**
+     * Get webhook info for a specific bot token
+     */
+    async getWebhookInfoForBot(botToken: string): Promise<any> {
+        try {
+            const response = await firstValueFrom(
+                this.httpService.get(`https://api.telegram.org/bot${botToken}/getWebhookInfo`),
+            );
+            return response.data?.result || {};
+        } catch (error) {
+            return { error: error.message };
+        }
+    }
+
+    /**
      * Get webhook info
      */
     async getWebhookInfo(): Promise<any> {
