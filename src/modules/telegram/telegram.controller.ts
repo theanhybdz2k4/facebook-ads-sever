@@ -316,14 +316,16 @@ export class TelegramController {
             throw new BadRequestException('Bot not found');
         }
 
+        const botIdNum = parseInt(botId, 10);
+        
         const allSubscribers = await this.prisma.telegramBotSubscriber.findMany({
-            where: { botId: parseInt(botId, 10) },
+            where: { botId: botIdNum },
             orderBy: { createdAt: 'desc' },
         });
 
         const activeSubscribers = await this.prisma.telegramBotSubscriber.findMany({
             where: { 
-                botId: parseInt(botId, 10),
+                botId: botIdNum,
                 isActive: true,
                 receiveNotifications: true,
             },
@@ -408,12 +410,12 @@ Nếu bạn nhận được tin nhắn này, bot đang hoạt động đúng!`;
                     where: {
                         botId_chatId: {
                             botId: parseInt(botId, 10),
-                            chatId: oldSub.chatId,
+                            chatId: String(oldSub.chatId),
                         },
                     },
                     create: {
                         botId: parseInt(botId, 10),
-                        chatId: oldSub.chatId,
+                        chatId: String(oldSub.chatId),
                         name: oldSub.name,
                         isActive: oldSub.isActive,
                         receiveNotifications: oldSub.receiveNotifications,
@@ -459,12 +461,12 @@ Nếu bạn nhận được tin nhắn này, bot đang hoạt động đúng!`;
             where: {
                 botId_chatId: {
                     botId: parseInt(botId, 10),
-                    chatId: dto.chatId,
+                    chatId: String(dto.chatId),
                 },
             },
             create: {
                 botId: parseInt(botId, 10),
-                chatId: dto.chatId,
+                chatId: String(dto.chatId),
                 name: dto.name,
                 isActive: true,
                 receiveNotifications: true,

@@ -217,7 +217,7 @@ export class TelegramService {
 
     async getSubscribers(botId: number) {
         const subscribers = await this.prisma.telegramBotSubscriber.findMany({
-            where: { botId, isActive: true, receiveNotifications: true },
+            where: { botId: Number(botId), isActive: true, receiveNotifications: true },
         });
         this.logger.log(`Found ${subscribers.length} active subscribers with notifications enabled for bot ${botId}`);
         return subscribers;
@@ -353,10 +353,24 @@ Dùng /unsubscribe để tắt thông báo.
         try {
             this.logger.log(`handleUnsubscribeCommand called for bot ${botId}, chatId: ${chatId}`);
             
-            await this.prisma.telegramBotSubscriber.update({
-                where: { botId_chatId: { botId, chatId } },
+            const updated = await this.prisma.telegramBotSubscriber.update({
+                where: { botId_chatId: { botId: Number(botId), chatId: String(chatId) } },
                 data: { receiveNotifications: false },
             });
+            
+            this.logger.log(`[Unsubscribe] Updated subscriber for botId ${botId}, chatId ${chatId}:`, {
+                id: updated.id,
+                receiveNotifications: updated.receiveNotifications,
+                isActive: updated.isActive,
+            });
+            
+            // Verify the update
+            const verify = await this.prisma.telegramBotSubscriber.findUnique({
+                where: { botId_chatId: { botId: Number(botId), chatId: String(chatId) } },
+                select: { receiveNotifications: true, isActive: true },
+            });
+            
+            this.logger.log(`[Unsubscribe] Verification query result:`, verify);
             
             const success = await this.sendMessageTo(botToken, chatId, `
 🔕 <b>Đã tắt nhận thông báo tự động!</b>
@@ -370,9 +384,13 @@ Dùng /subscribe để bật lại thông báo.
             if (!success) {
                 this.logger.error(`Failed to send unsubscribe command response to chatId: ${chatId}`);
             }
-        } catch (error) {
-            this.logger.error(`Error in handleUnsubscribeCommand: ${error.message}`, error.stack);
-            await this.sendMessageTo(botToken, chatId, '❌ Có lỗi xảy ra. Vui lòng thử lại sau.');
+        } catch (error: any) {
+            this.logger.error(`Error in handleUnsubscribeCommand: ${error?.message || 'Unknown error'}`, error?.stack);
+            try {
+                await this.sendMessageTo(botToken, chatId, '❌ Có lỗi xảy ra. Vui lòng thử lại sau.');
+            } catch (sendError) {
+                this.logger.error(`Failed to send error message: ${sendError}`);
+            }
         }
     }
 
