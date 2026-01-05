@@ -198,6 +198,46 @@ export class InsightsSyncService {
 
             await this.crawlJobService.completeJob(job.id, allInsights.length);
             
+            // Send Telegram notification if insights were synced
+            if (allInsights.length > 0) {
+                try {
+                    // Get account info
+                    const account = await this.prisma.adAccount.findUnique({
+                        where: { id: accountId },
+                        select: { name: true, currency: true },
+                    });
+
+                    // Calculate totals
+                    const totals = allInsights.reduce((acc, insight) => {
+                        acc.totalSpend += Number(insight.spend || 0);
+                        acc.totalImpressions += Number(insight.impressions || 0);
+                        acc.totalClicks += Number(insight.clicks || 0);
+                        acc.totalReach += Number(insight.reach || 0);
+                        return acc;
+                    }, {
+                        totalSpend: 0,
+                        totalImpressions: 0,
+                        totalClicks: 0,
+                        totalReach: 0,
+                    });
+
+                    // Send report to Telegram
+                    await this.telegramService.sendInsightsSyncReportToAdAccount(accountId, {
+                        accountName: account?.name || accountId,
+                        date: dateStart,
+                        adsCount: ads.length,
+                        totalSpend: totals.totalSpend,
+                        totalImpressions: totals.totalImpressions,
+                        totalClicks: totals.totalClicks,
+                        totalReach: totals.totalReach,
+                        currency: account?.currency || 'VND',
+                    });
+                } catch (error) {
+                    this.logger.error(`Failed to send Telegram notification: ${error.message}`);
+                    // Don't fail the sync if notification fails
+                }
+            }
+            
             // Cleanup old data
             await this.cleanupOldDailyInsights(accountId);
             await this.crawlJobService.cleanupOldJobs();

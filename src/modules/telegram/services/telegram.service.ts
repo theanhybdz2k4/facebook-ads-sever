@@ -149,15 +149,17 @@ export class TelegramService {
     private async ensureSubscriber(botId: number, chatId: string, name?: string) {
         await this.prisma.telegramBotSubscriber.upsert({
             where: { botId_chatId: { botId, chatId } },
-            create: { botId, chatId, name, isActive: true },
+            create: { botId, chatId, name, isActive: true, receiveNotifications: true },
             update: { isActive: true, name },
         });
     }
 
     async getSubscribers(botId: number) {
-        return this.prisma.telegramBotSubscriber.findMany({
+        const subscribers = await this.prisma.telegramBotSubscriber.findMany({
             where: { botId, isActive: true, receiveNotifications: true },
         });
+        this.logger.log(`Found ${subscribers.length} active subscribers with notifications enabled for bot ${botId}`);
+        return subscribers;
     }
 
     // ==================== COMMAND HANDLERS ====================
@@ -189,9 +191,12 @@ ${statusText}
     }
 
     private async handleSubscribeCommand(botToken: string, botId: number, chatId: string) {
+        // Ensure subscriber exists first
+        await this.ensureSubscriber(botId, chatId);
+        
         await this.prisma.telegramBotSubscriber.update({
             where: { botId_chatId: { botId, chatId } },
-            data: { receiveNotifications: true },
+            data: { receiveNotifications: true, isActive: true },
         });
         await this.sendMessageTo(botToken, chatId, `
 🔔 <b>Đã bật nhận thông báo tự động!</b>
@@ -344,11 +349,14 @@ Dùng /subscribe để bật lại thông báo.
             where: { id: botId },
         });
 
-        if (!bot || !bot.isActive) return 0;
+        if (!bot || !bot.isActive) {
+            this.logger.warn(`Bot ${botId} not found or not active`);
+            return 0;
+        }
 
         // Check if bot has notification settings
-        const setting = await this.prisma.userTelegramBotSettings.findUnique({
-            where: { userId_botId: { userId: bot.userId, botId } },
+        const setting = await this.prisma.userTelegramBotSettings.findFirst({
+            where: { userId: bot.userId, botId },
         });
 
         if (setting) {
@@ -366,13 +374,24 @@ Dùng /subscribe để bật lại thông báo.
         }
 
         const subscribers = await this.getSubscribers(botId);
+        this.logger.log(`Sending message to ${subscribers.length} subscribers for bot ${botId}`);
+        
+        if (subscribers.length === 0) {
+            this.logger.warn(`No active subscribers with notifications enabled for bot ${botId}`);
+        }
+
         let sent = 0;
 
         for (const sub of subscribers) {
             const success = await this.sendMessageTo(bot.botToken, sub.chatId, message);
-            if (success) sent++;
+            if (success) {
+                sent++;
+            } else {
+                this.logger.error(`Failed to send message to subscriber ${sub.chatId} (bot ${botId})`);
+            }
         }
 
+        this.logger.log(`Sent ${sent}/${subscribers.length} messages for bot ${botId}`);
         return sent;
     }
 

@@ -140,18 +140,23 @@ export class TelegramController {
     }
 
     @Post('webhook')
-    @ApiOperation({ summary: 'Legacy webhook endpoint (deprecated - use /webhook/:botId)' })
+    @ApiOperation({ summary: 'Legacy webhook endpoint - auto-detect bot from token or find first active bot' })
     async handleLegacyWebhook(@Body() update: any) {
-        // Legacy endpoint - try to find bot from update
-        const botId = update?.message?.chat?.id;
-        if (botId) {
-            // Try to find bot by chat ID (not ideal, but for backward compatibility)
+        try {
+            // Try to find bot from webhook token in headers or find first active bot
+            // For now, find first active bot as fallback
             const bot = await this.prisma.userTelegramBot.findFirst({
                 where: { isActive: true },
+                orderBy: { createdAt: 'desc' },
             });
+            
             if (bot) {
                 await this.telegramService.processWebhookUpdate(bot.id, update);
+            } else {
+                console.warn('No active bot found for legacy webhook');
             }
+        } catch (error) {
+            console.error('Error processing legacy webhook:', error);
         }
         return { ok: true };
     }
@@ -199,8 +204,8 @@ export class TelegramController {
             throw new BadRequestException('Bot not found');
         }
 
-        const setting = await this.prisma.userTelegramBotSettings.findUnique({
-            where: { userId_botId: { userId: user.id, botId: parseInt(botId, 10) } },
+        const setting = await this.prisma.userTelegramBotSettings.findFirst({
+            where: { userId: user.id, botId: parseInt(botId, 10) },
         });
 
         return { setting: setting || null };
@@ -231,19 +236,27 @@ export class TelegramController {
         // Remove duplicates and sort
         const uniqueHours = [...new Set(dto.allowedHours)].sort((a, b) => a - b);
 
-        const setting = await this.prisma.userTelegramBotSettings.upsert({
-            where: { userId_botId: { userId: user.id, botId: parseInt(botId, 10) } },
-            create: {
-                userId: user.id,
-                botId: parseInt(botId, 10),
-                allowedHours: uniqueHours,
-                enabled: dto.enabled ?? true,
-            },
-            update: {
-                allowedHours: uniqueHours,
-                enabled: dto.enabled ?? true,
-            },
+        // Use findFirst + create/update instead of upsert to avoid Prisma client issues
+        const existing = await this.prisma.userTelegramBotSettings.findFirst({
+            where: { userId: user.id, botId: parseInt(botId, 10) },
         });
+
+        const setting = existing
+            ? await this.prisma.userTelegramBotSettings.update({
+                  where: { id: existing.id },
+                  data: {
+                      allowedHours: uniqueHours,
+                      enabled: dto.enabled ?? true,
+                  },
+              })
+            : await this.prisma.userTelegramBotSettings.create({
+                  data: {
+                      userId: user.id,
+                      botId: parseInt(botId, 10),
+                      allowedHours: uniqueHours,
+                      enabled: dto.enabled ?? true,
+                  },
+              });
 
         return { success: true, setting };
     }
@@ -269,6 +282,191 @@ export class TelegramController {
         });
 
         return { success: true, message: 'Settings deleted' };
+    }
+
+    // ==================== DEBUG & TESTING ====================
+
+    @Get('bots/:botId/subscribers')
+    @UseGuards(JwtAuthGuard)
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Get all subscribers for a bot (debug)' })
+    async getBotSubscribers(
+        @CurrentUser() user: any,
+        @Param('botId') botId: string,
+    ) {
+        const bot = await this.prisma.userTelegramBot.findFirst({
+            where: { id: parseInt(botId, 10), userId: user.id },
+        });
+
+        if (!bot) {
+            throw new BadRequestException('Bot not found');
+        }
+
+        const allSubscribers = await this.prisma.telegramBotSubscriber.findMany({
+            where: { botId: parseInt(botId, 10) },
+            orderBy: { createdAt: 'desc' },
+        });
+
+        const activeSubscribers = await this.prisma.telegramBotSubscriber.findMany({
+            where: { 
+                botId: parseInt(botId, 10),
+                isActive: true,
+                receiveNotifications: true,
+            },
+        });
+
+        return {
+            botId: parseInt(botId, 10),
+            botName: bot.botName,
+            totalSubscribers: allSubscribers.length,
+            activeSubscribers: activeSubscribers.length,
+            subscribers: allSubscribers,
+            activeSubscribersList: activeSubscribers,
+        };
+    }
+
+    @Post('bots/:botId/test')
+    @UseGuards(JwtAuthGuard)
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Send test message to all subscribers of a bot' })
+    async sendTestMessageToBot(
+        @CurrentUser() user: any,
+        @Param('botId') botId: string,
+    ) {
+        const bot = await this.prisma.userTelegramBot.findFirst({
+            where: { id: parseInt(botId, 10), userId: user.id },
+        });
+
+        if (!bot) {
+            throw new BadRequestException('Bot not found');
+        }
+
+        const testMessage = `✅ <b>Test Message</b>
+
+Đây là tin nhắn test từ hệ thống!
+
+🕐 ${new Date().toLocaleString('vi-VN')}
+
+Nếu bạn nhận được tin nhắn này, bot đang hoạt động đúng!`;
+
+        const sentCount = await this.telegramService.sendToAllSubscribers(
+            parseInt(botId, 10),
+            testMessage,
+        );
+
+        return {
+            success: true,
+            subscriberCount: sentCount,
+            message: `Đã gửi test message đến ${sentCount} người`,
+        };
+    }
+
+    @Post('bots/:botId/migrate-subscribers')
+    @UseGuards(JwtAuthGuard)
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Migrate subscribers from telegram_subscribers to telegram_bot_subscribers' })
+    async migrateSubscribers(
+        @CurrentUser() user: any,
+        @Param('botId') botId: string,
+    ) {
+        const bot = await this.prisma.userTelegramBot.findFirst({
+            where: { id: parseInt(botId, 10), userId: user.id },
+        });
+
+        if (!bot) {
+            throw new BadRequestException('Bot not found');
+        }
+
+        // Get all subscribers from old table
+        const oldSubscribers = await this.prisma.telegramSubscriber.findMany({
+            where: {
+                isActive: true,
+                receiveNotifications: true,
+            },
+        });
+
+        let migrated = 0;
+        let skipped = 0;
+
+        for (const oldSub of oldSubscribers) {
+            try {
+                await this.prisma.telegramBotSubscriber.upsert({
+                    where: {
+                        botId_chatId: {
+                            botId: parseInt(botId, 10),
+                            chatId: oldSub.chatId,
+                        },
+                    },
+                    create: {
+                        botId: parseInt(botId, 10),
+                        chatId: oldSub.chatId,
+                        name: oldSub.name,
+                        isActive: oldSub.isActive,
+                        receiveNotifications: oldSub.receiveNotifications,
+                    },
+                    update: {
+                        isActive: oldSub.isActive,
+                        receiveNotifications: oldSub.receiveNotifications,
+                        name: oldSub.name,
+                    },
+                });
+                migrated++;
+            } catch (error) {
+                skipped++;
+            }
+        }
+
+        return {
+            success: true,
+            migrated,
+            skipped,
+            message: `Đã migrate ${migrated} subscribers, bỏ qua ${skipped}`,
+        };
+    }
+
+    @Post('bots/:botId/add-subscriber')
+    @UseGuards(JwtAuthGuard)
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Manually add a subscriber to a bot' })
+    async addSubscriber(
+        @CurrentUser() user: any,
+        @Param('botId') botId: string,
+        @Body() dto: { chatId: string; name?: string },
+    ) {
+        const bot = await this.prisma.userTelegramBot.findFirst({
+            where: { id: parseInt(botId, 10), userId: user.id },
+        });
+
+        if (!bot) {
+            throw new BadRequestException('Bot not found');
+        }
+
+        const subscriber = await this.prisma.telegramBotSubscriber.upsert({
+            where: {
+                botId_chatId: {
+                    botId: parseInt(botId, 10),
+                    chatId: dto.chatId,
+                },
+            },
+            create: {
+                botId: parseInt(botId, 10),
+                chatId: dto.chatId,
+                name: dto.name,
+                isActive: true,
+                receiveNotifications: true,
+            },
+            update: {
+                isActive: true,
+                receiveNotifications: true,
+                name: dto.name,
+            },
+        });
+
+        return {
+            success: true,
+            subscriber,
+            message: 'Đã thêm subscriber thành công',
+        };
     }
 }
 
