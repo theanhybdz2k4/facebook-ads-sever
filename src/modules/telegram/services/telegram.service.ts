@@ -121,9 +121,11 @@ export class TelegramService {
      */
     async processWebhookUpdate(botId: number, update: any): Promise<void> {
         try {
+            this.logger.log(`[Webhook] Received update for botId: ${botId}`, JSON.stringify(update));
+            
             const message = update.message;
             if (!message) {
-                this.logger.debug('No message in update');
+                this.logger.warn(`[Webhook] No message in update for botId: ${botId}`);
                 return;
             }
 
@@ -132,11 +134,11 @@ export class TelegramService {
             const firstName = message.from?.first_name || 'User';
 
             if (!chatId) {
-                this.logger.debug('No chatId in message');
+                this.logger.warn(`[Webhook] No chatId in message for botId: ${botId}`);
                 return;
             }
 
-            this.logger.log(`Processing webhook update for bot ${botId}, chatId: ${chatId}, text: ${text}`);
+            this.logger.log(`[Webhook] Processing command "${text}" for bot ${botId}, chatId: ${chatId}`);
 
             const bot = await this.prisma.userTelegramBot.findUnique({
                 where: { id: botId },
@@ -157,8 +159,13 @@ export class TelegramService {
 
             // Handle commands
             if (text.startsWith('/start')) {
-                this.logger.log(`Handling /start command for bot ${botId}, chatId: ${chatId}`);
-                await this.handleStartCommand(bot.botToken, botId, chatId, firstName);
+                this.logger.log(`[Webhook] Handling /start command for bot ${botId}, chatId: ${chatId}`);
+                try {
+                    await this.handleStartCommand(bot.botToken, botId, chatId, firstName);
+                } catch (error) {
+                    this.logger.error(`[Webhook] Error handling /start command: ${error.message}`, error.stack);
+                    await this.sendMessageTo(bot.botToken, chatId, '❌ Có lỗi xảy ra khi xử lý lệnh /start. Vui lòng thử lại sau.');
+                }
             } else if (text.startsWith('/subscribe')) {
                 this.logger.log(`Handling /subscribe command for bot ${botId}, chatId: ${chatId}`);
                 await this.handleSubscribeCommand(bot.botToken, botId, chatId);

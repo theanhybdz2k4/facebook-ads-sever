@@ -1,22 +1,23 @@
 import { PrismaClient } from '@prisma/client';
 import axios from 'axios';
+import * as dotenv from 'dotenv';
+
+dotenv.config();
 
 const prisma = new PrismaClient();
 
 async function testTelegramBot() {
     try {
-        // Lấy ngrok URL
-        const ngrokResponse = await axios.get('http://localhost:4040/api/tunnels');
-        const tunnels = ngrokResponse.data.tunnels;
-        const httpsTunnel = tunnels.find((t: any) => t.proto === 'https');
+        // Lấy production URL từ env
+        const baseUrl = process.env.BASE_URL || process.env.RAILWAY_PUBLIC_DOMAIN;
         
-        if (!httpsTunnel) {
-            console.error('❌ Không tìm thấy HTTPS tunnel từ ngrok');
+        if (!baseUrl) {
+            console.error('❌ Không tìm thấy BASE_URL hoặc RAILWAY_PUBLIC_DOMAIN trong env');
+            console.error('Vui lòng set BASE_URL hoặc RAILWAY_PUBLIC_DOMAIN trong .env');
             process.exit(1);
         }
 
-        const ngrokUrl = httpsTunnel.public_url;
-        console.log(`✅ Ngrok URL: ${ngrokUrl}`);
+        console.log(`✅ Base URL: ${baseUrl}`);
 
         // Tìm bot active đầu tiên
         const bot = await prisma.userTelegramBot.findFirst({
@@ -31,8 +32,8 @@ async function testTelegramBot() {
 
         console.log(`✅ Tìm thấy bot: ${bot.botName} (ID: ${bot.id})`);
 
-        // Cập nhật webhook với ngrok URL
-        const webhookUrl = `${ngrokUrl}/api/v1/telegram/webhook/${bot.id}`;
+        // Cập nhật webhook với production URL - dùng route có botId
+        const webhookUrl = `${baseUrl}/api/v1/telegram/webhook/${bot.id}`;
         console.log(`📡 Đang cập nhật webhook: ${webhookUrl}`);
 
         const webhookResponse = await axios.post(

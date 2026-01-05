@@ -17,6 +17,7 @@ export class AppController {
   }
 
   // Route without /v1 prefix for Telegram webhook compatibility
+  // Note: This route bypasses global prefix, so it's accessible at /api/telegram/webhook
   @Post('api/telegram/webhook')
   async handleTelegramWebhook(@Body() update: any) {
     try {

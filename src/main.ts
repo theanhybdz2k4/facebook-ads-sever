@@ -57,7 +57,9 @@ async function bootstrap() {
   );
 
   const globalPrefix = 'api/v1';
-  app.setGlobalPrefix(globalPrefix);
+  app.setGlobalPrefix(globalPrefix, {
+    exclude: ['api/telegram/webhook'], // Exclude telegram webhook from global prefix
+  });
   setupOpenApi(app);
 
   const server = app.getHttpServer();
