@@ -135,7 +135,13 @@ export class TelegramController {
         @Param('botId') botId: string,
         @Body() update: any,
     ) {
-        await this.telegramService.processWebhookUpdate(parseInt(botId, 10), update);
+        try {
+            const botIdNum = parseInt(botId, 10);
+            console.log(`[Webhook] Received update for botId: ${botIdNum}`, JSON.stringify(update));
+            await this.telegramService.processWebhookUpdate(botIdNum, update);
+        } catch (error) {
+            console.error(`[Webhook] Error processing webhook for botId ${botId}:`, error);
+        }
         return { ok: true };
     }
 
@@ -143,6 +149,8 @@ export class TelegramController {
     @ApiOperation({ summary: 'Legacy webhook endpoint - auto-detect bot from token or find first active bot' })
     async handleLegacyWebhook(@Body() update: any) {
         try {
+            console.log('[Webhook] Legacy webhook called', JSON.stringify(update));
+            
             // Try to find bot from webhook token in headers or find first active bot
             // For now, find first active bot as fallback
             const bot = await this.prisma.userTelegramBot.findFirst({
@@ -151,12 +159,13 @@ export class TelegramController {
             });
             
             if (bot) {
+                console.log(`[Webhook] Found bot ${bot.id} for legacy webhook`);
                 await this.telegramService.processWebhookUpdate(bot.id, update);
             } else {
-                console.warn('No active bot found for legacy webhook');
+                console.warn('[Webhook] No active bot found for legacy webhook');
             }
         } catch (error) {
-            console.error('Error processing legacy webhook:', error);
+            console.error('[Webhook] Error processing legacy webhook:', error);
         }
         return { ok: true };
     }

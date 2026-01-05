@@ -69,10 +69,30 @@ export class TelegramService {
 
     async setWebhookForBot(botToken: string, botId: number): Promise<{ success: boolean; error?: string }> {
         try {
-            // Get base URL from environment or use default
-            const baseUrl = process.env.BASE_URL || process.env.RAILWAY_PUBLIC_DOMAIN
-                ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-                : 'https://your-domain.com'; // Should be configured in prod
+            // Try to get ngrok URL first (for local development)
+            let baseUrl = process.env.BASE_URL || process.env.RAILWAY_PUBLIC_DOMAIN;
+            
+            if (!baseUrl) {
+                try {
+                    const ngrokResponse = await firstValueFrom(
+                        this.httpService.get('http://localhost:4040/api/tunnels')
+                    );
+                    const tunnels = ngrokResponse.data?.tunnels || [];
+                    const httpsTunnel = tunnels.find((t: any) => t.proto === 'https');
+                    if (httpsTunnel?.public_url) {
+                        baseUrl = httpsTunnel.public_url;
+                        this.logger.log(`Detected ngrok URL: ${baseUrl}`);
+                    }
+                } catch (ngrokError) {
+                    // Ngrok not running, use default
+                    this.logger.debug('Ngrok not detected, using default URL');
+                }
+            }
+
+            if (!baseUrl) {
+                baseUrl = 'https://your-domain.com'; // Should be configured in prod
+                this.logger.warn(`No BASE_URL configured, using default: ${baseUrl}`);
+            }
 
             const webhookUrl = `${baseUrl}/api/v1/telegram/webhook/${botId}`;
 
@@ -88,7 +108,7 @@ export class TelegramService {
                 return { success: true };
             }
             return { success: false, error: 'Telegram API returned error' };
-        } catch (error) {
+        } catch (error: any) {
             this.logger.error(`Failed to set webhook for bot ${botId}: ${error.message}`);
             return { success: false, error: error.message };
         }
@@ -102,45 +122,70 @@ export class TelegramService {
     async processWebhookUpdate(botId: number, update: any): Promise<void> {
         try {
             const message = update.message;
-            if (!message) return;
+            if (!message) {
+                this.logger.debug('No message in update');
+                return;
+            }
 
             const chatId = message.chat?.id?.toString();
             const text = message.text || '';
             const firstName = message.from?.first_name || 'User';
 
-            if (!chatId) return;
+            if (!chatId) {
+                this.logger.debug('No chatId in message');
+                return;
+            }
+
+            this.logger.log(`Processing webhook update for bot ${botId}, chatId: ${chatId}, text: ${text}`);
 
             const bot = await this.prisma.userTelegramBot.findUnique({
                 where: { id: botId },
             });
 
-            if (!bot || !bot.isActive) return;
+            if (!bot) {
+                this.logger.warn(`Bot ${botId} not found`);
+                return;
+            }
+
+            if (!bot.isActive) {
+                this.logger.warn(`Bot ${botId} is not active`);
+                return;
+            }
 
             // Auto-register user as subscriber
             await this.ensureSubscriber(botId, chatId, firstName);
 
             // Handle commands
             if (text.startsWith('/start')) {
+                this.logger.log(`Handling /start command for bot ${botId}, chatId: ${chatId}`);
                 await this.handleStartCommand(bot.botToken, botId, chatId, firstName);
             } else if (text.startsWith('/subscribe')) {
+                this.logger.log(`Handling /subscribe command for bot ${botId}, chatId: ${chatId}`);
                 await this.handleSubscribeCommand(bot.botToken, botId, chatId);
             } else if (text.startsWith('/unsubscribe')) {
+                this.logger.log(`Handling /unsubscribe command for bot ${botId}, chatId: ${chatId}`);
                 await this.handleUnsubscribeCommand(bot.botToken, botId, chatId);
             } else if (text.startsWith('/report')) {
+                this.logger.log(`Handling /report command for bot ${botId}, chatId: ${chatId}`);
                 await this.handleReportCommand(bot, chatId);
             } else if (text.startsWith('/hour')) {
+                this.logger.log(`Handling /hour command for bot ${botId}, chatId: ${chatId}`);
                 await this.handleHourCommand(bot, chatId);
             } else if (text.startsWith('/today')) {
+                this.logger.log(`Handling /today command for bot ${botId}, chatId: ${chatId}`);
                 await this.handleTodayCommand(bot, chatId);
             } else if (text.startsWith('/week')) {
+                this.logger.log(`Handling /week command for bot ${botId}, chatId: ${chatId}`);
                 await this.handleWeekCommand(bot, chatId);
             } else if (text.startsWith('/budget')) {
+                this.logger.log(`Handling /budget command for bot ${botId}, chatId: ${chatId}`);
                 await this.handleBudgetCommand(bot, chatId);
             } else if (text.startsWith('/help')) {
+                this.logger.log(`Handling /help command for bot ${botId}, chatId: ${chatId}`);
                 await this.handleHelpCommand(bot.botToken, chatId);
             }
         } catch (error) {
-            this.logger.error(`Error processing update: ${error.message}`);
+            this.logger.error(`Error processing update: ${error.message}`, error.stack);
         }
     }
 
@@ -165,15 +210,18 @@ export class TelegramService {
     // ==================== COMMAND HANDLERS ====================
 
     private async handleStartCommand(botToken: string, botId: number, chatId: string, firstName: string) {
-        const subscriber = await this.prisma.telegramBotSubscriber.findUnique({
-            where: { botId_chatId: { botId, chatId } },
-        });
-        const isSubscribed = subscriber?.receiveNotifications ?? false;
-        const statusText = isSubscribed
-            ? '✅ Bạn đang nhận thông báo tự động'
-            : '⚠️ Bạn chưa bật nhận thông báo tự động. Dùng /subscribe để bật';
+        try {
+            this.logger.log(`handleStartCommand called for bot ${botId}, chatId: ${chatId}, firstName: ${firstName}`);
+            
+            const subscriber = await this.prisma.telegramBotSubscriber.findUnique({
+                where: { botId_chatId: { botId, chatId } },
+            });
+            const isSubscribed = subscriber?.receiveNotifications ?? false;
+            const statusText = isSubscribed
+                ? '✅ Bạn đang nhận thông báo tự động'
+                : '⚠️ Bạn chưa bật nhận thông báo tự động. Dùng /subscribe để bật';
 
-        await this.sendMessageTo(botToken, chatId, `
+            const message = `
 👋 <b>Xin chào ${firstName}!</b>
 
 ${statusText}
@@ -187,18 +235,33 @@ ${statusText}
 /week - Báo cáo 7 ngày (từng bài)
 /budget - Xem ngân sách
 /help - Hướng dẫn sử dụng
-        `);
+            `;
+
+            const success = await this.sendMessageTo(botToken, chatId, message);
+            if (!success) {
+                this.logger.error(`Failed to send start command response to chatId: ${chatId}`);
+            } else {
+                this.logger.log(`Successfully sent start command response to chatId: ${chatId}`);
+            }
+        } catch (error) {
+            this.logger.error(`Error in handleStartCommand: ${error.message}`, error.stack);
+            throw error;
+        }
     }
 
     private async handleSubscribeCommand(botToken: string, botId: number, chatId: string) {
-        // Ensure subscriber exists first
-        await this.ensureSubscriber(botId, chatId);
-        
-        await this.prisma.telegramBotSubscriber.update({
-            where: { botId_chatId: { botId, chatId } },
-            data: { receiveNotifications: true, isActive: true },
-        });
-        await this.sendMessageTo(botToken, chatId, `
+        try {
+            this.logger.log(`handleSubscribeCommand called for bot ${botId}, chatId: ${chatId}`);
+            
+            // Ensure subscriber exists first
+            await this.ensureSubscriber(botId, chatId);
+            
+            await this.prisma.telegramBotSubscriber.update({
+                where: { botId_chatId: { botId, chatId } },
+                data: { receiveNotifications: true, isActive: true },
+            });
+            
+            const success = await this.sendMessageTo(botToken, chatId, `
 🔔 <b>Đã bật nhận thông báo tự động!</b>
 
 Bạn sẽ nhận được:
@@ -207,33 +270,55 @@ Bạn sẽ nhận được:
 • Tổng kết hàng ngày
 
 Dùng /unsubscribe để tắt thông báo.
-        `);
+            `);
+            
+            if (!success) {
+                this.logger.error(`Failed to send subscribe command response to chatId: ${chatId}`);
+            }
+        } catch (error) {
+            this.logger.error(`Error in handleSubscribeCommand: ${error.message}`, error.stack);
+            await this.sendMessageTo(botToken, chatId, '❌ Có lỗi xảy ra. Vui lòng thử lại sau.');
+        }
     }
 
     private async handleUnsubscribeCommand(botToken: string, botId: number, chatId: string) {
-        await this.prisma.telegramBotSubscriber.update({
-            where: { botId_chatId: { botId, chatId } },
-            data: { receiveNotifications: false },
-        });
-        await this.sendMessageTo(botToken, chatId, `
+        try {
+            this.logger.log(`handleUnsubscribeCommand called for bot ${botId}, chatId: ${chatId}`);
+            
+            await this.prisma.telegramBotSubscriber.update({
+                where: { botId_chatId: { botId, chatId } },
+                data: { receiveNotifications: false },
+            });
+            
+            const success = await this.sendMessageTo(botToken, chatId, `
 🔕 <b>Đã tắt nhận thông báo tự động!</b>
 
 Bạn vẫn có thể dùng các lệnh:
 /report /hour /today /week /budget
 
 Dùng /subscribe để bật lại thông báo.
-        `);
+            `);
+            
+            if (!success) {
+                this.logger.error(`Failed to send unsubscribe command response to chatId: ${chatId}`);
+            }
+        } catch (error) {
+            this.logger.error(`Error in handleUnsubscribeCommand: ${error.message}`, error.stack);
+            await this.sendMessageTo(botToken, chatId, '❌ Có lỗi xảy ra. Vui lòng thử lại sau.');
+        }
     }
 
     private async handleReportCommand(bot: any, chatId: string) {
         try {
+            this.logger.log(`handleReportCommand called for bot ${bot.id}, chatId: ${chatId}`);
+            
             const today = new Date();
             today.setHours(0, 0, 0, 0);
 
             // Get stats for user's ad accounts
             const activeAdsCount = await this.prisma.ad.count({
                 where: {
-                    status: 'ACTIVE',
+                    effectiveStatus: 'ACTIVE',
                     account: { fbAccount: { userId: bot.userId } },
                 },
             });
@@ -263,7 +348,7 @@ Dùng /subscribe để bật lại thông báo.
             const ctr = totalImpressions > 0 ? ((totalClicks / totalImpressions) * 100).toFixed(2) : '0';
             const cpm = totalImpressions > 0 ? ((totalSpend / totalImpressions) * 1000).toFixed(0) : '0';
 
-            await this.sendMessageTo(bot.botToken, chatId, `
+            const success = await this.sendMessageTo(bot.botToken, chatId, `
 📊 <b>Báo cáo tổng quan Ads</b>
 📅 ${today.toLocaleDateString('vi-VN')}
 
@@ -280,29 +365,68 @@ Dùng /subscribe để bật lại thông báo.
 • CTR: <b>${ctr}%</b>
 • CPM: <b>${cpm} VND</b>
             `);
+            
+            if (!success) {
+                this.logger.error(`Failed to send report command response to chatId: ${chatId}`);
+            }
         } catch (error) {
+            this.logger.error(`Error in handleReportCommand: ${error.message}`, error.stack);
             await this.sendMessageTo(bot.botToken, chatId, '❌ Có lỗi khi lấy báo cáo. Vui lòng thử lại sau.');
         }
     }
 
     private async handleHourCommand(bot: any, chatId: string) {
-        await this.sendMessageTo(bot.botToken, chatId, '⏰ Tính năng báo cáo theo giờ sẽ được cập nhật sớm.');
+        try {
+            this.logger.log(`handleHourCommand called for bot ${bot.id}, chatId: ${chatId}`);
+            const success = await this.sendMessageTo(bot.botToken, chatId, '⏰ Tính năng báo cáo theo giờ sẽ được cập nhật sớm.');
+            if (!success) {
+                this.logger.error(`Failed to send hour command response to chatId: ${chatId}`);
+            }
+        } catch (error) {
+            this.logger.error(`Error in handleHourCommand: ${error.message}`, error.stack);
+        }
     }
 
     private async handleTodayCommand(bot: any, chatId: string) {
-        await this.sendMessageTo(bot.botToken, chatId, '📊 Tính năng báo cáo hôm nay sẽ được cập nhật sớm.');
+        try {
+            this.logger.log(`handleTodayCommand called for bot ${bot.id}, chatId: ${chatId}`);
+            const success = await this.sendMessageTo(bot.botToken, chatId, '📊 Tính năng báo cáo hôm nay sẽ được cập nhật sớm.');
+            if (!success) {
+                this.logger.error(`Failed to send today command response to chatId: ${chatId}`);
+            }
+        } catch (error) {
+            this.logger.error(`Error in handleTodayCommand: ${error.message}`, error.stack);
+        }
     }
 
     private async handleWeekCommand(bot: any, chatId: string) {
-        await this.sendMessageTo(bot.botToken, chatId, '📊 Tính năng báo cáo 7 ngày sẽ được cập nhật sớm.');
+        try {
+            this.logger.log(`handleWeekCommand called for bot ${bot.id}, chatId: ${chatId}`);
+            const success = await this.sendMessageTo(bot.botToken, chatId, '📊 Tính năng báo cáo 7 ngày sẽ được cập nhật sớm.');
+            if (!success) {
+                this.logger.error(`Failed to send week command response to chatId: ${chatId}`);
+            }
+        } catch (error) {
+            this.logger.error(`Error in handleWeekCommand: ${error.message}`, error.stack);
+        }
     }
 
     private async handleBudgetCommand(bot: any, chatId: string) {
-        await this.sendMessageTo(bot.botToken, chatId, '💰 Tính năng xem ngân sách sẽ được cập nhật sớm.');
+        try {
+            this.logger.log(`handleBudgetCommand called for bot ${bot.id}, chatId: ${chatId}`);
+            const success = await this.sendMessageTo(bot.botToken, chatId, '💰 Tính năng xem ngân sách sẽ được cập nhật sớm.');
+            if (!success) {
+                this.logger.error(`Failed to send budget command response to chatId: ${chatId}`);
+            }
+        } catch (error) {
+            this.logger.error(`Error in handleBudgetCommand: ${error.message}`, error.stack);
+        }
     }
 
     private async handleHelpCommand(botToken: string, chatId: string) {
-        await this.sendMessageTo(botToken, chatId, `
+        try {
+            this.logger.log(`handleHelpCommand called for chatId: ${chatId}`);
+            const success = await this.sendMessageTo(botToken, chatId, `
 📖 <b>Hướng dẫn sử dụng</b>
 
 <b>📋 Các lệnh:</b>
@@ -319,23 +443,37 @@ Dùng /subscribe để bật lại thông báo.
 • Báo cáo sync dữ liệu
 • Báo cáo insights theo giờ
 • Cảnh báo hệ thống
-        `);
+            `);
+            if (!success) {
+                this.logger.error(`Failed to send help command response to chatId: ${chatId}`);
+            }
+        } catch (error) {
+            this.logger.error(`Error in handleHelpCommand: ${error.message}`, error.stack);
+        }
     }
 
     // ==================== SEND MESSAGES ====================
 
     async sendMessageTo(botToken: string, chatId: string, message: string): Promise<boolean> {
         try {
-            await firstValueFrom(
+            const response = await firstValueFrom(
                 this.httpService.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
                     chat_id: chatId,
                     text: message.trim(),
                     parse_mode: 'HTML',
                 }),
             );
-            return true;
-        } catch (error) {
-            this.logger.error(`Failed to send to ${chatId}: ${error.message}`);
+            
+            if (response.data?.ok) {
+                this.logger.debug(`Successfully sent message to chatId: ${chatId}`);
+                return true;
+            } else {
+                this.logger.error(`Telegram API returned error for chatId ${chatId}: ${JSON.stringify(response.data)}`);
+                return false;
+            }
+        } catch (error: any) {
+            const errorMessage = error?.response?.data?.description || error?.message || 'Unknown error';
+            this.logger.error(`Failed to send to ${chatId}: ${errorMessage}`, error?.response?.data);
             return false;
         }
     }
