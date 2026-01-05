@@ -100,6 +100,26 @@ export class InsightsSyncService {
                 }
                 totalInsights += deviceInsights.length;
 
+                // Sync placement insights
+                const placementInsights = await this.facebookApi.getAdInsights(adId, accessToken, dateStart, dateEnd, 'publisher_platform,platform_position', accountId);
+                for (const insight of placementInsights) {
+                    insight.ad_id = ad.id;
+                }
+                if (placementInsights.length > 0) {
+                    await this.batchUpsertPlacementInsights(placementInsights, accountId, now);
+                }
+                totalInsights += placementInsights.length;
+
+                // Sync age/gender insights
+                const ageGenderInsights = await this.facebookApi.getAdInsights(adId, accessToken, dateStart, dateEnd, 'age,gender', accountId);
+                for (const insight of ageGenderInsights) {
+                    insight.ad_id = ad.id;
+                }
+                if (ageGenderInsights.length > 0) {
+                    await this.batchUpsertAgeGenderInsights(ageGenderInsights, accountId, now);
+                }
+                totalInsights += ageGenderInsights.length;
+
                 // Sync hourly insights
                 const hourlyInsights = await this.facebookApi.getAdInsights(adId, accessToken, dateStart, dateEnd, 'hourly_stats_aggregated_by_advertiser_time_zone', accountId);
                 for (const insight of hourlyInsights) {
