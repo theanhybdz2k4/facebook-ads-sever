@@ -94,7 +94,7 @@ export class TelegramService {
                 this.logger.warn(`No BASE_URL configured, using default: ${baseUrl}`);
             }
 
-            const webhookUrl = `${baseUrl}/api/v1/telegram/webhook/${botId}`;
+            const webhookUrl = `${baseUrl}/telegram/webhook/${botId}`;
 
             const response = await firstValueFrom(
                 this.httpService.post(`https://api.telegram.org/bot${botToken}/setWebhook`, {
