@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '@n-database/prisma/prisma.service';
-import { getVietnamHour } from '@n-utils';
+import { getVietnamHour, getVietnamDateString, getVietnamMoment } from '@n-utils';
 
 /**
  * TelegramService - Per-User Bot Architecture with Multiple Subscribers
@@ -557,48 +557,441 @@ Dùng /subscribe để bật lại thông báo.
     private async handleHourCommand(bot: any, chatId: string) {
         try {
             this.logger.log(`handleHourCommand called for bot ${bot.id}, chatId: ${chatId}`);
-            const success = await this.sendMessageTo(bot.botToken, chatId, '⏰ Tính năng báo cáo theo giờ sẽ được cập nhật sớm.');
+            
+            const currentHour = getVietnamHour();
+            const todayStr = getVietnamDateString();
+            
+            // Build hour string format: "HH:00:00 - HH:59:59"
+            const formatHourString = (h: number) => {
+                const hStr = h.toString().padStart(2, '0');
+                return `${hStr}:00:00 - ${hStr}:59:59`;
+            };
+            
+            // Get hourly insights for current hour first, fallback to previous hour
+            let targetHour = currentHour;
+            let hourString = formatHourString(currentHour);
+            
+            let hourlyData = await this.prisma.adInsightsHourly.findMany({
+                where: {
+                    date: new Date(todayStr),
+                    hourlyStatsAggregatedByAdvertiserTimeZone: hourString,
+                    account: { fbAccount: { userId: bot.userId } },
+                },
+                include: {
+                    ad: { select: { name: true } },
+                },
+                orderBy: { spend: 'desc' },
+            });
+
+            // Fallback to previous hour if no data
+            if (hourlyData.length === 0 && currentHour > 0) {
+                targetHour = currentHour - 1;
+                hourString = formatHourString(targetHour);
+                hourlyData = await this.prisma.adInsightsHourly.findMany({
+                    where: {
+                        date: new Date(todayStr),
+                        hourlyStatsAggregatedByAdvertiserTimeZone: hourString,
+                        account: { fbAccount: { userId: bot.userId } },
+                    },
+                    include: {
+                        ad: { select: { name: true } },
+                    },
+                    orderBy: { spend: 'desc' },
+                });
+            }
+
+            if (hourlyData.length === 0) {
+                await this.sendMessageTo(bot.botToken, chatId, `
+⏰ <b>Báo cáo theo giờ</b>
+📅 ${todayStr}
+
+❌ Chưa có dữ liệu cho giờ ${currentHour}:00.
+Dữ liệu sẽ có sau khi sync insights.
+                `);
+                return;
+            }
+
+            // Aggregate totals with all metrics
+            const totals = hourlyData.reduce((acc, row) => ({
+                spend: acc.spend + Number(row.spend || 0),
+                impressions: acc.impressions + Number(row.impressions || 0),
+                clicks: acc.clicks + Number(row.clicks || 0),
+                reach: acc.reach + Number(row.reach || 0),
+                results: acc.results + Number(row.results || 0),
+                messaging: acc.messaging + Number(row.messagingStarted || 0),
+            }), { spend: 0, impressions: 0, clicks: 0, reach: 0, results: 0, messaging: 0 });
+
+            const ctr = totals.impressions > 0 ? ((totals.clicks / totals.impressions) * 100).toFixed(2) : '0';
+            const cpc = totals.clicks > 0 ? (totals.spend / totals.clicks).toFixed(0) : '0';
+            const cpm = totals.impressions > 0 ? ((totals.spend / totals.impressions) * 1000).toFixed(0) : '0';
+            const cpr = totals.results > 0 ? (totals.spend / totals.results).toFixed(0) : '0';
+            const costPerMsg = totals.messaging > 0 ? (totals.spend / totals.messaging).toFixed(0) : '0';
+
+            // Top 3 ads by spend with detailed metrics
+            const top3 = hourlyData.slice(0, 3);
+            const top3Text = top3.map((row, i) => {
+                const adName = row.ad?.name || row.adId;
+                const shortName = adName.length > 22 ? adName.slice(0, 19) + '...' : adName;
+                const spend = Number(row.spend || 0);
+                const impr = Number(row.impressions || 0);
+                const clicks = Number(row.clicks || 0);
+                const results = Number(row.results || 0);
+                const msg = Number(row.messagingStarted || 0);
+                return `${i + 1}. ${shortName}
+├── 💵 ${spend.toLocaleString()} | 👁 ${impr.toLocaleString()} | 👆 ${clicks}
+└── 🎯 ${results} | 💬 ${msg}`;
+            }).join('\n\n');
+
+            const hourDisplay = `${targetHour.toString().padStart(2, '0')}:00`;
+            const success = await this.sendMessageTo(bot.botToken, chatId, `
+⏰ <b>Báo cáo giờ ${hourDisplay}</b>
+📅 ${todayStr}
+
+💰 <b>TỔNG GIỜ ${hourDisplay}</b>
+├── 💵 Spend: <b>${totals.spend.toLocaleString()} VND</b>
+├── 👁 Impressions: ${totals.impressions.toLocaleString()}
+├── 👆 Clicks: ${totals.clicks.toLocaleString()}
+├── 🎯 Results: <b>${totals.results}</b>
+├── 💬 New Message: <b>${totals.messaging}</b>
+├── 📊 CTR: ${ctr}%
+├── 💳 CPC: ${cpc} VND
+├── 📈 CPM: ${cpm} VND
+├── 🎯 CPR: <b>${cpr} VND</b>
+└── 💬 Cost/New Msg: <b>${costPerMsg} VND</b>
+
+🔝 <b>Top ${top3.length} ads:</b>
+
+${top3Text}
+
+📊 Tổng: ${hourlyData.length} ads đang chạy
+            `);
+            
             if (!success) {
                 this.logger.error(`Failed to send hour command response to chatId: ${chatId}`);
             }
         } catch (error) {
             this.logger.error(`Error in handleHourCommand: ${error.message}`, error.stack);
+            await this.sendMessageTo(bot.botToken, chatId, '❌ Có lỗi khi lấy báo cáo theo giờ. Vui lòng thử lại sau.');
         }
     }
 
     private async handleTodayCommand(bot: any, chatId: string) {
         try {
             this.logger.log(`handleTodayCommand called for bot ${bot.id}, chatId: ${chatId}`);
-            const success = await this.sendMessageTo(bot.botToken, chatId, '📊 Tính năng báo cáo hôm nay sẽ được cập nhật sớm.');
+            
+            const todayStr = getVietnamDateString();
+            const today = new Date(todayStr);
+
+            // Get today's insights grouped by ad
+            const dailyInsights = await this.prisma.adInsightsDaily.findMany({
+                where: {
+                    date: today,
+                    account: { fbAccount: { userId: bot.userId } },
+                },
+                include: {
+                    ad: { select: { name: true } },
+                },
+                orderBy: { spend: 'desc' },
+            });
+
+            if (dailyInsights.length === 0) {
+                await this.sendMessageTo(bot.botToken, chatId, `
+📊 <b>Báo cáo hôm nay</b>
+📅 ${todayStr}
+
+❌ Chưa có dữ liệu cho hôm nay.
+Dữ liệu sẽ có sau khi sync insights.
+                `);
+                return;
+            }
+
+            // Aggregate totals with all metrics
+            const totals = dailyInsights.reduce((acc, row) => ({
+                spend: acc.spend + Number(row.spend || 0),
+                impressions: acc.impressions + Number(row.impressions || 0),
+                clicks: acc.clicks + Number(row.clicks || 0),
+                reach: acc.reach + Number(row.reach || 0),
+                results: acc.results + Number(row.results || 0),
+                messaging: acc.messaging + Number(row.messagingStarted || 0),
+            }), { spend: 0, impressions: 0, clicks: 0, reach: 0, results: 0, messaging: 0 });
+
+            const ctr = totals.impressions > 0 ? ((totals.clicks / totals.impressions) * 100).toFixed(2) : '0';
+            const cpc = totals.clicks > 0 ? (totals.spend / totals.clicks).toFixed(0) : '0';
+            const cpm = totals.impressions > 0 ? ((totals.spend / totals.impressions) * 1000).toFixed(0) : '0';
+            const cpr = totals.results > 0 ? (totals.spend / totals.results).toFixed(0) : '0';
+            const costPerMsg = totals.messaging > 0 ? (totals.spend / totals.messaging).toFixed(0) : '0';
+
+            // Top 5 ads by spend with detailed metrics
+            const top5 = dailyInsights.slice(0, 5);
+            const adsText = top5.map((row, i) => {
+                const adName = row.ad?.name || row.adId;
+                const shortName = adName.length > 20 ? adName.slice(0, 17) + '...' : adName;
+                const spend = Number(row.spend || 0);
+                const impr = Number(row.impressions || 0);
+                const clicks = Number(row.clicks || 0);
+                const results = Number(row.results || 0);
+                const msg = Number(row.messagingStarted || 0);
+                return `${i + 1}. ${shortName}
+├── � ${spend.toLocaleString()} | 👁 ${impr.toLocaleString()} | 👆 ${clicks}
+└── 🎯 ${results} | 💬 ${msg}`;
+            }).join('\n\n');
+
+            const success = await this.sendMessageTo(bot.botToken, chatId, `
+📊 <b>Báo cáo hôm nay</b>
+📅 ${todayStr}
+
+💰 <b>TỔNG HÔM NAY</b>
+├── 💵 Spend: <b>${totals.spend.toLocaleString()} VND</b>
+├── 👁 Impressions: ${totals.impressions.toLocaleString()}
+├── 👆 Clicks: ${totals.clicks.toLocaleString()}
+├── 🎯 Results: <b>${totals.results}</b>
+├── 💬 New Message: <b>${totals.messaging}</b>
+├── � CTR: ${ctr}%
+├── 💳 CPC: ${cpc} VND
+├── 📈 CPM: ${cpm} VND
+├── 🎯 CPR: <b>${cpr} VND</b>
+└── 💬 Cost/New Msg: <b>${costPerMsg} VND</b>
+
+🔝 <b>Top ${top5.length} ads:</b>
+
+${adsText}
+
+📊 Tổng: ${dailyInsights.length} ads có dữ liệu
+            `);
+            
             if (!success) {
                 this.logger.error(`Failed to send today command response to chatId: ${chatId}`);
             }
         } catch (error) {
             this.logger.error(`Error in handleTodayCommand: ${error.message}`, error.stack);
+            await this.sendMessageTo(bot.botToken, chatId, '❌ Có lỗi khi lấy báo cáo hôm nay. Vui lòng thử lại sau.');
         }
     }
 
     private async handleWeekCommand(bot: any, chatId: string) {
         try {
             this.logger.log(`handleWeekCommand called for bot ${bot.id}, chatId: ${chatId}`);
-            const success = await this.sendMessageTo(bot.botToken, chatId, '📊 Tính năng báo cáo 7 ngày sẽ được cập nhật sớm.');
+            
+            const todayVN = getVietnamMoment();
+            const todayStr = todayVN.format('YYYY-MM-DD');
+            const sevenDaysAgo = todayVN.clone().subtract(6, 'days');
+            const sevenDaysAgoStr = sevenDaysAgo.format('YYYY-MM-DD');
+
+            // Get 7 days of insights
+            const weekInsights = await this.prisma.adInsightsDaily.findMany({
+                where: {
+                    date: {
+                        gte: new Date(sevenDaysAgoStr),
+                        lte: new Date(todayStr),
+                    },
+                    account: { fbAccount: { userId: bot.userId } },
+                },
+                include: {
+                    ad: { select: { name: true } },
+                },
+                orderBy: { date: 'desc' },
+            });
+
+            if (weekInsights.length === 0) {
+                await this.sendMessageTo(bot.botToken, chatId, `
+📊 <b>Báo cáo 7 ngày</b>
+📅 ${sevenDaysAgoStr} → ${todayStr}
+
+❌ Chưa có dữ liệu cho 7 ngày qua.
+                `);
+                return;
+            }
+
+            // Aggregate totals with all metrics
+            const totals = weekInsights.reduce((acc, row) => ({
+                spend: acc.spend + Number(row.spend || 0),
+                impressions: acc.impressions + Number(row.impressions || 0),
+                clicks: acc.clicks + Number(row.clicks || 0),
+                reach: acc.reach + Number(row.reach || 0),
+                results: acc.results + Number(row.results || 0),
+                messaging: acc.messaging + Number(row.messagingStarted || 0),
+            }), { spend: 0, impressions: 0, clicks: 0, reach: 0, results: 0, messaging: 0 });
+
+            const ctr = totals.impressions > 0 ? ((totals.clicks / totals.impressions) * 100).toFixed(2) : '0';
+            const cpc = totals.clicks > 0 ? (totals.spend / totals.clicks).toFixed(0) : '0';
+            const cpm = totals.impressions > 0 ? ((totals.spend / totals.impressions) * 1000).toFixed(0) : '0';
+            const cpr = totals.results > 0 ? (totals.spend / totals.results).toFixed(0) : '0';
+            const costPerMsg = totals.messaging > 0 ? (totals.spend / totals.messaging).toFixed(0) : '0';
+
+            // Aggregate by date
+            const byDate: Record<string, { spend: number; impressions: number; clicks: number }> = {};
+            weekInsights.forEach(row => {
+                const dateKey = row.date.toISOString().split('T')[0];
+                if (!byDate[dateKey]) {
+                    byDate[dateKey] = { spend: 0, impressions: 0, clicks: 0 };
+                }
+                byDate[dateKey].spend += Number(row.spend || 0);
+                byDate[dateKey].impressions += Number(row.impressions || 0);
+                byDate[dateKey].clicks += Number(row.clicks || 0);
+            });
+
+            // Sort dates and format
+            const sortedDates = Object.keys(byDate).sort().reverse().slice(0, 5);
+            const dateText = sortedDates.map(d => {
+                const data = byDate[d];
+                const shortDate = d.slice(5); // MM-DD
+                return `• ${shortDate}: 💰${data.spend.toLocaleString()} | 👁${data.impressions.toLocaleString()}`;
+            }).join('\n');
+
+            // Top 5 ads by total spend
+            const adSpends: Record<string, { name: string; spend: number }> = {};
+            weekInsights.forEach(row => {
+                const key = row.adId;
+                if (!adSpends[key]) {
+                    adSpends[key] = { name: row.ad?.name || row.adId, spend: 0 };
+                }
+                adSpends[key].spend += Number(row.spend || 0);
+            });
+            
+            const topAds = Object.values(adSpends)
+                .sort((a, b) => b.spend - a.spend)
+                .slice(0, 5);
+            
+            const topAdsText = topAds.map((ad, i) => {
+                const shortName = ad.name.length > 20 ? ad.name.slice(0, 17) + '...' : ad.name;
+                return `${i + 1}. ${shortName}: <b>${ad.spend.toLocaleString()}</b>`;
+            }).join('\n');
+
+            const success = await this.sendMessageTo(bot.botToken, chatId, `
+📊 <b>Báo cáo 7 ngày</b>
+📅 ${sevenDaysAgoStr} → ${todayStr}
+
+💰 <b>TỔNG 7 NGÀY</b>
+├── 💵 Spend: <b>${totals.spend.toLocaleString()} VND</b>
+├── 👁 Impressions: ${totals.impressions.toLocaleString()}
+├── 👆 Clicks: ${totals.clicks.toLocaleString()}
+├── 🎯 Results: <b>${totals.results}</b>
+├── 💬 New Message: <b>${totals.messaging}</b>
+├── 📊 CTR: ${ctr}%
+├── � CPC: ${cpc} VND
+├── �📈 CPM: ${cpm} VND
+├── 🎯 CPR: <b>${cpr} VND</b>
+└── 💬 Cost/New Msg: <b>${costPerMsg} VND</b>
+
+📅 <b>Theo ngày:</b>
+${dateText}
+
+🔝 <b>Top ${topAds.length} ads:</b>
+${topAdsText}
+            `);
+            
             if (!success) {
                 this.logger.error(`Failed to send week command response to chatId: ${chatId}`);
             }
         } catch (error) {
             this.logger.error(`Error in handleWeekCommand: ${error.message}`, error.stack);
+            await this.sendMessageTo(bot.botToken, chatId, '❌ Có lỗi khi lấy báo cáo 7 ngày. Vui lòng thử lại sau.');
         }
     }
 
     private async handleBudgetCommand(bot: any, chatId: string) {
         try {
             this.logger.log(`handleBudgetCommand called for bot ${bot.id}, chatId: ${chatId}`);
-            const success = await this.sendMessageTo(bot.botToken, chatId, '💰 Tính năng xem ngân sách sẽ được cập nhật sớm.');
+            
+            // Get ad accounts for user
+            const adAccounts = await this.prisma.adAccount.findMany({
+                where: {
+                    fbAccount: { userId: bot.userId },
+                },
+                select: {
+                    id: true,
+                    name: true,
+                    balance: true,
+                    spendCap: true,
+                    amountSpent: true,
+                    currency: true,
+                    accountStatus: true,
+                },
+            });
+
+            if (adAccounts.length === 0) {
+                await this.sendMessageTo(bot.botToken, chatId, `
+💰 <b>Thông tin ngân sách</b>
+
+❌ Chưa có Ad Account nào được liên kết.
+                `);
+                return;
+            }
+
+            // Get active campaigns with budgets
+            const campaigns = await this.prisma.campaign.findMany({
+                where: {
+                    account: { fbAccount: { userId: bot.userId } },
+                    effectiveStatus: 'ACTIVE',
+                },
+                select: {
+                    id: true,
+                    name: true,
+                    dailyBudget: true,
+                    lifetimeBudget: true,
+                    budgetRemaining: true,
+                    spendCap: true,
+                },
+                orderBy: { createdTime: 'desc' },
+                take: 10,
+            });
+
+            // Format ad accounts info
+            const accountsText = adAccounts.map(acc => {
+                const name = acc.name || acc.id;
+                const shortName = name.length > 20 ? name.slice(0, 17) + '...' : name;
+                const balance = Number(acc.balance || 0);
+                const spent = Number(acc.amountSpent || 0);
+                const cap = Number(acc.spendCap || 0);
+                const statusEmoji = acc.accountStatus === 1 ? '✅' : '⚠️';
+                
+                let line = `${statusEmoji} <b>${shortName}</b>`;
+                if (balance > 0) line += `\n   💵 Số dư: ${balance.toLocaleString()} ${acc.currency}`;
+                if (spent > 0) line += `\n   💸 Đã chi: ${spent.toLocaleString()} ${acc.currency}`;
+                if (cap > 0) line += `\n   🔒 Spend cap: ${cap.toLocaleString()} ${acc.currency}`;
+                
+                return line;
+            }).join('\n\n');
+
+            // Format campaigns info
+            let campaignsText = '';
+            if (campaigns.length > 0) {
+                const top5Campaigns = campaigns.slice(0, 5);
+                campaignsText = top5Campaigns.map(c => {
+                    const name = c.name || c.id;
+                    const shortName = name.length > 25 ? name.slice(0, 22) + '...' : name;
+                    const daily = Number(c.dailyBudget || 0);
+                    const lifetime = Number(c.lifetimeBudget || 0);
+                    const remaining = Number(c.budgetRemaining || 0);
+                    
+                    let budgetInfo = '';
+                    if (daily > 0) budgetInfo = `Ngày: ${daily.toLocaleString()}`;
+                    else if (lifetime > 0) budgetInfo = `Tổng: ${lifetime.toLocaleString()}`;
+                    if (remaining > 0) budgetInfo += ` | Còn: ${remaining.toLocaleString()}`;
+                    
+                    return `• ${shortName}\n   ${budgetInfo || 'Không giới hạn'}`;
+                }).join('\n');
+            }
+
+            const success = await this.sendMessageTo(bot.botToken, chatId, `
+💰 <b>Thông tin ngân sách</b>
+
+📁 <b>Ad Accounts (${adAccounts.length}):</b>
+
+${accountsText}
+${campaignsText ? `
+🎯 <b>Active Campaigns (${campaigns.length}):</b>
+
+${campaignsText}
+` : ''}
+            `);
+            
             if (!success) {
                 this.logger.error(`Failed to send budget command response to chatId: ${chatId}`);
             }
         } catch (error) {
             this.logger.error(`Error in handleBudgetCommand: ${error.message}`, error.stack);
+            await this.sendMessageTo(bot.botToken, chatId, '❌ Có lỗi khi lấy thông tin ngân sách. Vui lòng thử lại sau.');
         }
     }
 
