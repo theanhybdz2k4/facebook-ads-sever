@@ -223,7 +223,7 @@ model TelegramBotSubscriber {
 
   bot UserTelegramBot @relation(fields: [botId], references: [id], onDelete: Cascade)
 
-  @@unique([botId, chatId])
+  @@unique([botId, chatId], name: "botId_chatId")
   @@index([botId])
   @@map("telegram_bot_subscribers")
 }
@@ -994,21 +994,5 @@ model CrawlJob {
   @@index([status, createdAt])
   @@index([accountId, jobType])
   @@map("crawl_jobs")
-}
-
-// ============================================================================
-// TELEGRAM SUBSCRIBERS - For marketing notifications
-// ============================================================================
-
-model TelegramSubscriber {
-  id                   Int      @id @default(autoincrement())
-  chatId               String   @unique @map("chat_id")
-  name                 String?
-  isActive             Boolean  @default(true) @map("is_active")
-  receiveNotifications Boolean  @default(false) @map("receive_notifications") // User must subscribe to receive auto notifications
-  createdAt            DateTime @default(now()) @map("created_at")
-  updatedAt            DateTime @updatedAt @map("updated_at")
-
-  @@map("telegram_subscribers")
 }
 

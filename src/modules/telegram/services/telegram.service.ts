@@ -72,29 +72,43 @@ export class TelegramService {
             // Try to get ngrok URL first (for local development)
             let baseUrl = process.env.BASE_URL || process.env.RAILWAY_PUBLIC_DOMAIN;
             
-            // if (!baseUrl) {
-            //     try {
-            //         const ngrokResponse = await firstValueFrom(
-            //             this.httpService.get('http://localhost:4040/api/tunnels')
-            //         );
-            //         const tunnels = ngrokResponse.data?.tunnels || [];
-            //         const httpsTunnel = tunnels.find((t: any) => t.proto === 'https');
-            //         if (httpsTunnel?.public_url) {
-            //             baseUrl = httpsTunnel.public_url;
-            //             this.logger.log(`Detected ngrok URL: ${baseUrl}`);
-            //         }
-            //     } catch (ngrokError) {
-            //         // Ngrok not running, use default
-            //         this.logger.debug('Ngrok not detected, using default URL');
-            //     }
-            // }
+            if (!baseUrl) {
+                try {
+                    const ngrokResponse = await firstValueFrom(
+                        this.httpService.get('http://localhost:4040/api/tunnels')
+                    );
+                    const tunnels = ngrokResponse.data?.tunnels || [];
+                    const httpsTunnel = tunnels.find((t: any) => t.proto === 'https');
+                    if (httpsTunnel?.public_url) {
+                        baseUrl = httpsTunnel.public_url;
+                        this.logger.log(`Detected ngrok URL: ${baseUrl}`);
+                    }
+                } catch (ngrokError) {
+                    // Ngrok not running, use default
+                    this.logger.debug('Ngrok not detected, using default URL');
+                }
+            }
 
             if (!baseUrl) {
                 baseUrl = 'https://facebook-ads-sever-production.up.railway.app/api/v1'; // Should be configured in prod
                 this.logger.warn(`No BASE_URL configured, using default: ${baseUrl}`);
             }
 
-            const webhookUrl = `${baseUrl}/telegram/webhook/${botId}`;
+            // Đảm bảo baseUrl có global prefix (api/v1) để trùng với route NestJS
+            const globalPrefix = process.env.API_PREFIX || 'api/v1';
+            let normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
+            const hasGlobalPrefix =
+                normalizedBaseUrl.endsWith(`/${globalPrefix}`) ||
+                normalizedBaseUrl.includes(`/${globalPrefix}/`);
+
+            if (!hasGlobalPrefix) {
+                this.logger.warn(
+                    `BASE_URL (${normalizedBaseUrl}) thiếu prefix ${globalPrefix} - tự động bổ sung để webhook khớp route`,
+                );
+                normalizedBaseUrl = `${normalizedBaseUrl}/${globalPrefix}`;
+            }
+
+            const webhookUrl = `${normalizedBaseUrl}/telegram/webhook/${botId}`;
 
             const response = await firstValueFrom(
                 this.httpService.post(`https://api.telegram.org/bot${botToken}/setWebhook`, {
@@ -204,8 +218,8 @@ export class TelegramService {
         this.logger.log(`[EnsureSubscriber] Starting upsert for botId ${botId}, chatId ${chatId}, name: ${name || 'not provided'}`);
         
         // First check if subscriber exists to determine if this is create or update
-        const existing = await this.prisma.telegramBotSubscriber.findUnique({
-            where: { botId_chatId: { botId: Number(botId), chatId: String(chatId) } },
+        const existing = await this.prisma.telegramBotSubscriber.findFirst({
+            where: { botId: Number(botId), chatId: String(chatId) },
             select: { id: true, receiveNotifications: true, isActive: true },
         });
         
@@ -216,22 +230,28 @@ export class TelegramService {
             existingIsActive: existing?.isActive,
         });
         
-        const result = await this.prisma.telegramBotSubscriber.upsert({
-            where: { botId_chatId: { botId: Number(botId), chatId: String(chatId) } },
-            create: { botId: Number(botId), chatId: String(chatId), name, isActive: true, receiveNotifications: true },
-            update: { 
-                isActive: true, 
-                ...(name ? { name } : {}), // Only update name if provided
-                // Don't touch receiveNotifications - keep existing value
-            },
-        });
+        let result;
+        if (existing) {
+            // Update existing subscriber
+            result = await this.prisma.telegramBotSubscriber.update({
+                where: { id: existing.id },
+                data: { 
+                    isActive: true, 
+                    ...(name ? { name } : {}),
+                },
+            });
+        } else {
+            // Create new subscriber
+            result = await this.prisma.telegramBotSubscriber.create({
+                data: { botId: Number(botId), chatId: String(chatId), name, isActive: true, receiveNotifications: true },
+            });
+        }
         
-        this.logger.log(`[EnsureSubscriber] Upsert completed for botId ${botId}, chatId ${chatId}:`, {
+        this.logger.log(`[EnsureSubscriber] Completed for botId ${botId}, chatId ${chatId}:`, {
             id: result.id,
             receiveNotifications: result.receiveNotifications,
             isActive: result.isActive,
             wasNew: isNew,
-            receiveNotificationsChanged: isNew ? 'N/A (new)' : (result.receiveNotifications === existing?.receiveNotifications ? 'NO (preserved)' : 'YES'),
         });
         
         return result;
@@ -288,12 +308,10 @@ export class TelegramService {
                 // Fallback: query if subscriber data not provided (shouldn't happen in normal flow)
                 this.logger.warn(`[Start] No subscriber data provided, falling back to query for botId ${botId}, chatId ${chatId}`);
                 try {
-                    const subscriber = await this.prisma.telegramBotSubscriber.findUnique({
+                    const subscriber = await this.prisma.telegramBotSubscriber.findFirst({
                         where: { 
-                            botId_chatId: { 
-                                botId: Number(botId), 
-                                chatId: String(chatId) 
-                            } 
+                            botId: Number(botId), 
+                            chatId: String(chatId),
                         },
                         select: {
                             receiveNotifications: true,
@@ -373,22 +391,21 @@ ${statusText}
             // Ensure subscriber exists first
             await this.ensureSubscriber(botId, chatId);
             
-            // Get current state before update
-            const beforeUpdate = await this.prisma.telegramBotSubscriber.findUnique({
-                where: { botId_chatId: { botId: Number(botId), chatId: String(chatId) } },
+            // Find subscriber
+            const subscriber = await this.prisma.telegramBotSubscriber.findFirst({
+                where: { botId: Number(botId), chatId: String(chatId) },
                 select: { id: true, receiveNotifications: true, isActive: true },
             });
             
-            this.logger.log(`[Subscribe] State BEFORE update for botId ${botId}, chatId ${chatId}:`, {
-                found: !!beforeUpdate,
-                id: beforeUpdate?.id,
-                receiveNotifications: beforeUpdate?.receiveNotifications,
-                isActive: beforeUpdate?.isActive,
-            });
+            if (!subscriber) {
+                this.logger.error(`[Subscribe] Subscriber not found after ensureSubscriber for botId ${botId}, chatId ${chatId}`);
+                await this.sendMessageTo(botToken, chatId, '❌ Có lỗi xảy ra. Vui lòng thử lại sau.');
+                return;
+            }
             
             // Update subscriber - explicitly set receiveNotifications to true
             const updated = await this.prisma.telegramBotSubscriber.update({
-                where: { botId_chatId: { botId: Number(botId), chatId: String(chatId) } },
+                where: { id: subscriber.id },
                 data: { receiveNotifications: true, isActive: true },
             });
             
@@ -396,51 +413,7 @@ ${statusText}
                 id: updated.id,
                 receiveNotifications: updated.receiveNotifications,
                 isActive: updated.isActive,
-                changed: beforeUpdate ? (beforeUpdate.receiveNotifications !== updated.receiveNotifications) : 'N/A (new)',
             });
-            
-            // Verify the update was successful - query again to ensure DB persistence
-            const verify = await this.prisma.telegramBotSubscriber.findUnique({
-                where: { botId_chatId: { botId: Number(botId), chatId: String(chatId) } },
-                select: { 
-                    id: true,
-                    receiveNotifications: true, 
-                    isActive: true,
-                    updatedAt: true,
-                },
-            });
-            
-            this.logger.log(`[Subscribe] Verification query result after update:`, {
-                found: !!verify,
-                id: verify?.id,
-                receiveNotifications: verify?.receiveNotifications,
-                isActive: verify?.isActive,
-                updatedAt: verify?.updatedAt,
-                matchesUpdate: verify?.receiveNotifications === true && verify?.isActive === true,
-            });
-            
-            // Final check: verify subscriber will be included in getSubscribers
-            const willReceiveNotifications = verify?.receiveNotifications === true && verify?.isActive === true;
-            if (!willReceiveNotifications) {
-                this.logger.error(`[Subscribe] WARNING: Subscriber ${chatId} will NOT receive notifications! Verification failed.`);
-            } else {
-                this.logger.log(`[Subscribe] SUCCESS: Subscriber ${chatId} is properly configured to receive notifications.`);
-            }
-            
-            // Double-check: verify subscriber appears in getSubscribers query (same query used for sending notifications)
-            const subscribersList = await this.getSubscribers(botId);
-            const isInSubscribersList = subscribersList.some(s => s.chatId === chatId);
-            this.logger.log(`[Subscribe] Final verification - Subscriber in getSubscribers list:`, {
-                chatId,
-                isInList: isInSubscribersList,
-                totalSubscribers: subscribersList.length,
-            });
-            
-            if (!isInSubscribersList) {
-                this.logger.error(`[Subscribe] CRITICAL: Subscriber ${chatId} is NOT in getSubscribers list! They will NOT receive notifications!`);
-            } else {
-                this.logger.log(`[Subscribe] CONFIRMED: Subscriber ${chatId} is in getSubscribers list and WILL receive notifications.`);
-            }
             
             const success = await this.sendMessageTo(botToken, chatId, `
 🔔 <b>Đã bật nhận thông báo tự động!</b>
@@ -470,8 +443,19 @@ Dùng /unsubscribe để tắt thông báo.
         try {
             this.logger.log(`handleUnsubscribeCommand called for bot ${botId}, chatId: ${chatId}`);
             
+            // Find subscriber first
+            const subscriber = await this.prisma.telegramBotSubscriber.findFirst({
+                where: { botId: Number(botId), chatId: String(chatId) },
+                select: { id: true },
+            });
+            
+            if (!subscriber) {
+                await this.sendMessageTo(botToken, chatId, '⚠️ Bạn chưa đăng ký nhận thông báo.');
+                return;
+            }
+            
             const updated = await this.prisma.telegramBotSubscriber.update({
-                where: { botId_chatId: { botId: Number(botId), chatId: String(chatId) } },
+                where: { id: subscriber.id },
                 data: { receiveNotifications: false },
             });
             
@@ -480,14 +464,6 @@ Dùng /unsubscribe để tắt thông báo.
                 receiveNotifications: updated.receiveNotifications,
                 isActive: updated.isActive,
             });
-            
-            // Verify the update
-            const verify = await this.prisma.telegramBotSubscriber.findUnique({
-                where: { botId_chatId: { botId: Number(botId), chatId: String(chatId) } },
-                select: { receiveNotifications: true, isActive: true },
-            });
-            
-            this.logger.log(`[Unsubscribe] Verification query result:`, verify);
             
             const success = await this.sendMessageTo(botToken, chatId, `
 🔕 <b>Đã tắt nhận thông báo tự động!</b>

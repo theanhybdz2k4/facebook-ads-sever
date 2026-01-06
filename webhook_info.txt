@@ -1,0 +1,1 @@
+{"ok":true,"result":{"url":"https://paramountly-collatable-normand.ngrok-free.dev/api/v1/telegram/webhook/1","has_custom_certificate":false,"pending_update_count":0,"last_error_date":1767686114,"last_error_message":"Wrong response from the webhook: 404 Not Found","max_connections":40,"ip_address":"3.125.209.94","allowed_updates":["message","callback_query"]}}

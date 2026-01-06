@@ -377,69 +377,6 @@ Nếu bạn nhận được tin nhắn này, bot đang hoạt động đúng!`;
         };
     }
 
-    @Post('bots/:botId/migrate-subscribers')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Migrate subscribers from telegram_subscribers to telegram_bot_subscribers' })
-    async migrateSubscribers(
-        @CurrentUser() user: any,
-        @Param('botId') botId: string,
-    ) {
-        const bot = await this.prisma.userTelegramBot.findFirst({
-            where: { id: parseInt(botId, 10), userId: user.id },
-        });
-
-        if (!bot) {
-            throw new BadRequestException('Bot not found');
-        }
-
-        // Get all subscribers from old table
-        const oldSubscribers = await this.prisma.telegramSubscriber.findMany({
-            where: {
-                isActive: true,
-                receiveNotifications: true,
-            },
-        });
-
-        let migrated = 0;
-        let skipped = 0;
-
-        for (const oldSub of oldSubscribers) {
-            try {
-                await this.prisma.telegramBotSubscriber.upsert({
-                    where: {
-                        botId_chatId: {
-                            botId: parseInt(botId, 10),
-                            chatId: String(oldSub.chatId),
-                        },
-                    },
-                    create: {
-                        botId: parseInt(botId, 10),
-                        chatId: String(oldSub.chatId),
-                        name: oldSub.name,
-                        isActive: oldSub.isActive,
-                        receiveNotifications: oldSub.receiveNotifications,
-                    },
-                    update: {
-                        isActive: oldSub.isActive,
-                        receiveNotifications: oldSub.receiveNotifications,
-                        name: oldSub.name,
-                    },
-                });
-                migrated++;
-            } catch (error) {
-                skipped++;
-            }
-        }
-
-        return {
-            success: true,
-            migrated,
-            skipped,
-            message: `Đã migrate ${migrated} subscribers, bỏ qua ${skipped}`,
-        };
-    }
-
     @Post('bots/:botId/add-subscriber')
     @UseGuards(JwtAuthGuard)
     @ApiBearerAuth()
@@ -457,26 +394,32 @@ Nếu bạn nhận được tin nhắn này, bot đang hoạt động đúng!`;
             throw new BadRequestException('Bot not found');
         }
 
-        const subscriber = await this.prisma.telegramBotSubscriber.upsert({
+        // Use findFirst + create/update instead of upsert with composite key
+        const existing = await this.prisma.telegramBotSubscriber.findFirst({
             where: {
-                botId_chatId: {
-                    botId: parseInt(botId, 10),
-                    chatId: String(dto.chatId),
-                },
-            },
-            create: {
                 botId: parseInt(botId, 10),
                 chatId: String(dto.chatId),
-                name: dto.name,
-                isActive: true,
-                receiveNotifications: true,
-            },
-            update: {
-                isActive: true,
-                receiveNotifications: true,
-                name: dto.name,
             },
         });
+
+        const subscriber = existing
+            ? await this.prisma.telegramBotSubscriber.update({
+                  where: { id: existing.id },
+                  data: {
+                      isActive: true,
+                      receiveNotifications: true,
+                      name: dto.name,
+                  },
+              })
+            : await this.prisma.telegramBotSubscriber.create({
+                  data: {
+                      botId: parseInt(botId, 10),
+                      chatId: String(dto.chatId),
+                      name: dto.name,
+                      isActive: true,
+                      receiveNotifications: true,
+                  },
+              });
 
         return {
             success: true,
