@@ -90,7 +90,7 @@ export class TelegramService {
             // }
 
             if (!baseUrl) {
-                baseUrl = 'https://facebook-ads-sever-production.up.railway.app'; // Should be configured in prod
+                baseUrl = 'https://facebook-ads-sever-production.up.railway.app/api/v1'; // Should be configured in prod
                 this.logger.warn(`No BASE_URL configured, using default: ${baseUrl}`);
             }
 
