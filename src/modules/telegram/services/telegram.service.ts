@@ -72,25 +72,25 @@ export class TelegramService {
             // Try to get ngrok URL first (for local development)
             let baseUrl = process.env.BASE_URL || process.env.RAILWAY_PUBLIC_DOMAIN;
             
-            if (!baseUrl) {
-                try {
-                    const ngrokResponse = await firstValueFrom(
-                        this.httpService.get('http://localhost:4040/api/tunnels')
-                    );
-                    const tunnels = ngrokResponse.data?.tunnels || [];
-                    const httpsTunnel = tunnels.find((t: any) => t.proto === 'https');
-                    if (httpsTunnel?.public_url) {
-                        baseUrl = httpsTunnel.public_url;
-                        this.logger.log(`Detected ngrok URL: ${baseUrl}`);
-                    }
-                } catch (ngrokError) {
-                    // Ngrok not running, use default
-                    this.logger.debug('Ngrok not detected, using default URL');
-                }
-            }
+            // if (!baseUrl) {
+            //     try {
+            //         const ngrokResponse = await firstValueFrom(
+            //             this.httpService.get('http://localhost:4040/api/tunnels')
+            //         );
+            //         const tunnels = ngrokResponse.data?.tunnels || [];
+            //         const httpsTunnel = tunnels.find((t: any) => t.proto === 'https');
+            //         if (httpsTunnel?.public_url) {
+            //             baseUrl = httpsTunnel.public_url;
+            //             this.logger.log(`Detected ngrok URL: ${baseUrl}`);
+            //         }
+            //     } catch (ngrokError) {
+            //         // Ngrok not running, use default
+            //         this.logger.debug('Ngrok not detected, using default URL');
+            //     }
+            // }
 
             if (!baseUrl) {
-                baseUrl = 'https://your-domain.com'; // Should be configured in prod
+                baseUrl = 'https://facebook-ads-sever-production.up.railway.app'; // Should be configured in prod
                 this.logger.warn(`No BASE_URL configured, using default: ${baseUrl}`);
             }
 
