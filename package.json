@@ -5,6 +5,7 @@
   "author": "",
   "private": true,
   "license": "UNLICENSED",
+  "packageManager": "yarn@1.22.22",
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
@@ -73,6 +74,9 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "nodemailer": "^6.9.13",
+    "pino": "^9.0.0",
+    "webpack": "^5.91.0",
     "@nestjs/cli": "^10.0.0",
     "@nestjs/schematics": "^10.0.0",
     "@nestjs/testing": "^10.0.0",
