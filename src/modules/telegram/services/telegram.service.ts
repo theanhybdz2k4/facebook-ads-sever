@@ -525,7 +525,7 @@ Dùng /subscribe để bật lại thông báo.
             const totalReach = Number(todayInsights._sum.reach || 0);
 
             const ctr = totalImpressions > 0 ? ((totalClicks / totalImpressions) * 100).toFixed(2) : '0';
-            const cpm = totalImpressions > 0 ? ((totalSpend / totalImpressions) * 1000).toFixed(0) : '0';
+            const cpm = totalImpressions > 0 ? Math.round((totalSpend / totalImpressions) * 1000).toLocaleString('en-US') : '0';
 
             const success = await this.sendMessageTo(bot.botToken, chatId, `
 📊 <b>Báo cáo tổng quan Ads</b>
@@ -535,10 +535,10 @@ Dùng /subscribe để bật lại thông báo.
 🎯 Active Ads: <b>${activeAdsCount}</b>
 
 💰 <b>Hiệu suất hôm nay:</b>
-• Chi tiêu: <b>${totalSpend.toLocaleString()} VND</b>
-• Impressions: <b>${totalImpressions.toLocaleString()}</b>
-• Reach: <b>${totalReach.toLocaleString()}</b>
-• Clicks: <b>${totalClicks.toLocaleString()}</b>
+• Chi tiêu: <b>${totalSpend.toLocaleString('en-US')} VND</b>
+• Impressions: <b>${totalImpressions.toLocaleString('en-US')}</b>
+• Reach: <b>${totalReach.toLocaleString('en-US')}</b>
+• Clicks: <b>${totalClicks.toLocaleString('en-US')}</b>
 
 📈 <b>Chỉ số:</b>
 • CTR: <b>${ctr}%</b>
@@ -622,10 +622,10 @@ Dữ liệu sẽ có sau khi sync insights.
             }), { spend: 0, impressions: 0, clicks: 0, reach: 0, results: 0, messaging: 0 });
 
             const ctr = totals.impressions > 0 ? ((totals.clicks / totals.impressions) * 100).toFixed(2) : '0';
-            const cpc = totals.clicks > 0 ? (totals.spend / totals.clicks).toFixed(0) : '0';
-            const cpm = totals.impressions > 0 ? ((totals.spend / totals.impressions) * 1000).toFixed(0) : '0';
-            const cpr = totals.results > 0 ? (totals.spend / totals.results).toFixed(0) : '0';
-            const costPerMsg = totals.messaging > 0 ? (totals.spend / totals.messaging).toFixed(0) : '0';
+            const cpc = totals.clicks > 0 ? Math.round(totals.spend / totals.clicks).toLocaleString('en-US') : '0';
+            const cpm = totals.impressions > 0 ? Math.round((totals.spend / totals.impressions) * 1000).toLocaleString('en-US') : '0';
+            const cpr = totals.results > 0 ? Math.round(totals.spend / totals.results).toLocaleString('en-US') : '0';
+            const costPerMsg = totals.messaging > 0 ? Math.round(totals.spend / totals.messaging).toLocaleString('en-US') : '0';
 
             // Top 3 ads by spend with detailed metrics
             const top3 = hourlyData.slice(0, 3);
@@ -638,7 +638,7 @@ Dữ liệu sẽ có sau khi sync insights.
                 const results = Number(row.results || 0);
                 const msg = Number(row.messagingStarted || 0);
                 return `${i + 1}. ${shortName}
-├── 💵 ${spend.toLocaleString()} | 👁 ${impr.toLocaleString()} | 👆 ${clicks}
+├── 💵 ${spend.toLocaleString('en-US')} | 👁 ${impr.toLocaleString('en-US')} | 👆 ${clicks}
 └── 🎯 ${results} | 💬 ${msg}`;
             }).join('\n\n');
 
@@ -648,9 +648,9 @@ Dữ liệu sẽ có sau khi sync insights.
 📅 ${todayStr}
 
 💰 <b>TỔNG GIỜ ${hourDisplay}</b>
-├── 💵 Spend: <b>${totals.spend.toLocaleString()} VND</b>
-├── 👁 Impressions: ${totals.impressions.toLocaleString()}
-├── 👆 Clicks: ${totals.clicks.toLocaleString()}
+├── 💵 Spend: <b>${totals.spend.toLocaleString('en-US')} VND</b>
+├── 👁 Impressions: ${totals.impressions.toLocaleString('en-US')}
+├── 👆 Clicks: ${totals.clicks.toLocaleString('en-US')}
 ├── 🎯 Results: <b>${totals.results}</b>
 ├── 💬 New Message: <b>${totals.messaging}</b>
 ├── 📊 CTR: ${ctr}%
@@ -716,10 +716,10 @@ Dữ liệu sẽ có sau khi sync insights.
             }), { spend: 0, impressions: 0, clicks: 0, reach: 0, results: 0, messaging: 0 });
 
             const ctr = totals.impressions > 0 ? ((totals.clicks / totals.impressions) * 100).toFixed(2) : '0';
-            const cpc = totals.clicks > 0 ? (totals.spend / totals.clicks).toFixed(0) : '0';
-            const cpm = totals.impressions > 0 ? ((totals.spend / totals.impressions) * 1000).toFixed(0) : '0';
-            const cpr = totals.results > 0 ? (totals.spend / totals.results).toFixed(0) : '0';
-            const costPerMsg = totals.messaging > 0 ? (totals.spend / totals.messaging).toFixed(0) : '0';
+            const cpc = totals.clicks > 0 ? Math.round(totals.spend / totals.clicks).toLocaleString('en-US') : '0';
+            const cpm = totals.impressions > 0 ? Math.round((totals.spend / totals.impressions) * 1000).toLocaleString('en-US') : '0';
+            const cpr = totals.results > 0 ? Math.round(totals.spend / totals.results).toLocaleString('en-US') : '0';
+            const costPerMsg = totals.messaging > 0 ? Math.round(totals.spend / totals.messaging).toLocaleString('en-US') : '0';
 
             // Top 5 ads by spend with detailed metrics
             const top5 = dailyInsights.slice(0, 5);
@@ -732,7 +732,7 @@ Dữ liệu sẽ có sau khi sync insights.
                 const results = Number(row.results || 0);
                 const msg = Number(row.messagingStarted || 0);
                 return `${i + 1}. ${shortName}
-├── � ${spend.toLocaleString()} | 👁 ${impr.toLocaleString()} | 👆 ${clicks}
+├── � ${spend.toLocaleString('en-US')} | 👁 ${impr.toLocaleString('en-US')} | 👆 ${clicks}
 └── 🎯 ${results} | 💬 ${msg}`;
             }).join('\n\n');
 
@@ -741,9 +741,9 @@ Dữ liệu sẽ có sau khi sync insights.
 📅 ${todayStr}
 
 💰 <b>TỔNG HÔM NAY</b>
-├── 💵 Spend: <b>${totals.spend.toLocaleString()} VND</b>
-├── 👁 Impressions: ${totals.impressions.toLocaleString()}
-├── 👆 Clicks: ${totals.clicks.toLocaleString()}
+├── 💵 Spend: <b>${totals.spend.toLocaleString('en-US')} VND</b>
+├── 👁 Impressions: ${totals.impressions.toLocaleString('en-US')}
+├── 👆 Clicks: ${totals.clicks.toLocaleString('en-US')}
 ├── 🎯 Results: <b>${totals.results}</b>
 ├── 💬 New Message: <b>${totals.messaging}</b>
 ├── � CTR: ${ctr}%
@@ -813,10 +813,10 @@ ${adsText}
             }), { spend: 0, impressions: 0, clicks: 0, reach: 0, results: 0, messaging: 0 });
 
             const ctr = totals.impressions > 0 ? ((totals.clicks / totals.impressions) * 100).toFixed(2) : '0';
-            const cpc = totals.clicks > 0 ? (totals.spend / totals.clicks).toFixed(0) : '0';
-            const cpm = totals.impressions > 0 ? ((totals.spend / totals.impressions) * 1000).toFixed(0) : '0';
-            const cpr = totals.results > 0 ? (totals.spend / totals.results).toFixed(0) : '0';
-            const costPerMsg = totals.messaging > 0 ? (totals.spend / totals.messaging).toFixed(0) : '0';
+            const cpc = totals.clicks > 0 ? Math.round(totals.spend / totals.clicks).toLocaleString('en-US') : '0';
+            const cpm = totals.impressions > 0 ? Math.round((totals.spend / totals.impressions) * 1000).toLocaleString('en-US') : '0';
+            const cpr = totals.results > 0 ? Math.round(totals.spend / totals.results).toLocaleString('en-US') : '0';
+            const costPerMsg = totals.messaging > 0 ? Math.round(totals.spend / totals.messaging).toLocaleString('en-US') : '0';
 
             // Aggregate by date
             const byDate: Record<string, { spend: number; impressions: number; clicks: number }> = {};
@@ -835,7 +835,7 @@ ${adsText}
             const dateText = sortedDates.map(d => {
                 const data = byDate[d];
                 const shortDate = d.slice(5); // MM-DD
-                return `• ${shortDate}: 💰${data.spend.toLocaleString()} | 👁${data.impressions.toLocaleString()}`;
+                return `• ${shortDate}: 💰${data.spend.toLocaleString('en-US')} | 👁${data.impressions.toLocaleString('en-US')}`;
             }).join('\n');
 
             // Top 5 ads by total spend
@@ -854,7 +854,7 @@ ${adsText}
             
             const topAdsText = topAds.map((ad, i) => {
                 const shortName = ad.name.length > 20 ? ad.name.slice(0, 17) + '...' : ad.name;
-                return `${i + 1}. ${shortName}: <b>${ad.spend.toLocaleString()}</b>`;
+                return `${i + 1}. ${shortName}: <b>${ad.spend.toLocaleString('en-US')}</b>`;
             }).join('\n');
 
             const success = await this.sendMessageTo(bot.botToken, chatId, `
@@ -862,9 +862,9 @@ ${adsText}
 📅 ${sevenDaysAgoStr} → ${todayStr}
 
 💰 <b>TỔNG 7 NGÀY</b>
-├── 💵 Spend: <b>${totals.spend.toLocaleString()} VND</b>
-├── 👁 Impressions: ${totals.impressions.toLocaleString()}
-├── 👆 Clicks: ${totals.clicks.toLocaleString()}
+├── 💵 Spend: <b>${totals.spend.toLocaleString('en-US')} VND</b>
+├── 👁 Impressions: ${totals.impressions.toLocaleString('en-US')}
+├── 👆 Clicks: ${totals.clicks.toLocaleString('en-US')}
 ├── 🎯 Results: <b>${totals.results}</b>
 ├── 💬 New Message: <b>${totals.messaging}</b>
 ├── 📊 CTR: ${ctr}%
@@ -946,9 +946,9 @@ ${topAdsText}
                 const statusEmoji = acc.accountStatus === 1 ? '✅' : '⚠️';
                 
                 let line = `${statusEmoji} <b>${shortName}</b>`;
-                if (balance > 0) line += `\n   💵 Số dư: ${balance.toLocaleString()} ${acc.currency}`;
-                if (spent > 0) line += `\n   💸 Đã chi: ${spent.toLocaleString()} ${acc.currency}`;
-                if (cap > 0) line += `\n   🔒 Spend cap: ${cap.toLocaleString()} ${acc.currency}`;
+                if (balance > 0) line += `\n   💵 Số dư: ${balance.toLocaleString('en-US')} ${acc.currency}`;
+                if (spent > 0) line += `\n   💸 Đã chi: ${spent.toLocaleString('en-US')} ${acc.currency}`;
+                if (cap > 0) line += `\n   🔒 Spend cap: ${cap.toLocaleString('en-US')} ${acc.currency}`;
                 
                 return line;
             }).join('\n\n');
@@ -965,9 +965,9 @@ ${topAdsText}
                     const remaining = Number(c.budgetRemaining || 0);
                     
                     let budgetInfo = '';
-                    if (daily > 0) budgetInfo = `Ngày: ${daily.toLocaleString()}`;
-                    else if (lifetime > 0) budgetInfo = `Tổng: ${lifetime.toLocaleString()}`;
-                    if (remaining > 0) budgetInfo += ` | Còn: ${remaining.toLocaleString()}`;
+                    if (daily > 0) budgetInfo = `Ngày: ${daily.toLocaleString('en-US')}`;
+                    else if (lifetime > 0) budgetInfo = `Tổng: ${lifetime.toLocaleString('en-US')}`;
+                    if (remaining > 0) budgetInfo += ` | Còn: ${remaining.toLocaleString('en-US')}`;
                     
                     return `• ${shortName}\n   ${budgetInfo || 'Không giới hạn'}`;
                 }).join('\n');
@@ -1154,7 +1154,7 @@ ${campaignsText}
             ? ((data.totalClicks / data.totalImpressions) * 100).toFixed(2)
             : '0';
         const cpm = data.totalImpressions > 0
-            ? ((data.totalSpend / data.totalImpressions) * 1000).toFixed(0)
+            ? Math.round((data.totalSpend / data.totalImpressions) * 1000).toLocaleString('en-US')
             : '0';
 
         const message = `
@@ -1165,10 +1165,10 @@ ${campaignsText}
 🎯 Active Ads: <b>${data.adsCount}</b>
 
 💰 <b>Performance:</b>
-• Spend: <b>${data.totalSpend.toLocaleString()} ${data.currency}</b>
-• Impressions: <b>${data.totalImpressions.toLocaleString()}</b>
-• Reach: <b>${data.totalReach.toLocaleString()}</b>
-• Clicks: <b>${data.totalClicks.toLocaleString()}</b>
+• Spend: <b>${data.totalSpend.toLocaleString('en-US')} ${data.currency}</b>
+• Impressions: <b>${data.totalImpressions.toLocaleString('en-US')}</b>
+• Reach: <b>${data.totalReach.toLocaleString('en-US')}</b>
+• Clicks: <b>${data.totalClicks.toLocaleString('en-US')}</b>
 
 📊 CTR: <b>${ctr}%</b> | CPM: <b>${cpm}</b>
 `;
@@ -1245,16 +1245,16 @@ ${campaignsText}
     }): Promise<void> {
         const topAdsText = data.topAds
             .slice(0, 5)
-            .map((ad, i) => `${i + 1}. ${ad.name.substring(0, 30)}... - ${ad.spend.toLocaleString()} ${data.currency}`)
+            .map((ad, i) => `${i + 1}. ${ad.name.substring(0, 30)}... - ${ad.spend.toLocaleString('en-US')} ${data.currency}`)
             .join('\n');
 
         const message = `
 📊 <b>Daily Summary - ${data.date}</b>
 
 👥 Accounts: <b>${data.accountsSynced}</b>
-💰 Total Spend: <b>${data.totalSpend.toLocaleString()} ${data.currency}</b>
-👁 Impressions: <b>${data.totalImpressions.toLocaleString()}</b>
-👆 Clicks: <b>${data.totalClicks.toLocaleString()}</b>
+💰 Total Spend: <b>${data.totalSpend.toLocaleString('en-US')} ${data.currency}</b>
+👁 Impressions: <b>${data.totalImpressions.toLocaleString('en-US')}</b>
+👆 Clicks: <b>${data.totalClicks.toLocaleString('en-US')}</b>
 
 🏆 <b>Top Performing Ads:</b>
 ${topAdsText || 'No data'}

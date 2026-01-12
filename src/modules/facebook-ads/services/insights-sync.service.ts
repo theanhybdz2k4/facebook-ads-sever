@@ -203,6 +203,13 @@ export class InsightsSyncService {
      * Batch upsert daily insights - single transaction for all records
      */
     private async batchUpsertDailyInsights(insights: any[], accountId: string, syncedAt: Date) {
+        // Sort to prevent deadlocks (Order: date -> adId)
+        insights.sort((a, b) => {
+            const dateCompare = a.date_start.localeCompare(b.date_start);
+            if (dateCompare !== 0) return dateCompare;
+            return a.ad_id.localeCompare(b.ad_id);
+        });
+
         await this.prisma.$transaction(
             insights.map((data) => {
                 const date = this.parseLocalDate(data.date_start);
@@ -324,6 +331,15 @@ export class InsightsSyncService {
     }
 
     private async batchUpsertDeviceInsights(insights: any[], accountId: string, syncedAt: Date) {
+        // Sort to prevent deadlocks (Order: date -> adId -> device)
+        insights.sort((a, b) => {
+            const dateCompare = a.date_start.localeCompare(b.date_start);
+            if (dateCompare !== 0) return dateCompare;
+            const adCompare = a.ad_id.localeCompare(b.ad_id);
+            if (adCompare !== 0) return adCompare;
+            return (a.device_platform || '').localeCompare(b.device_platform || '');
+        });
+
         await this.prisma.$transaction(
             insights.map((data) => {
                 const date = this.parseLocalDate(data.date_start);
@@ -413,6 +429,17 @@ export class InsightsSyncService {
     }
 
     private async batchUpsertPlacementInsights(insights: any[], accountId: string, syncedAt: Date) {
+        // Sort to prevent deadlocks
+        insights.sort((a, b) => {
+            const dateCompare = a.date_start.localeCompare(b.date_start);
+            if (dateCompare !== 0) return dateCompare;
+            const adCompare = a.ad_id.localeCompare(b.ad_id);
+            if (adCompare !== 0) return adCompare;
+            const pubCompare = (a.publisher_platform || '').localeCompare(b.publisher_platform || '');
+            if (pubCompare !== 0) return pubCompare;
+            return (a.platform_position || '').localeCompare(b.platform_position || '');
+        });
+
         await this.prisma.$transaction(
             insights.map((data) => {
                 const date = this.parseLocalDate(data.date_start);
@@ -505,6 +532,17 @@ export class InsightsSyncService {
     }
 
     private async batchUpsertAgeGenderInsights(insights: any[], accountId: string, syncedAt: Date) {
+        // Sort: date -> adId -> age -> gender
+        insights.sort((a, b) => {
+            const dateCompare = a.date_start.localeCompare(b.date_start);
+            if (dateCompare !== 0) return dateCompare;
+            const adCompare = a.ad_id.localeCompare(b.ad_id);
+            if (adCompare !== 0) return adCompare;
+            const ageCompare = (a.age || '').localeCompare(b.age || '');
+            if (ageCompare !== 0) return ageCompare;
+            return (a.gender || '').localeCompare(b.gender || '');
+        });
+
         await this.prisma.$transaction(
             insights.map((data) => {
                 const date = this.parseLocalDate(data.date_start);
@@ -596,6 +634,17 @@ export class InsightsSyncService {
     }
 
     private async batchUpsertRegionInsights(insights: any[], accountId: string, syncedAt: Date) {
+        // Sort: date -> adId -> country -> region
+        insights.sort((a, b) => {
+            const dateCompare = a.date_start.localeCompare(b.date_start);
+            if (dateCompare !== 0) return dateCompare;
+            const adCompare = a.ad_id.localeCompare(b.ad_id);
+            if (adCompare !== 0) return adCompare;
+            const countryCompare = (a.country || '').localeCompare(b.country || '');
+            if (countryCompare !== 0) return countryCompare;
+            return (a.region || '').localeCompare(b.region || '');
+        });
+
         await this.prisma.$transaction(
             insights.map((data) => {
                 const date = this.parseLocalDate(data.date_start);
@@ -947,6 +996,16 @@ export class InsightsSyncService {
      * Batch upsert hourly insights - single transaction for all records
      */
     private async batchUpsertHourlyInsights(insights: any[], accountId: string, syncedAt: Date) {
+        // Sort: date -> adId -> hourlyStats
+        insights.sort((a, b) => {
+            const dateCompare = a.date_start.localeCompare(b.date_start);
+            if (dateCompare !== 0) return dateCompare;
+            const adCompare = a.ad_id.localeCompare(b.ad_id);
+            if (adCompare !== 0) return adCompare;
+            return (a.hourly_stats_aggregated_by_advertiser_time_zone || '')
+                .localeCompare(b.hourly_stats_aggregated_by_advertiser_time_zone || '');
+        });
+
         await this.prisma.$transaction(
             insights.map((data) => {
                 const date = this.parseLocalDate(data.date_start);
