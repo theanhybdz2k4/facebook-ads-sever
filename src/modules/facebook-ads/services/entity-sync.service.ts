@@ -64,16 +64,38 @@ export class EntitySyncService {
             const campaigns = await this.facebookApi.getCampaigns(accountId, accessToken);
             const now = new Date();
 
+            // Get all currently ACTIVE campaigns in DB for this account
+            const existingActiveCampaigns = await this.prisma.campaign.findMany({
+                where: { accountId, effectiveStatus: 'ACTIVE' },
+                select: { id: true },
+            });
+            const fetchedIds = new Set(campaigns.map(c => c.id));
+
+            // Mark campaigns no longer returned as ACTIVE -> INACTIVE
+            const missingIds = existingActiveCampaigns
+                .filter(c => !fetchedIds.has(c.id))
+                .map(c => c.id);
+
+            if (missingIds.length > 0) {
+                await this.prisma.campaign.updateMany({
+                    where: { id: { in: missingIds } },
+                    data: { effectiveStatus: 'INACTIVE', syncedAt: now },
+                });
+                this.logger.log(`Marked ${missingIds.length} campaigns as INACTIVE for ${accountId}`);
+            }
+
             // Batch upsert all campaigns in a single transaction
-            await this.prisma.$transaction(
-                campaigns.map((campaign) =>
-                    this.prisma.campaign.upsert({
-                        where: { id: campaign.id },
-                        create: this.mapCampaign(campaign, accountId, now),
-                        update: this.mapCampaign(campaign, accountId, now),
-                    })
-                )
-            );
+            if (campaigns.length > 0) {
+                await this.prisma.$transaction(
+                    campaigns.map((campaign) =>
+                        this.prisma.campaign.upsert({
+                            where: { id: campaign.id },
+                            create: this.mapCampaign(campaign, accountId, now),
+                            update: this.mapCampaign(campaign, accountId, now),
+                        })
+                    )
+                );
+            }
 
             await this.crawlJobService.completeJob(job.id, campaigns.length);
             this.logger.log(`Synced ${campaigns.length} campaigns for ${accountId}`);
@@ -103,16 +125,38 @@ export class EntitySyncService {
             const adsets = await this.facebookApi.getAdsets(accountId, accessToken);
             const now = new Date();
 
+            // Get all currently ACTIVE adsets in DB for this account
+            const existingActiveAdsets = await this.prisma.adset.findMany({
+                where: { accountId, effectiveStatus: 'ACTIVE' },
+                select: { id: true },
+            });
+            const fetchedIds = new Set(adsets.map(a => a.id));
+
+            // Mark adsets no longer returned as ACTIVE -> INACTIVE
+            const missingIds = existingActiveAdsets
+                .filter(a => !fetchedIds.has(a.id))
+                .map(a => a.id);
+
+            if (missingIds.length > 0) {
+                await this.prisma.adset.updateMany({
+                    where: { id: { in: missingIds } },
+                    data: { effectiveStatus: 'INACTIVE', syncedAt: now },
+                });
+                this.logger.log(`Marked ${missingIds.length} adsets as INACTIVE for ${accountId}`);
+            }
+
             // Batch upsert all adsets in a single transaction
-            await this.prisma.$transaction(
-                adsets.map((adset) =>
-                    this.prisma.adset.upsert({
-                        where: { id: adset.id },
-                        create: this.mapAdset(adset, accountId, now),
-                        update: this.mapAdset(adset, accountId, now),
-                    })
-                )
-            );
+            if (adsets.length > 0) {
+                await this.prisma.$transaction(
+                    adsets.map((adset) =>
+                        this.prisma.adset.upsert({
+                            where: { id: adset.id },
+                            create: this.mapAdset(adset, accountId, now),
+                            update: this.mapAdset(adset, accountId, now),
+                        })
+                    )
+                );
+            }
 
             await this.crawlJobService.completeJob(job.id, adsets.length);
             this.logger.log(`Synced ${adsets.length} adsets for ${accountId}`);
@@ -188,6 +232,26 @@ export class EntitySyncService {
             await this.crawlJobService.startJob(job.id);
             const ads = await this.facebookApi.getAds(accountId, accessToken);
             const now = new Date();
+
+            // Get all currently ACTIVE ads in DB for this account
+            const existingActiveAds = await this.prisma.ad.findMany({
+                where: { accountId, effectiveStatus: 'ACTIVE' },
+                select: { id: true },
+            });
+            const fetchedIds = new Set(ads.map(a => a.id));
+
+            // Mark ads no longer returned as ACTIVE -> INACTIVE
+            const missingIds = existingActiveAds
+                .filter(a => !fetchedIds.has(a.id))
+                .map(a => a.id);
+
+            if (missingIds.length > 0) {
+                await this.prisma.ad.updateMany({
+                    where: { id: { in: missingIds } },
+                    data: { effectiveStatus: 'INACTIVE', syncedAt: now },
+                });
+                this.logger.log(`Marked ${missingIds.length} ads as INACTIVE for ${accountId}`);
+            }
 
             // Pre-fetch existing adset IDs to filter out orphan ads
             const existingAdsets = await this.prisma.adset.findMany({
@@ -282,6 +346,22 @@ export class EntitySyncService {
             throw new Error(`No valid token for account ${accountId}`);
         }
 
+        // Only sync creatives for ACTIVE ads to avoid fetching 9K+ unused creatives
+        const activeAds = await this.prisma.ad.findMany({
+            where: { accountId, effectiveStatus: 'ACTIVE' },
+            select: { creative: true },
+        });
+
+        // Extract creative IDs from ads' creative JSON
+        const creativeIds = activeAds
+            .map(ad => (ad.creative as any)?.id)
+            .filter((id): id is string => Boolean(id));
+
+        if (creativeIds.length === 0) {
+            this.logger.log(`No active ads with creatives for ${accountId}, skipping creatives sync`);
+            return 0;
+        }
+
         const job = await this.crawlJobService.createJob({
             accountId,
             jobType: CrawlJobType.CREATIVES,
@@ -289,23 +369,33 @@ export class EntitySyncService {
 
         try {
             await this.crawlJobService.startJob(job.id);
-            const creatives = await this.facebookApi.getAdCreatives(accountId, accessToken);
+            
+            // Fetch all creatives but only upsert ones linked to active ads
+            const allCreatives = await this.facebookApi.getAdCreatives(accountId, accessToken);
             const now = new Date();
 
-            // Batch upsert all creatives in a single transaction
-            await this.prisma.$transaction(
-                creatives.map((creative) =>
-                    this.prisma.creative.upsert({
-                        where: { id: creative.id },
-                        create: this.mapCreative(creative, accountId, now),
-                        update: this.mapCreative(creative, accountId, now),
-                    })
-                )
-            );
+            // Filter to only creatives used by active ads
+            const creativeIdSet = new Set(creativeIds);
+            const relevantCreatives = allCreatives.filter(c => creativeIdSet.has(c.id));
 
-            await this.crawlJobService.completeJob(job.id, creatives.length);
-            this.logger.log(`Synced ${creatives.length} creatives for ${accountId}`);
-            return creatives.length;
+            this.logger.log(`Filtered ${relevantCreatives.length} relevant creatives from ${allCreatives.length} total`);
+
+            // Batch upsert only relevant creatives
+            if (relevantCreatives.length > 0) {
+                await this.prisma.$transaction(
+                    relevantCreatives.map((creative) =>
+                        this.prisma.creative.upsert({
+                            where: { id: creative.id },
+                            create: this.mapCreative(creative, accountId, now),
+                            update: this.mapCreative(creative, accountId, now),
+                        })
+                    )
+                );
+            }
+
+            await this.crawlJobService.completeJob(job.id, relevantCreatives.length);
+            this.logger.log(`Synced ${relevantCreatives.length} creatives for ${accountId}`);
+            return relevantCreatives.length;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
             throw error;

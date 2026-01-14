@@ -190,6 +190,26 @@ export class CronSettingsService {
     }
 
     /**
+     * Get effective cron types to run for a given hour (handles duplicates)
+     * If 'full' is enabled for the hour, skip individual cron types to avoid duplicate crawls
+     */
+    async getEffectiveSettingsForHour(userId: number, hour: number): Promise<string[]> {
+        const settings = await this.prisma.userCronSettings.findMany({
+            where: { userId },
+        });
+        
+        const enabledAtHour = settings.filter(s => s.enabled && s.allowedHours.includes(hour));
+        
+        // If 'full' is enabled for this hour, only return 'full' to avoid duplicate crawls
+        const fullEnabled = enabledAtHour.some(s => s.cronType === 'full');
+        if (fullEnabled) {
+            return ['full'];
+        }
+        
+        return enabledAtHour.map(s => s.cronType);
+    }
+
+    /**
      * Get all users who should sync at the given hour for a cron type
      */
     async getUsersToSync(cronType: string, currentHour: number) {

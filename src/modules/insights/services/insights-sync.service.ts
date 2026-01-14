@@ -30,6 +30,33 @@ export class InsightsSyncService {
         return new Date(`${dateStr}T00:00:00.000Z`);
     }
 
+    /**
+     * Hourly insights retention is strictly 2 days (today + yesterday).
+     * This helper clamps any requested date range to that window to prevent
+     * accidentally syncing large historical ranges (wasteful + can bloat DB temporarily).
+     */
+    private clampHourlyDateRange(dateStart: string, dateEnd: string): { dateStart: string; dateEnd: string; clamped: boolean } {
+        const todayStr = getVietnamDateString(); // YYYY-MM-DD
+        const today = this.parseLocalDate(todayStr);
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0]; // YYYY-MM-DD
+
+        // Normalize order
+        let start = dateStart;
+        let end = dateEnd;
+        if (end < start) {
+            [start, end] = [end, start];
+        }
+
+        // Clamp into [yesterday, today]
+        const clampedStart = start < yesterdayStr ? yesterdayStr : (start > todayStr ? todayStr : start);
+        const clampedEnd = end < yesterdayStr ? yesterdayStr : (end > todayStr ? todayStr : end);
+
+        const clamped = clampedStart !== dateStart || clampedEnd !== dateEnd || (end < start);
+        return { dateStart: clampedStart, dateEnd: clampedEnd, clamped };
+    }
+
     // ==================== SYNC BY AD ID ====================
 
     async syncInsightsForAd(
@@ -272,7 +299,7 @@ export class InsightsSyncService {
     }
 
     /**
-     * Batch upsert daily insights using raw SQL for performance
+     * Batch upsert daily insights using raw SQL for performance (optimized schema)
      */
     private async batchUpsertDailyInsights(insights: any[], accountId: string, syncedAt: Date) {
         if (insights.length === 0) return;
@@ -295,72 +322,15 @@ export class InsightsSyncService {
                     ${accountId}::text,
                     ${metrics.impressions}::bigint,
                     ${metrics.reach}::bigint,
-                    ${metrics.frequency}::decimal,
                     ${metrics.clicks}::bigint,
-                    ${metrics.uniqueClicks}::bigint,
-                    ${metrics.inlineLinkClicks}::bigint,
-                    ${metrics.uniqueInlineLinkClicks}::bigint,
-                    ${metrics.outboundClicks}::jsonb,
-                    ${metrics.uniqueOutboundClicks}::jsonb,
                     ${metrics.ctr}::decimal,
-                    ${metrics.uniqueCtr}::decimal,
-                    ${metrics.inlineLinkClickCtr}::decimal,
-                    ${metrics.uniqueLinkClicksCtr}::decimal,
-                    ${metrics.outboundClicksCtr}::jsonb,
                     ${metrics.spend}::decimal,
                     ${metrics.cpc}::decimal,
                     ${metrics.cpm}::decimal,
-                    ${metrics.cpp}::decimal,
-                    ${metrics.costPerUniqueClick}::decimal,
-                    ${metrics.costPerInlineLinkClick}::decimal,
-                    ${metrics.costPerUniqueInlineLinkClick}::decimal,
-                    ${metrics.costPerOutboundClick}::jsonb,
-                    ${metrics.costPerUniqueOutboundClick}::jsonb,
-                    ${metrics.actions}::jsonb,
-                    ${metrics.actionValues}::jsonb,
-                    ${metrics.conversions}::jsonb,
-                    ${metrics.conversionValues}::jsonb,
-                    ${metrics.costPerActionType}::jsonb,
-                    ${metrics.costPerConversion}::jsonb,
-                    ${metrics.costPerUniqueActionType}::jsonb,
                     ${metrics.messagingStarted}::bigint,
                     ${metrics.costPerMessaging}::decimal,
                     ${metrics.results}::bigint,
                     ${metrics.costPerResult}::decimal,
-                    ${metrics.purchaseRoas}::jsonb,
-                    ${metrics.websitePurchaseRoas}::jsonb,
-                    ${metrics.mobileAppPurchaseRoas}::jsonb,
-                    ${metrics.videoPlayActions}::jsonb,
-                    ${metrics.videoP25WatchedActions}::jsonb,
-                    ${metrics.videoP50WatchedActions}::jsonb,
-                    ${metrics.videoP75WatchedActions}::jsonb,
-                    ${metrics.videoP95WatchedActions}::jsonb,
-                    ${metrics.videoP100WatchedActions}::jsonb,
-                    ${metrics.video30SecWatchedActions}::jsonb,
-                    ${metrics.videoAvgTimeWatchedActions}::jsonb,
-                    ${metrics.videoTimeWatchedActions}::jsonb,
-                    ${metrics.videoPlayCurveActions}::jsonb,
-                    ${metrics.videoThruplayWatchedActions}::jsonb,
-                    ${metrics.videoContinuous2SecWatchedActions}::jsonb,
-                    ${metrics.socialSpend}::decimal,
-                    ${metrics.inlinePostEngagement}::bigint,
-                    ${metrics.uniqueInlinePostEngagement}::bigint,
-                    ${metrics.qualityRanking}::text,
-                    ${metrics.engagementRateRanking}::text,
-                    ${metrics.conversionRateRanking}::text,
-                    ${metrics.canvasAvgViewTime}::decimal,
-                    ${metrics.canvasAvgViewPercent}::decimal,
-                    ${metrics.catalogSegmentActions}::jsonb,
-                    ${metrics.catalogSegmentValue}::jsonb,
-                    ${metrics.estimatedAdRecallers}::bigint,
-                    ${metrics.estimatedAdRecallRate}::decimal,
-                    ${metrics.instantExperienceClicksToOpen}::jsonb,
-                    ${metrics.instantExperienceClicksToStart}::jsonb,
-                    ${metrics.instantExperienceOutboundClicks}::jsonb,
-                    ${metrics.fullViewReach}::bigint,
-                    ${metrics.fullViewImpressions}::bigint,
-                    ${data.date_start}::date,
-                    ${data.date_stop}::date,
                     ${syncedAt}::timestamp,
                     NOW()
                 )`;
@@ -369,29 +339,10 @@ export class InsightsSyncService {
             await this.prisma.$executeRaw`
                 INSERT INTO ad_insights_daily (
                     date, ad_id, adset_id, campaign_id, account_id,
-                    impressions, reach, frequency,
-                    clicks, unique_clicks, inline_link_clicks, unique_inline_link_clicks,
-                    outbound_clicks, unique_outbound_clicks,
-                    ctr, unique_ctr, inline_link_click_ctr, unique_link_clicks_ctr, outbound_clicks_ctr,
-                    spend, cpc, cpm, cpp,
-                    cost_per_unique_click, cost_per_inline_link_click, cost_per_unique_inline_link_click,
-                    cost_per_outbound_click, cost_per_unique_outbound_click,
-                    actions, action_values, conversions, conversion_values,
-                    cost_per_action_type, cost_per_conversion, cost_per_unique_action_type,
+                    impressions, reach, clicks, ctr,
+                    spend, cpc, cpm,
                     messaging_started, cost_per_messaging, results, cost_per_result,
-                    purchase_roas, website_purchase_roas, mobile_app_purchase_roas,
-                    video_play_actions, video_p25_watched_actions, video_p50_watched_actions,
-                    video_p75_watched_actions, video_p95_watched_actions, video_p100_watched_actions,
-                    video_30_sec_watched_actions, video_avg_time_watched_actions, video_time_watched_actions,
-                    video_play_curve_actions, video_thruplay_watched_actions, video_continuous_2_sec_watched_actions,
-                    social_spend, inline_post_engagement, unique_inline_post_engagement,
-                    quality_ranking, engagement_rate_ranking, conversion_rate_ranking,
-                    canvas_avg_view_time, canvas_avg_view_percent,
-                    catalog_segment_actions, catalog_segment_value,
-                    estimated_ad_recallers, estimated_ad_recall_rate,
-                    instant_experience_clicks_to_open, instant_experience_clicks_to_start, instant_experience_outbound_clicks,
-                    full_view_reach, full_view_impressions,
-                    date_start, date_stop, synced_at, created_at
+                    synced_at, created_at
                 )
                 VALUES ${Prisma.join(values)}
                 ON CONFLICT (date, ad_id)
@@ -401,74 +352,16 @@ export class InsightsSyncService {
                     account_id = EXCLUDED.account_id,
                     impressions = EXCLUDED.impressions,
                     reach = EXCLUDED.reach,
-                    frequency = EXCLUDED.frequency,
                     clicks = EXCLUDED.clicks,
-                    unique_clicks = EXCLUDED.unique_clicks,
-                    inline_link_clicks = EXCLUDED.inline_link_clicks,
-                    unique_inline_link_clicks = EXCLUDED.unique_inline_link_clicks,
-                    outbound_clicks = EXCLUDED.outbound_clicks,
-                    unique_outbound_clicks = EXCLUDED.unique_outbound_clicks,
                     ctr = EXCLUDED.ctr,
-                    unique_ctr = EXCLUDED.unique_ctr,
-                    inline_link_click_ctr = EXCLUDED.inline_link_click_ctr,
-                    unique_link_clicks_ctr = EXCLUDED.unique_link_clicks_ctr,
-                    outbound_clicks_ctr = EXCLUDED.outbound_clicks_ctr,
                     spend = EXCLUDED.spend,
                     cpc = EXCLUDED.cpc,
                     cpm = EXCLUDED.cpm,
-                    cpp = EXCLUDED.cpp,
-                    cost_per_unique_click = EXCLUDED.cost_per_unique_click,
-                    cost_per_inline_link_click = EXCLUDED.cost_per_inline_link_click,
-                    cost_per_unique_inline_link_click = EXCLUDED.cost_per_unique_inline_link_click,
-                    cost_per_outbound_click = EXCLUDED.cost_per_outbound_click,
-                    cost_per_unique_outbound_click = EXCLUDED.cost_per_unique_outbound_click,
-                    actions = EXCLUDED.actions,
-                    action_values = EXCLUDED.action_values,
-                    conversions = EXCLUDED.conversions,
-                    conversion_values = EXCLUDED.conversion_values,
-                    cost_per_action_type = EXCLUDED.cost_per_action_type,
-                    cost_per_conversion = EXCLUDED.cost_per_conversion,
-                    cost_per_unique_action_type = EXCLUDED.cost_per_unique_action_type,
                     messaging_started = EXCLUDED.messaging_started,
                     cost_per_messaging = EXCLUDED.cost_per_messaging,
                     results = EXCLUDED.results,
                     cost_per_result = EXCLUDED.cost_per_result,
-                    purchase_roas = EXCLUDED.purchase_roas,
-                    website_purchase_roas = EXCLUDED.website_purchase_roas,
-                    mobile_app_purchase_roas = EXCLUDED.mobile_app_purchase_roas,
-                    video_play_actions = EXCLUDED.video_play_actions,
-                    video_p25_watched_actions = EXCLUDED.video_p25_watched_actions,
-                    video_p50_watched_actions = EXCLUDED.video_p50_watched_actions,
-                    video_p75_watched_actions = EXCLUDED.video_p75_watched_actions,
-                    video_p95_watched_actions = EXCLUDED.video_p95_watched_actions,
-                    video_p100_watched_actions = EXCLUDED.video_p100_watched_actions,
-                    video_30_sec_watched_actions = EXCLUDED.video_30_sec_watched_actions,
-                    video_avg_time_watched_actions = EXCLUDED.video_avg_time_watched_actions,
-                    video_time_watched_actions = EXCLUDED.video_time_watched_actions,
-                    video_play_curve_actions = EXCLUDED.video_play_curve_actions,
-                    video_thruplay_watched_actions = EXCLUDED.video_thruplay_watched_actions,
-                    video_continuous_2_sec_watched_actions = EXCLUDED.video_continuous_2_sec_watched_actions,
-                    social_spend = EXCLUDED.social_spend,
-                    inline_post_engagement = EXCLUDED.inline_post_engagement,
-                    unique_inline_post_engagement = EXCLUDED.unique_inline_post_engagement,
-                    quality_ranking = EXCLUDED.quality_ranking,
-                    engagement_rate_ranking = EXCLUDED.engagement_rate_ranking,
-                    conversion_rate_ranking = EXCLUDED.conversion_rate_ranking,
-                    canvas_avg_view_time = EXCLUDED.canvas_avg_view_time,
-                    canvas_avg_view_percent = EXCLUDED.canvas_avg_view_percent,
-                    catalog_segment_actions = EXCLUDED.catalog_segment_actions,
-                    catalog_segment_value = EXCLUDED.catalog_segment_value,
-                    estimated_ad_recallers = EXCLUDED.estimated_ad_recallers,
-                    estimated_ad_recall_rate = EXCLUDED.estimated_ad_recall_rate,
-                    instant_experience_clicks_to_open = EXCLUDED.instant_experience_clicks_to_open,
-                    instant_experience_clicks_to_start = EXCLUDED.instant_experience_clicks_to_start,
-                    instant_experience_outbound_clicks = EXCLUDED.instant_experience_outbound_clicks,
-                    full_view_reach = EXCLUDED.full_view_reach,
-                    full_view_impressions = EXCLUDED.full_view_impressions,
-                    date_start = EXCLUDED.date_start,
-                    date_stop = EXCLUDED.date_stop,
-                    synced_at = EXCLUDED.synced_at,
-                    created_at = EXCLUDED.created_at
+                    synced_at = EXCLUDED.synced_at
             `;
         }
     }
@@ -1018,6 +911,15 @@ export class InsightsSyncService {
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
+        const clamped = this.clampHourlyDateRange(dateStart, dateEnd);
+        if (clamped.clamped) {
+            this.logger.warn(
+                `[HourlySync] Requested range ${dateStart}..${dateEnd} clamped to ${clamped.dateStart}..${clamped.dateEnd} for account ${accountId}`,
+            );
+        }
+        dateStart = clamped.dateStart;
+        dateEnd = clamped.dateEnd;
+
         const accessToken = await this.tokenService.getTokenForAdAccount(accountId, userId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
@@ -1030,6 +932,8 @@ export class InsightsSyncService {
                 id: true,
                 name: true,
                 previewShareableLink: true,
+                adsetId: true,
+                campaignId: true,
                 adset: { select: { name: true } },
                 campaign: { select: { name: true } },
             },
@@ -1053,6 +957,7 @@ export class InsightsSyncService {
             let totalInsights = 0;
             const currentHour = getVietnamHour();
             const currentMinute = getVietnamMinute();
+            const todayStr = getVietnamDateString();
 
             // Get account info for telegram message
             const account = await this.prisma.adAccount.findUnique({
@@ -1069,6 +974,9 @@ export class InsightsSyncService {
                 previewLink: string | null;
             }> = [];
 
+            // Collect ALL insights first, then batch upsert to avoid per-row upserts (performance)
+            const allInsights: any[] = [];
+
             for (const ad of ads) {
                 try {
                     const insights = await this.facebookApi.getAdInsights(
@@ -1082,16 +990,16 @@ export class InsightsSyncService {
 
                     for (const insight of insights) {
                         insight.ad_id = ad.id;
-                        
-                        // Save ALL hours to DB
-                        await this.upsertHourlyInsight(insight, accountId, now);
-                        totalInsights++;
+                        insight.adset_id = insight.adset_id ?? ad.adsetId;
+                        insight.campaign_id = insight.campaign_id ?? ad.campaignId;
 
+                        allInsights.push(insight);
+                        totalInsights++;
+                        
                         // Collect for Telegram (current hour of TODAY only)
                         const hourRange = insight.hourly_stats_aggregated_by_advertiser_time_zone;
                         const insightHour = hourRange ? parseInt(hourRange.split(':')[0]) : -1;
                         const insightDate = insight.date_start; // YYYY-MM-DD format
-                        const todayStr = getVietnamDateString();
                         
                         // Only collect if: same hour + today's date + has spend
                         if (insightHour === currentHour && insightDate === todayStr && Number(insight.spend || 0) > 0) {
@@ -1109,17 +1017,20 @@ export class InsightsSyncService {
                 }
             }
 
+            // Batch upsert ALL hours to DB (idempotent via unique index)
+            if (allInsights.length > 0) {
+                await this.batchUpsertHourlyInsights(allInsights, accountId, now);
+            }
+
             // Send consolidated Telegram report for current hour
             this.logger.log(`currentHourInsights count: ${currentHourInsights.length} for hour ${currentHour} (at minute ${currentMinute})`);
             if (currentHourInsights.length > 0) {
                 this.logger.log(`Sending Telegram report for ${currentHourInsights.length} ads...`);
-                // Use today's date for Telegram message (in Vietnam timezone)
-                const today = getVietnamDateString();
                 await this.sendConsolidatedHourlyReport(
                     currentHourInsights,
                     account?.name || accountId,
                     account?.currency || 'VND',
-                    today,
+                    todayStr,
                     `${currentHour.toString().padStart(2, '0')}:00`,
                 );
                 this.logger.log(`Telegram report sent!`);
@@ -1187,8 +1098,8 @@ export class InsightsSyncService {
             totalSpend += Number(insight.spend || 0);
             totalImpr += Number(insight.impressions || 0);
             totalClicks += Number(insight.clicks || 0);
-            totalNewMsg += getActionValue(insight.actions, 'onsite_conversion.messaging_conversation_started_7d');
-            totalResults += getResults(insight.actions);
+            totalNewMsg += Number(insight.messagingStarted || 0);
+            totalResults += Number(insight.results || 0);
         }
         const totalCtr = totalImpr > 0 ? (totalClicks / totalImpr) * 100 : 0;
         const totalCpc = totalClicks > 0 ? totalSpend / totalClicks : 0;
@@ -1224,13 +1135,13 @@ export class InsightsSyncService {
             const spend = Number(insight.spend || 0);
             const impr = Number(insight.impressions || 0);
             const clicks = Number(insight.clicks || 0);
-            const results = getResults(insight.actions);
-            const newMsg = getActionValue(insight.actions, 'onsite_conversion.messaging_conversation_started_7d');
-            const cpr = getCostPerAction(insight.cost_per_action_type, 'onsite_conversion.messaging_conversation_started_7d') || (results > 0 ? spend / results : 0);
-            const costPerNewMsg = getCostPerAction(insight.cost_per_action_type, 'onsite_conversion.messaging_conversation_started_7d');
-            const ctr = impr > 0 ? (clicks / impr) * 100 : 0;
-            const cpc = clicks > 0 ? spend / clicks : 0;
-            const cpm = impr > 0 ? (spend / impr) * 1000 : 0;
+            const results = Number(insight.results || 0);
+            const newMsg = Number(insight.messagingStarted || 0);
+            const cpr = Number(insight.costPerResult || 0) || (results > 0 ? spend / results : 0);
+            const costPerNewMsg = Number(insight.costPerMessaging || 0);
+            const ctr = Number(insight.ctr || 0) || (impr > 0 ? (clicks / impr) * 100 : 0);
+            const cpc = Number(insight.cpc || 0) || (clicks > 0 ? spend / clicks : 0);
+            const cpm = Number(insight.cpm || 0) || (impr > 0 ? (spend / impr) * 1000 : 0);
 
             let adMsg = `📊 <b>AD INSIGHT - ${date} ${hour}</b>\n\n`;
             adMsg += `📈 Account: ${accountName}\n`;
@@ -1337,10 +1248,21 @@ export class InsightsSyncService {
      * Batch upsert hourly insights - single transaction for all records
      */
     /**
-     * Batch upsert hourly insights using raw SQL for performance
+     * Batch upsert hourly insights using raw SQL for performance (optimized schema)
      */
     private async batchUpsertHourlyInsights(insights: any[], accountId: string, syncedAt: Date) {
         if (insights.length === 0) return;
+
+        // Sort to reduce chances of deadlocks: date -> ad_id -> hourlyStats
+        insights.sort((a, b) => {
+            const dateCompare = (a.date_start || '').localeCompare(b.date_start || '');
+            if (dateCompare !== 0) return dateCompare;
+            const adCompare = (a.ad_id || '').localeCompare(b.ad_id || '');
+            if (adCompare !== 0) return adCompare;
+            return (a.hourly_stats_aggregated_by_advertiser_time_zone || '')
+                .localeCompare(b.hourly_stats_aggregated_by_advertiser_time_zone || '');
+        });
+
         const batchSize = 1000;
         
         for (let i = 0; i < insights.length; i += batchSize) {
@@ -1359,70 +1281,15 @@ export class InsightsSyncService {
                     ${hourlyStats}::text,
                     ${metrics.impressions}::bigint,
                     ${metrics.reach}::bigint,
-                    ${metrics.frequency}::decimal,
                     ${metrics.clicks}::bigint,
-                    ${metrics.uniqueClicks}::bigint,
-                    ${metrics.inlineLinkClicks}::bigint,
-                    ${metrics.uniqueInlineLinkClicks}::bigint,
-                    ${metrics.outboundClicks}::jsonb,
-                    ${metrics.uniqueOutboundClicks}::jsonb,
                     ${metrics.ctr}::decimal,
-                    ${metrics.uniqueCtr}::decimal,
-                    ${metrics.inlineLinkClickCtr}::decimal,
-                    ${metrics.uniqueLinkClicksCtr}::decimal,
-                    ${metrics.outboundClicksCtr}::jsonb,
                     ${metrics.spend}::decimal,
                     ${metrics.cpc}::decimal,
                     ${metrics.cpm}::decimal,
-                    ${metrics.cpp}::decimal,
-                    ${metrics.costPerUniqueClick}::decimal,
-                    ${metrics.costPerInlineLinkClick}::decimal,
-                    ${metrics.costPerUniqueInlineLinkClick}::decimal,
-                    ${metrics.costPerOutboundClick}::jsonb,
-                    ${metrics.costPerUniqueOutboundClick}::jsonb,
-                    ${metrics.actions}::jsonb,
-                    ${metrics.actionValues}::jsonb,
-                    ${metrics.conversions}::jsonb,
-                    ${metrics.conversionValues}::jsonb,
-                    ${metrics.costPerActionType}::jsonb,
-                    ${metrics.costPerConversion}::jsonb,
-                    ${metrics.costPerUniqueActionType}::jsonb,
                     ${metrics.messagingStarted}::bigint,
                     ${metrics.costPerMessaging}::decimal,
                     ${metrics.results}::bigint,
                     ${metrics.costPerResult}::decimal,
-                    ${metrics.purchaseRoas}::jsonb,
-                    ${metrics.websitePurchaseRoas}::jsonb,
-                    ${metrics.mobileAppPurchaseRoas}::jsonb,
-                    ${metrics.videoPlayActions}::jsonb,
-                    ${metrics.videoP25WatchedActions}::jsonb,
-                    ${metrics.videoP50WatchedActions}::jsonb,
-                    ${metrics.videoP75WatchedActions}::jsonb,
-                    ${metrics.videoP95WatchedActions}::jsonb,
-                    ${metrics.videoP100WatchedActions}::jsonb,
-                    ${metrics.video30SecWatchedActions}::jsonb,
-                    ${metrics.videoAvgTimeWatchedActions}::jsonb,
-                    ${metrics.videoTimeWatchedActions}::jsonb,
-                    ${metrics.videoPlayCurveActions}::jsonb,
-                    ${metrics.videoThruplayWatchedActions}::jsonb,
-                    ${metrics.videoContinuous2SecWatchedActions}::jsonb,
-                    ${metrics.socialSpend}::decimal,
-                    ${metrics.inlinePostEngagement}::bigint,
-                    ${metrics.uniqueInlinePostEngagement}::bigint,
-                    ${metrics.qualityRanking}::text,
-                    ${metrics.engagementRateRanking}::text,
-                    ${metrics.conversionRateRanking}::text,
-                    ${metrics.canvasAvgViewTime}::decimal,
-                    ${metrics.canvasAvgViewPercent}::decimal,
-                    ${metrics.catalogSegmentActions}::jsonb,
-                    ${metrics.catalogSegmentValue}::jsonb,
-                    ${metrics.estimatedAdRecallers}::bigint,
-                    ${metrics.estimatedAdRecallRate}::decimal,
-                    ${metrics.instantExperienceClicksToOpen}::jsonb,
-                    ${metrics.instantExperienceClicksToStart}::jsonb,
-                    ${metrics.instantExperienceOutboundClicks}::jsonb,
-                    ${metrics.fullViewReach}::bigint,
-                    ${metrics.fullViewImpressions}::bigint,
                     ${syncedAt}::timestamp,
                     NOW()
                 )`;
@@ -1432,28 +1299,9 @@ export class InsightsSyncService {
                 INSERT INTO ad_insights_hourly (
                     date, ad_id, adset_id, campaign_id, account_id,
                     hourly_stats_aggregated_by_advertiser_time_zone,
-                    impressions, reach, frequency,
-                    clicks, unique_clicks, inline_link_clicks, unique_inline_link_clicks,
-                    outbound_clicks, unique_outbound_clicks,
-                    ctr, unique_ctr, inline_link_click_ctr, unique_link_clicks_ctr, outbound_clicks_ctr,
-                    spend, cpc, cpm, cpp,
-                    cost_per_unique_click, cost_per_inline_link_click, cost_per_unique_inline_link_click,
-                    cost_per_outbound_click, cost_per_unique_outbound_click,
-                    actions, action_values, conversions, conversion_values,
-                    cost_per_action_type, cost_per_conversion, cost_per_unique_action_type,
+                    impressions, reach, clicks, ctr,
+                    spend, cpc, cpm,
                     messaging_started, cost_per_messaging, results, cost_per_result,
-                    purchase_roas, website_purchase_roas, mobile_app_purchase_roas,
-                    video_play_actions, video_p25_watched_actions, video_p50_watched_actions,
-                    video_p75_watched_actions, video_p95_watched_actions, video_p100_watched_actions,
-                    video_30_sec_watched_actions, video_avg_time_watched_actions, video_time_watched_actions,
-                    video_play_curve_actions, video_thruplay_watched_actions, video_continuous_2_sec_watched_actions,
-                    social_spend, inline_post_engagement, unique_inline_post_engagement,
-                    quality_ranking, engagement_rate_ranking, conversion_rate_ranking,
-                    canvas_avg_view_time, canvas_avg_view_percent,
-                    catalog_segment_actions, catalog_segment_value,
-                    estimated_ad_recallers, estimated_ad_recall_rate,
-                    instant_experience_clicks_to_open, instant_experience_clicks_to_start, instant_experience_outbound_clicks,
-                    full_view_reach, full_view_impressions,
                     synced_at, created_at
                 )
                 VALUES ${Prisma.join(values)}
@@ -1464,70 +1312,15 @@ export class InsightsSyncService {
                     account_id = EXCLUDED.account_id,
                     impressions = EXCLUDED.impressions,
                     reach = EXCLUDED.reach,
-                    frequency = EXCLUDED.frequency,
                     clicks = EXCLUDED.clicks,
-                    unique_clicks = EXCLUDED.unique_clicks,
-                    inline_link_clicks = EXCLUDED.inline_link_clicks,
-                    unique_inline_link_clicks = EXCLUDED.unique_inline_link_clicks,
-                    outbound_clicks = EXCLUDED.outbound_clicks,
-                    unique_outbound_clicks = EXCLUDED.unique_outbound_clicks,
                     ctr = EXCLUDED.ctr,
-                    unique_ctr = EXCLUDED.unique_ctr,
-                    inline_link_click_ctr = EXCLUDED.inline_link_click_ctr,
-                    unique_link_clicks_ctr = EXCLUDED.unique_link_clicks_ctr,
-                    outbound_clicks_ctr = EXCLUDED.outbound_clicks_ctr,
                     spend = EXCLUDED.spend,
                     cpc = EXCLUDED.cpc,
                     cpm = EXCLUDED.cpm,
-                    cpp = EXCLUDED.cpp,
-                    cost_per_unique_click = EXCLUDED.cost_per_unique_click,
-                    cost_per_inline_link_click = EXCLUDED.cost_per_inline_link_click,
-                    cost_per_unique_inline_link_click = EXCLUDED.cost_per_unique_inline_link_click,
-                    cost_per_outbound_click = EXCLUDED.cost_per_outbound_click,
-                    cost_per_unique_outbound_click = EXCLUDED.cost_per_unique_outbound_click,
-                    actions = EXCLUDED.actions,
-                    action_values = EXCLUDED.action_values,
-                    conversions = EXCLUDED.conversions,
-                    conversion_values = EXCLUDED.conversion_values,
-                    cost_per_action_type = EXCLUDED.cost_per_action_type,
-                    cost_per_conversion = EXCLUDED.cost_per_conversion,
-                    cost_per_unique_action_type = EXCLUDED.cost_per_unique_action_type,
                     messaging_started = EXCLUDED.messaging_started,
                     cost_per_messaging = EXCLUDED.cost_per_messaging,
                     results = EXCLUDED.results,
                     cost_per_result = EXCLUDED.cost_per_result,
-                    purchase_roas = EXCLUDED.purchase_roas,
-                    website_purchase_roas = EXCLUDED.website_purchase_roas,
-                    mobile_app_purchase_roas = EXCLUDED.mobile_app_purchase_roas,
-                    video_play_actions = EXCLUDED.video_play_actions,
-                    video_p25_watched_actions = EXCLUDED.video_p25_watched_actions,
-                    video_p50_watched_actions = EXCLUDED.video_p50_watched_actions,
-                    video_p75_watched_actions = EXCLUDED.video_p75_watched_actions,
-                    video_p95_watched_actions = EXCLUDED.video_p95_watched_actions,
-                    video_p100_watched_actions = EXCLUDED.video_p100_watched_actions,
-                    video_30_sec_watched_actions = EXCLUDED.video_30_sec_watched_actions,
-                    video_avg_time_watched_actions = EXCLUDED.video_avg_time_watched_actions,
-                    video_time_watched_actions = EXCLUDED.video_time_watched_actions,
-                    video_play_curve_actions = EXCLUDED.video_play_curve_actions,
-                    video_thruplay_watched_actions = EXCLUDED.video_thruplay_watched_actions,
-                    video_continuous_2_sec_watched_actions = EXCLUDED.video_continuous_2_sec_watched_actions,
-                    social_spend = EXCLUDED.social_spend,
-                    inline_post_engagement = EXCLUDED.inline_post_engagement,
-                    unique_inline_post_engagement = EXCLUDED.unique_inline_post_engagement,
-                    quality_ranking = EXCLUDED.quality_ranking,
-                    engagement_rate_ranking = EXCLUDED.engagement_rate_ranking,
-                    conversion_rate_ranking = EXCLUDED.conversion_rate_ranking,
-                    canvas_avg_view_time = EXCLUDED.canvas_avg_view_time,
-                    canvas_avg_view_percent = EXCLUDED.canvas_avg_view_percent,
-                    catalog_segment_actions = EXCLUDED.catalog_segment_actions,
-                    catalog_segment_value = EXCLUDED.catalog_segment_value,
-                    estimated_ad_recallers = EXCLUDED.estimated_ad_recallers,
-                    estimated_ad_recall_rate = EXCLUDED.estimated_ad_recall_rate,
-                    instant_experience_clicks_to_open = EXCLUDED.instant_experience_clicks_to_open,
-                    instant_experience_clicks_to_start = EXCLUDED.instant_experience_clicks_to_start,
-                    instant_experience_outbound_clicks = EXCLUDED.instant_experience_outbound_clicks,
-                    full_view_reach = EXCLUDED.full_view_reach,
-                    full_view_impressions = EXCLUDED.full_view_impressions,
                     synced_at = EXCLUDED.synced_at
             `;
         }
@@ -1597,8 +1390,13 @@ export class InsightsSyncService {
                     impressions: insight.impressions,
                     reach: insight.reach,
                     clicks: insight.clicks,
-                    actions: insight.actions,
-                    cost_per_action_type: insight.costPerActionType,
+                    ctr: insight.ctr,
+                    cpc: insight.cpc,
+                    cpm: insight.cpm,
+                    results: insight.results,
+                    costPerResult: insight.costPerResult,
+                    messagingStarted: insight.messagingStarted,
+                    costPerMessaging: insight.costPerMessaging,
                 },
                 adName: ad?.name || insight.adId,
                 campaignName: ad?.campaign?.name || 'N/A',
@@ -1853,6 +1651,7 @@ export class InsightsSyncService {
         // Calculate yesterday
         const yesterday = new Date(today);
         yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
 
         // Delete all hourly insights older than yesterday
         const result = await this.prisma.adInsightsHourly.deleteMany({
@@ -1864,9 +1663,9 @@ export class InsightsSyncService {
             },
         });
 
-        if (result.count > 0) {
-            this.logger.log(`Cleaned up ${result.count} old hourly insights for account ${accountId} (keeping only ${todayStr} and yesterday)`);
-        }
+        this.logger.log(
+            `[HourlyCleanup] account=${accountId} keepWindow=${yesterdayStr}..${todayStr} deleted=${result.count}`,
+        );
 
         return result.count;
     }
@@ -2007,6 +1806,9 @@ export class InsightsSyncService {
 
     // ==================== MAPPERS ====================
 
+    /**
+     * Map only essential insight metrics (optimized)
+     */
     private mapInsightMetrics(data: any) {
         // Helper to extract action value from actions array
         const getActionValue = (actions: any[], actionType: string): number => {
@@ -2041,76 +1843,19 @@ export class InsightsSyncService {
         const spend = Number(data.spend || 0);
         const costPerResult = results > 0 ? spend / results : 0;
 
+        // Return only essential fields
         return {
             impressions: data.impressions ? BigInt(data.impressions) : null,
             reach: data.reach ? BigInt(data.reach) : null,
-            frequency: data.frequency,
             clicks: data.clicks ? BigInt(data.clicks) : null,
-            uniqueClicks: data.unique_clicks ? BigInt(data.unique_clicks) : null,
-            inlineLinkClicks: data.inline_link_clicks ? BigInt(data.inline_link_clicks) : null,
-            uniqueInlineLinkClicks: data.unique_inline_link_clicks ? BigInt(data.unique_inline_link_clicks) : null,
-            outboundClicks: data.outbound_clicks,
-            uniqueOutboundClicks: data.unique_outbound_clicks,
             ctr: data.ctr,
-            uniqueCtr: data.unique_ctr,
-            inlineLinkClickCtr: data.inline_link_click_ctr,
-            uniqueLinkClicksCtr: data.unique_link_clicks_ctr,
-            outboundClicksCtr: data.outbound_clicks_ctr,
             spend: data.spend,
             cpc: data.cpc,
             cpm: data.cpm,
-            cpp: data.cpp,
-            costPerUniqueClick: data.cost_per_unique_click,
-            costPerInlineLinkClick: data.cost_per_inline_link_click,
-            costPerUniqueInlineLinkClick: data.cost_per_unique_inline_link_click,
-            costPerOutboundClick: data.cost_per_outbound_click,
-            costPerUniqueOutboundClick: data.cost_per_unique_outbound_click,
-            actions: data.actions,
-            actionValues: data.action_values,
-            conversions: data.conversions,
-            conversionValues: data.conversion_values,
-            costPerActionType: data.cost_per_action_type,
-            costPerConversion: data.cost_per_conversion,
-            costPerUniqueActionType: data.cost_per_unique_action_type,
-            // Messaging & Results (extracted from actions for easier querying)
             messagingStarted: messagingStarted > 0 ? BigInt(messagingStarted) : null,
             costPerMessaging: costPerMessaging > 0 ? costPerMessaging : null,
             results: results > 0 ? BigInt(results) : null,
             costPerResult: costPerResult > 0 ? costPerResult : null,
-            purchaseRoas: data.purchase_roas,
-            websitePurchaseRoas: data.website_purchase_roas,
-            mobileAppPurchaseRoas: data.mobile_app_purchase_roas,
-            videoPlayActions: data.video_play_actions,
-            videoP25WatchedActions: data.video_p25_watched_actions,
-            videoP50WatchedActions: data.video_p50_watched_actions,
-            videoP75WatchedActions: data.video_p75_watched_actions,
-            videoP95WatchedActions: data.video_p95_watched_actions,
-            videoP100WatchedActions: data.video_p100_watched_actions,
-            video30SecWatchedActions: data.video_30_sec_watched_actions,
-            videoAvgTimeWatchedActions: data.video_avg_time_watched_actions,
-            videoTimeWatchedActions: data.video_time_watched_actions,
-            videoPlayCurveActions: data.video_play_curve_actions,
-            videoThruplayWatchedActions: data.video_thruplay_watched_actions,
-            videoContinuous2SecWatchedActions: data.video_continuous_2_sec_watched_actions,
-            socialSpend: data.social_spend,
-            inlinePostEngagement: data.inline_post_engagement ? BigInt(data.inline_post_engagement) : null,
-            uniqueInlinePostEngagement: data.unique_inline_post_engagement ? BigInt(data.unique_inline_post_engagement) : null,
-            qualityRanking: data.quality_ranking,
-            engagementRateRanking: data.engagement_rate_ranking,
-            conversionRateRanking: data.conversion_rate_ranking,
-            canvasAvgViewTime: data.canvas_avg_view_time,
-            canvasAvgViewPercent: data.canvas_avg_view_percent,
-            catalogSegmentActions: data.catalog_segment_actions,
-            catalogSegmentValue: data.catalog_segment_value,
-            estimatedAdRecallers: data.estimated_ad_recallers ? BigInt(data.estimated_ad_recallers) : null,
-            estimatedAdRecallRate: data.estimated_ad_recall_rate,
-            instantExperienceClicksToOpen: data.instant_experience_clicks_to_open,
-            instantExperienceClicksToStart: data.instant_experience_clicks_to_start,
-            instantExperienceOutboundClicks: data.instant_experience_outbound_clicks,
-            fullViewReach: data.full_view_reach ? BigInt(data.full_view_reach) : null,
-            fullViewImpressions: data.full_view_impressions ? BigInt(data.full_view_impressions) : null,
-            dateStart: data.date_start ? this.parseLocalDate(data.date_start) : null,
-            dateStop: data.date_stop ? this.parseLocalDate(data.date_stop) : null,
         };
     }
 

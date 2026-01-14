@@ -67,7 +67,7 @@ export class InsightsQueryService {
         // Parse dates to UTC to match DB storage format
         let endDate: Date;
         let startDate: Date;
-        
+
         if (dateEnd) {
             // Parse Vietnam date to UTC for DB query
             endDate = this.parseVietnamDateToUTC(dateEnd);
@@ -76,7 +76,7 @@ export class InsightsQueryService {
             const todayVN = getVietnamDateString();
             endDate = this.parseVietnamDateToUTC(todayVN);
         }
-        
+
         if (dateStart) {
             // Parse Vietnam date to UTC for DB query
             startDate = this.parseVietnamDateToUTC(dateStart);
@@ -218,8 +218,8 @@ export class InsightsQueryService {
                 cpm: Number(d.cpm) || 0,
                 results: Number(d.results) || 0,
                 costPerResult: Number(d.costPerResult) || 0,
-                qualityRanking: d.qualityRanking,
-                engagementRateRanking: d.engagementRateRanking,
+                messages: Number(d.messagingStarted) || 0,
+                costPerMessage: Number(d.costPerMessaging) || 0,
             })),
             deviceBreakdown: deviceBreakdown.map((d) => ({
                 device: d.devicePlatform,

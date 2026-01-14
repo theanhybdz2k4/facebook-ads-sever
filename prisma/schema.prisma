@@ -67,6 +67,7 @@ model User {
   userAdAccounts       UserAdAccount[]
   telegramBots         UserTelegramBot[]
   telegramBotSettings  UserTelegramBotSettings[]
+  branches             Branch[]
 
   @@map("users")
 }
@@ -281,9 +282,11 @@ model AdAccount {
   syncedAt                 DateTime  @map("synced_at")
   createdAt                DateTime  @default(now()) @map("created_at")
   deletedAt                DateTime? @map("deleted_at")
+  branchId                 Int?      @map("branch_id")
 
   // Relations
   fbAccount         FbAccount?                 @relation(fields: [fbAccountId], references: [id])
+  branch            Branch?                    @relation(fields: [branchId], references: [id])
   campaigns         Campaign[]
   adImages          AdImage[]
   adVideos          AdVideo[]
@@ -301,6 +304,7 @@ model AdAccount {
   telegramBots      UserTelegramBot[]
 
   @@index([fbAccountId])
+  @@index([branchId])
   @@map("ad_accounts")
 }
 
@@ -579,7 +583,7 @@ model AdVideo {
 }
 
 // ============================================================================
-// AD INSIGHTS - DAILY (Main insights table with all metrics)
+// AD INSIGHTS - DAILY (Optimized - Essential metrics only)
 // ============================================================================
 
 model AdInsightsDaily {
@@ -590,103 +594,24 @@ model AdInsightsDaily {
   campaignId String?  @map("campaign_id")
   accountId  String   @map("account_id")
 
-  // Reach & Frequency
+  // Core Metrics
   impressions BigInt?  @map("impressions")
   reach       BigInt?  @map("reach")
-  frequency   Decimal? @map("frequency") @db.Decimal(10, 4)
+  clicks      BigInt?  @map("clicks")
+  ctr         Decimal? @map("ctr") @db.Decimal(10, 4)
+  spend       Decimal? @map("spend") @db.Decimal(20, 4)
+  cpc         Decimal? @map("cpc") @db.Decimal(20, 4)
+  cpm         Decimal? @map("cpm") @db.Decimal(20, 4)
 
-  // Clicks
-  clicks                 BigInt? @map("clicks")
-  uniqueClicks           BigInt? @map("unique_clicks")
-  inlineLinkClicks       BigInt? @map("inline_link_clicks")
-  uniqueInlineLinkClicks BigInt? @map("unique_inline_link_clicks")
-  outboundClicks         Json?   @map("outbound_clicks")
-  uniqueOutboundClicks   Json?   @map("unique_outbound_clicks")
-
-  // CTR
-  ctr                 Decimal? @map("ctr") @db.Decimal(10, 4)
-  uniqueCtr           Decimal? @map("unique_ctr") @db.Decimal(10, 4)
-  inlineLinkClickCtr  Decimal? @map("inline_link_click_ctr") @db.Decimal(10, 4)
-  uniqueLinkClicksCtr Decimal? @map("unique_link_clicks_ctr") @db.Decimal(10, 4)
-  outboundClicksCtr   Json?    @map("outbound_clicks_ctr")
-
-  // Cost
-  spend                        Decimal? @map("spend") @db.Decimal(20, 4)
-  cpc                          Decimal? @map("cpc") @db.Decimal(20, 4)
-  cpm                          Decimal? @map("cpm") @db.Decimal(20, 4)
-  cpp                          Decimal? @map("cpp") @db.Decimal(20, 4)
-  costPerUniqueClick           Decimal? @map("cost_per_unique_click") @db.Decimal(20, 4)
-  costPerInlineLinkClick       Decimal? @map("cost_per_inline_link_click") @db.Decimal(20, 4)
-  costPerUniqueInlineLinkClick Decimal? @map("cost_per_unique_inline_link_click") @db.Decimal(20, 4)
-  costPerOutboundClick         Json?    @map("cost_per_outbound_click")
-  costPerUniqueOutboundClick   Json?    @map("cost_per_unique_outbound_click")
-
-  // Actions & Conversions
-  actions                 Json? @map("actions")
-  actionValues            Json? @map("action_values")
-  conversions             Json? @map("conversions")
-  conversionValues        Json? @map("conversion_values")
-  costPerActionType       Json? @map("cost_per_action_type")
-  costPerConversion       Json? @map("cost_per_conversion")
-  costPerUniqueActionType Json? @map("cost_per_unique_action_type")
-
-  // Messaging & Results (extracted from actions for easier querying)
-  messagingStarted    BigInt?  @map("messaging_started") // onsite_conversion.messaging_conversation_started_7d
-  costPerMessaging    Decimal? @map("cost_per_messaging") @db.Decimal(20, 4)
-  results             BigInt?  @map("results") // Total results (messaging + leads + registrations)
-  costPerResult       Decimal? @map("cost_per_result") @db.Decimal(20, 4)
-
-  // ROAS
-  purchaseRoas          Json? @map("purchase_roas")
-  websitePurchaseRoas   Json? @map("website_purchase_roas")
-  mobileAppPurchaseRoas Json? @map("mobile_app_purchase_roas")
-
-  // Video Metrics
-  videoPlayActions                  Json? @map("video_play_actions")
-  videoP25WatchedActions            Json? @map("video_p25_watched_actions")
-  videoP50WatchedActions            Json? @map("video_p50_watched_actions")
-  videoP75WatchedActions            Json? @map("video_p75_watched_actions")
-  videoP95WatchedActions            Json? @map("video_p95_watched_actions")
-  videoP100WatchedActions           Json? @map("video_p100_watched_actions")
-  video30SecWatchedActions          Json? @map("video_30_sec_watched_actions")
-  videoAvgTimeWatchedActions        Json? @map("video_avg_time_watched_actions")
-  videoTimeWatchedActions           Json? @map("video_time_watched_actions")
-  videoPlayCurveActions             Json? @map("video_play_curve_actions")
-  videoThruplayWatchedActions       Json? @map("video_thruplay_watched_actions")
-  videoContinuous2SecWatchedActions Json? @map("video_continuous_2_sec_watched_actions")
-
-  // Engagement
-  socialSpend                Decimal? @map("social_spend") @db.Decimal(20, 4)
-  inlinePostEngagement       BigInt?  @map("inline_post_engagement")
-  uniqueInlinePostEngagement BigInt?  @map("unique_inline_post_engagement")
-
-  // Quality Ranking
-  qualityRanking        String? @map("quality_ranking")
-  engagementRateRanking String? @map("engagement_rate_ranking")
-  conversionRateRanking String? @map("conversion_rate_ranking")
-
-  // Canvas/Instant Experience
-  canvasAvgViewTime    Decimal? @map("canvas_avg_view_time") @db.Decimal(10, 4)
-  canvasAvgViewPercent Decimal? @map("canvas_avg_view_percent") @db.Decimal(10, 4)
-
-  // Catalog
-  catalogSegmentActions Json? @map("catalog_segment_actions")
-  catalogSegmentValue   Json? @map("catalog_segment_value")
-
-  // Others
-  estimatedAdRecallers            BigInt?  @map("estimated_ad_recallers")
-  estimatedAdRecallRate           Decimal? @map("estimated_ad_recall_rate") @db.Decimal(10, 4)
-  instantExperienceClicksToOpen   Json?    @map("instant_experience_clicks_to_open")
-  instantExperienceClicksToStart  Json?    @map("instant_experience_clicks_to_start")
-  instantExperienceOutboundClicks Json?    @map("instant_experience_outbound_clicks")
-  fullViewReach                   BigInt?  @map("full_view_reach")
-  fullViewImpressions             BigInt?  @map("full_view_impressions")
+  // Messaging & Results
+  messagingStarted BigInt?  @map("messaging_started")
+  costPerMessaging Decimal? @map("cost_per_messaging") @db.Decimal(20, 4)
+  results          BigInt?  @map("results")
+  costPerResult    Decimal? @map("cost_per_result") @db.Decimal(20, 4)
 
   // Metadata
-  dateStart DateTime? @map("date_start") @db.Date
-  dateStop  DateTime? @map("date_stop") @db.Date
-  syncedAt  DateTime  @map("synced_at")
-  createdAt DateTime  @default(now()) @map("created_at")
+  syncedAt  DateTime @map("synced_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   // Relations
   account AdAccount @relation(fields: [accountId], references: [id])
@@ -830,7 +755,7 @@ model AdInsightsRegionDaily {
 }
 
 // ============================================================================
-// AD INSIGHTS - HOURLY BREAKDOWN (Full metrics + Growth tracking)
+// AD INSIGHTS - HOURLY BREAKDOWN (Optimized - Essential metrics only)
 // ============================================================================
 
 model AdInsightsHourly {
@@ -840,120 +765,26 @@ model AdInsightsHourly {
   adsetId                                   String?  @map("adset_id")
   campaignId                                String?  @map("campaign_id")
   accountId                                 String   @map("account_id")
-  hourlyStatsAggregatedByAdvertiserTimeZone String   @map("hourly_stats_aggregated_by_advertiser_time_zone") // 00:00:00 - 00:59:59
+  hourlyStatsAggregatedByAdvertiserTimeZone String   @map("hourly_stats_aggregated_by_advertiser_time_zone")
 
-  // Reach & Frequency
-  impressions       BigInt?  @map("impressions")
-  impressionsGrowth BigInt?  @map("impressions_growth")
-  reach             BigInt?  @map("reach")
-  reachGrowth       BigInt?  @map("reach_growth")
-  frequency         Decimal? @map("frequency") @db.Decimal(10, 4)
-  frequencyGrowth   Decimal? @map("frequency_growth") @db.Decimal(10, 4)
+  // Core Metrics
+  impressions BigInt?  @map("impressions")
+  reach       BigInt?  @map("reach")
+  clicks      BigInt?  @map("clicks")
+  ctr         Decimal? @map("ctr") @db.Decimal(10, 4)
+  spend       Decimal? @map("spend") @db.Decimal(20, 4)
+  cpc         Decimal? @map("cpc") @db.Decimal(20, 4)
+  cpm         Decimal? @map("cpm") @db.Decimal(20, 4)
 
-  // Clicks
-  clicks                       BigInt?  @map("clicks")
-  clicksGrowth                 BigInt?  @map("clicks_growth")
-  uniqueClicks                 BigInt?  @map("unique_clicks")
-  uniqueClicksGrowth           BigInt?  @map("unique_clicks_growth")
-  inlineLinkClicks             BigInt?  @map("inline_link_clicks")
-  inlineLinkClicksGrowth       BigInt?  @map("inline_link_clicks_growth")
-  uniqueInlineLinkClicks       BigInt?  @map("unique_inline_link_clicks")
-  uniqueInlineLinkClicksGrowth BigInt?  @map("unique_inline_link_clicks_growth")
-  outboundClicks               Json?    @map("outbound_clicks")
-  uniqueOutboundClicks         Json?    @map("unique_outbound_clicks")
-
-  // CTR
-  ctr                 Decimal? @map("ctr") @db.Decimal(10, 4)
-  ctrGrowth           Decimal? @map("ctr_growth") @db.Decimal(10, 4)
-  uniqueCtr           Decimal? @map("unique_ctr") @db.Decimal(10, 4)
-  uniqueCtrGrowth     Decimal? @map("unique_ctr_growth") @db.Decimal(10, 4)
-  inlineLinkClickCtr  Decimal? @map("inline_link_click_ctr") @db.Decimal(10, 4)
-  uniqueLinkClicksCtr Decimal? @map("unique_link_clicks_ctr") @db.Decimal(10, 4)
-  outboundClicksCtr   Json?    @map("outbound_clicks_ctr")
-
-  // Cost
-  spend                              Decimal? @map("spend") @db.Decimal(20, 4)
-  spendGrowth                        Decimal? @map("spend_growth") @db.Decimal(20, 4)
-  cpc                                Decimal? @map("cpc") @db.Decimal(20, 4)
-  cpcGrowth                          Decimal? @map("cpc_growth") @db.Decimal(20, 4)
-  cpm                                Decimal? @map("cpm") @db.Decimal(20, 4)
-  cpmGrowth                          Decimal? @map("cpm_growth") @db.Decimal(20, 4)
-  cpp                                Decimal? @map("cpp") @db.Decimal(20, 4)
-  costPerUniqueClick                 Decimal? @map("cost_per_unique_click") @db.Decimal(20, 4)
-  costPerInlineLinkClick             Decimal? @map("cost_per_inline_link_click") @db.Decimal(20, 4)
-  costPerUniqueInlineLinkClick       Decimal? @map("cost_per_unique_inline_link_click") @db.Decimal(20, 4)
-  costPerOutboundClick               Json?    @map("cost_per_outbound_click")
-  costPerUniqueOutboundClick         Json?    @map("cost_per_unique_outbound_click")
-
-  // Actions & Conversions
-  actions                 Json?  @map("actions")
-  actionsGrowth           Json?  @map("actions_growth")
-  actionValues            Json?  @map("action_values")
-  actionValuesGrowth      Json?  @map("action_values_growth")
-  conversions             Json?  @map("conversions")
-  conversionsGrowth       Json?  @map("conversions_growth")
-  conversionValues        Json?  @map("conversion_values")
-  conversionValuesGrowth  Json?  @map("conversion_values_growth")
-  costPerActionType       Json?  @map("cost_per_action_type")
-  costPerConversion       Json?  @map("cost_per_conversion")
-  costPerUniqueActionType Json?  @map("cost_per_unique_action_type")
-
-  // Messaging & Results (extracted from actions for easier querying)
-  messagingStarted    BigInt?  @map("messaging_started") // onsite_conversion.messaging_conversation_started_7d
-  costPerMessaging    Decimal? @map("cost_per_messaging") @db.Decimal(20, 4)
-  results             BigInt?  @map("results") // Total results (messaging + leads + registrations)
-  costPerResult       Decimal? @map("cost_per_result") @db.Decimal(20, 4)
-
-  // ROAS
-  purchaseRoas            Json?    @map("purchase_roas")
-  purchaseRoasGrowth      Decimal? @map("purchase_roas_growth") @db.Decimal(20, 4)
-  websitePurchaseRoas     Json?    @map("website_purchase_roas")
-  mobileAppPurchaseRoas   Json?    @map("mobile_app_purchase_roas")
-
-  // Video Metrics
-  videoPlayActions                  Json? @map("video_play_actions")
-  videoP25WatchedActions            Json? @map("video_p25_watched_actions")
-  videoP50WatchedActions            Json? @map("video_p50_watched_actions")
-  videoP75WatchedActions            Json? @map("video_p75_watched_actions")
-  videoP95WatchedActions            Json? @map("video_p95_watched_actions")
-  videoP100WatchedActions           Json? @map("video_p100_watched_actions")
-  video30SecWatchedActions          Json? @map("video_30_sec_watched_actions")
-  videoAvgTimeWatchedActions        Json? @map("video_avg_time_watched_actions")
-  videoTimeWatchedActions           Json? @map("video_time_watched_actions")
-  videoPlayCurveActions             Json? @map("video_play_curve_actions")
-  videoThruplayWatchedActions       Json? @map("video_thruplay_watched_actions")
-  videoContinuous2SecWatchedActions Json? @map("video_continuous_2_sec_watched_actions")
-
-  // Engagement
-  socialSpend                      Decimal? @map("social_spend") @db.Decimal(20, 4)
-  inlinePostEngagement             BigInt?  @map("inline_post_engagement")
-  inlinePostEngagementGrowth       BigInt?  @map("inline_post_engagement_growth")
-  uniqueInlinePostEngagement       BigInt?  @map("unique_inline_post_engagement")
-  uniqueInlinePostEngagementGrowth BigInt?  @map("unique_inline_post_engagement_growth")
-
-  // Quality Ranking
-  qualityRanking        String? @map("quality_ranking")
-  engagementRateRanking String? @map("engagement_rate_ranking")
-  conversionRateRanking String? @map("conversion_rate_ranking")
-
-  // Canvas/Instant Experience
-  canvasAvgViewTime               Decimal? @map("canvas_avg_view_time") @db.Decimal(10, 4)
-  canvasAvgViewPercent            Decimal? @map("canvas_avg_view_percent") @db.Decimal(10, 4)
-  catalogSegmentActions           Json?    @map("catalog_segment_actions")
-  catalogSegmentValue             Json?    @map("catalog_segment_value")
-  estimatedAdRecallers            BigInt?  @map("estimated_ad_recallers")
-  estimatedAdRecallRate           Decimal? @map("estimated_ad_recall_rate") @db.Decimal(10, 4)
-  instantExperienceClicksToOpen   Json?    @map("instant_experience_clicks_to_open")
-  instantExperienceClicksToStart  Json?    @map("instant_experience_clicks_to_start")
-  instantExperienceOutboundClicks Json?    @map("instant_experience_outbound_clicks")
-  fullViewReach                   BigInt?  @map("full_view_reach")
-  fullViewImpressions             BigInt?  @map("full_view_impressions")
+  // Messaging & Results
+  messagingStarted BigInt?  @map("messaging_started")
+  costPerMessaging Decimal? @map("cost_per_messaging") @db.Decimal(20, 4)
+  results          BigInt?  @map("results")
+  costPerResult    Decimal? @map("cost_per_result") @db.Decimal(20, 4)
 
   // Metadata
-  dateStart DateTime? @map("date_start") @db.Date
-  dateStop  DateTime? @map("date_stop") @db.Date
-  syncedAt  DateTime  @map("synced_at")
-  createdAt DateTime  @default(now()) @map("created_at")
+  syncedAt  DateTime @map("synced_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   // Relations
   account AdAccount @relation(fields: [accountId], references: [id])
@@ -963,6 +794,55 @@ model AdInsightsHourly {
   @@index([adId, date])
   @@index([accountId, date])
   @@map("ad_insights_hourly")
+}
+
+// ============================================================================
+// BRANCHES - Facility/Branch management for ad accounts
+// ============================================================================
+
+model Branch {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  name      String   @map("name")
+  code      String?  @map("code") // e.g., "SG", "HN"
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  adAccounts AdAccount[]
+  dailyStats BranchDailyStats[]
+
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("branches")
+}
+
+model BranchDailyStats {
+  id               Int      @id @default(autoincrement())
+  branchId         Int      @map("branch_id")
+  date             DateTime @map("date") @db.Date
+
+  // Aggregated metrics
+  totalSpend       Decimal  @default(0) @map("total_spend") @db.Decimal(20, 4)
+  totalImpressions BigInt   @default(0) @map("total_impressions")
+  totalClicks      BigInt   @default(0) @map("total_clicks")
+  totalReach       BigInt   @default(0) @map("total_reach")
+  totalResults     BigInt   @default(0) @map("total_results")
+  totalMessaging   BigInt   @default(0) @map("total_messaging")
+
+  adAccountCount   Int      @default(0) @map("ad_account_count")
+  adsCount         Int      @default(0) @map("ads_count")
+
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, date])
+  @@index([branchId, date])
+  @@map("branch_daily_stats")
 }
 
 // ============================================================================

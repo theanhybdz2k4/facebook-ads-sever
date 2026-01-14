@@ -30,6 +30,7 @@ import { AdsModule } from './modules/ads/ads.module';
 import { InsightsModule } from './modules/insights/insights.module';
 import { TelegramModule } from './modules/telegram/telegram.module';
 import { CronModule } from './modules/cron/cron.module';
+import { BranchesModule } from './modules/branches/branches.module';
 
 @Module({
   imports: [
@@ -67,6 +68,7 @@ import { CronModule } from './modules/cron/cron.module';
     InsightsModule,
     TelegramModule,
     CronModule,
+    BranchesModule,
   ],
   controllers: [AppController],
   providers: [

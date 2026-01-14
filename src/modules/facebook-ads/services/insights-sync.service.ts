@@ -24,6 +24,32 @@ export class InsightsSyncService {
         return new Date(`${dateStr}T00:00:00.000Z`);
     }
 
+    /**
+     * Hourly insights retention is strictly 2 days (today + yesterday).
+     * Clamp any incoming range to avoid accidentally syncing a large historical window.
+     */
+    private clampHourlyDateRange(dateStart: string, dateEnd: string): { dateStart: string; dateEnd: string; clamped: boolean } {
+        const todayStr = getVietnamDateString(); // YYYY-MM-DD
+        const today = this.parseLocalDate(todayStr);
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+        // Normalize order
+        let start = dateStart;
+        let end = dateEnd;
+        if (end < start) {
+            [start, end] = [end, start];
+        }
+
+        // Clamp into [yesterday, today]
+        const clampedStart = start < yesterdayStr ? yesterdayStr : (start > todayStr ? todayStr : start);
+        const clampedEnd = end < yesterdayStr ? yesterdayStr : (end > todayStr ? todayStr : end);
+
+        const clamped = clampedStart !== dateStart || clampedEnd !== dateEnd || (end < start);
+        return { dateStart: clampedStart, dateEnd: clampedEnd, clamped };
+    }
+
     // ==================== SYNC BY AD ID ====================
 
     async syncInsightsForAd(
@@ -670,6 +696,15 @@ export class InsightsSyncService {
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
+        const clamped = this.clampHourlyDateRange(dateStart, dateEnd);
+        if (clamped.clamped) {
+            this.logger.warn(
+                `[HourlySync] Requested range ${dateStart}..${dateEnd} clamped to ${clamped.dateStart}..${clamped.dateEnd} for account ${accountId}`,
+            );
+        }
+        dateStart = clamped.dateStart;
+        dateEnd = clamped.dateEnd;
+
         // Internal use - called from processors/cron without userId context
         const accessToken = await this.tokensService.getTokenForAdAccountInternal(accountId);
         if (!accessToken) {
@@ -683,6 +718,8 @@ export class InsightsSyncService {
                 id: true,
                 name: true,
                 previewShareableLink: true,
+                adsetId: true,
+                campaignId: true,
                 adset: { select: { name: true } },
                 campaign: { select: { name: true } },
             },
@@ -706,6 +743,7 @@ export class InsightsSyncService {
             let totalInsights = 0;
             const currentHour = getVietnamHour();
             const currentMinute = getVietnamMinute();
+            const todayStr = getVietnamDateString();
 
             // Get account info for telegram message
             const account = await this.prisma.adAccount.findUnique({
@@ -722,6 +760,9 @@ export class InsightsSyncService {
                 previewLink: string | null;
             }> = [];
 
+            // Collect ALL insights first, then batch upsert to avoid per-row upserts (performance)
+            const allInsights: any[] = [];
+
             for (const ad of ads) {
                 try {
                     const insights = await this.facebookApi.getAdInsights(
@@ -735,16 +776,16 @@ export class InsightsSyncService {
 
                     for (const insight of insights) {
                         insight.ad_id = ad.id;
-                        
-                        // Save ALL hours to DB
-                        await this.upsertHourlyInsight(insight, accountId, now);
-                        totalInsights++;
+                        insight.adset_id = insight.adset_id ?? ad.adsetId;
+                        insight.campaign_id = insight.campaign_id ?? ad.campaignId;
 
+                        allInsights.push(insight);
+                        totalInsights++;
+                        
                         // Collect for Telegram (current hour of TODAY only)
                         const hourRange = insight.hourly_stats_aggregated_by_advertiser_time_zone;
                         const insightHour = hourRange ? parseInt(hourRange.split(':')[0]) : -1;
                         const insightDate = insight.date_start; // YYYY-MM-DD format
-                        const todayStr = getVietnamDateString();
                         
                         // Only collect if: same hour + today's date + has spend
                         if (insightHour === currentHour && insightDate === todayStr && Number(insight.spend || 0) > 0) {
@@ -762,17 +803,20 @@ export class InsightsSyncService {
                 }
             }
 
+            // Batch upsert ALL hours to DB (idempotent via unique index)
+            if (allInsights.length > 0) {
+                await this.batchUpsertHourlyInsights(allInsights, accountId, now);
+            }
+
             // Send consolidated Telegram report for current hour
             this.logger.log(`currentHourInsights count: ${currentHourInsights.length} for hour ${currentHour} (at minute ${currentMinute})`);
             if (currentHourInsights.length > 0) {
                 this.logger.log(`Sending Telegram report for ${currentHourInsights.length} ads...`);
-                // Use today's date for Telegram message (in Vietnam timezone)
-                const today = getVietnamDateString();
                 await this.sendConsolidatedHourlyReport(
                     currentHourInsights,
                     account?.name || accountId,
                     account?.currency || 'VND',
-                    today,
+                    todayStr,
                     `${currentHour.toString().padStart(2, '0')}:00`,
                 );
                 this.logger.log(`Telegram report sent!`);
@@ -1163,8 +1207,13 @@ export class InsightsSyncService {
                     impressions: insight.impressions,
                     reach: insight.reach,
                     clicks: insight.clicks,
-                    actions: insight.actions,
-                    cost_per_action_type: insight.costPerActionType,
+                    ctr: insight.ctr,
+                    cpc: insight.cpc,
+                    cpm: insight.cpm,
+                    results: insight.results,
+                    costPerResult: insight.costPerResult,
+                    messagingStarted: insight.messagingStarted,
+                    costPerMessaging: insight.costPerMessaging,
                 },
                 adName: ad?.name || insight.adId,
                 campaignName: ad?.campaign?.name || 'N/A',
@@ -1365,21 +1414,8 @@ export class InsightsSyncService {
         const adId = data.ad_id;
         const hourlyStats = data.hourly_stats_aggregated_by_advertiser_time_zone || '00:00:00 - 00:59:59';
 
-        // Get previous hour's data for growth calculation
-        const previousHourSlot = this.getPreviousHourSlot(hourlyStats, date);
-        const previousData = await this.prisma.adInsightsHourly.findFirst({
-            where: {
-                adId,
-                date: previousHourSlot.date,
-                hourlyStatsAggregatedByAdvertiserTimeZone: previousHourSlot.hourSlot,
-            },
-        });
-
-        // Map all metrics (same as Daily)
+        // Map essential metrics only
         const metrics = this.mapInsightMetrics(data);
-
-        // Calculate growth compared to previous hour
-        const growth = this.calculateGrowth(data, previousData);
 
         await this.prisma.adInsightsHourly.upsert({
             where: {
@@ -1397,12 +1433,10 @@ export class InsightsSyncService {
                 accountId,
                 hourlyStatsAggregatedByAdvertiserTimeZone: hourlyStats,
                 ...metrics,
-                ...growth,
                 syncedAt,
             },
             update: {
                 ...metrics,
-                ...growth,
                 syncedAt,
             },
         });
@@ -1420,6 +1454,7 @@ export class InsightsSyncService {
         // Calculate yesterday
         const yesterday = new Date(today);
         yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
 
         // Delete all hourly insights older than yesterday
         const result = await this.prisma.adInsightsHourly.deleteMany({
@@ -1431,9 +1466,9 @@ export class InsightsSyncService {
             },
         });
 
-        if (result.count > 0) {
-            this.logger.log(`Cleaned up ${result.count} old hourly insights for account ${accountId} (keeping only ${todayStr} and yesterday)`);
-        }
+        this.logger.log(
+            `[HourlyCleanup] account=${accountId} keepWindow=${yesterdayStr}..${todayStr} deleted=${result.count}`,
+        );
 
         return result.count;
     }
@@ -1523,61 +1558,13 @@ export class InsightsSyncService {
         return totalDeleted;
     }
 
-    private getPreviousHourSlot(currentHourSlot: string, currentDate: Date): { date: Date; hourSlot: string } {
-        // Parse hour from "HH:00:00 - HH:59:59" format
-        const currentHour = parseInt(currentHourSlot.split(':')[0]);
-        
-        if (currentHour === 0) {
-            // Previous hour is 23:00 of yesterday
-            const previousDate = new Date(currentDate);
-            previousDate.setDate(previousDate.getDate() - 1);
-            return { date: previousDate, hourSlot: '23:00:00 - 23:59:59' };
-        }
-        
-        // Build previous hour slot string
-        const prevHour = currentHour - 1;
-        const prevHourStr = prevHour.toString().padStart(2, '0');
-        return { date: currentDate, hourSlot: `${prevHourStr}:00:00 - ${prevHourStr}:59:59` };
-    }
 
-    private calculateGrowth(current: any, previous: any) {
-        const safeBigIntDiff = (curr: any, prev: any) => {
-            if (!curr) return null;
-            if (!prev) return BigInt(curr);
-            return BigInt(curr) - BigInt(prev);
-        };
-
-        const safeDecimalDiff = (curr: any, prev: any) => {
-            if (!curr) return null;
-            if (!prev) return parseFloat(curr);
-            return parseFloat(curr) - parseFloat(prev);
-        };
-
-        return {
-            impressionsGrowth: safeBigIntDiff(current.impressions, previous?.impressions),
-            reachGrowth: safeBigIntDiff(current.reach, previous?.reach),
-            frequencyGrowth: safeDecimalDiff(current.frequency, previous?.frequency),
-            clicksGrowth: safeBigIntDiff(current.clicks, previous?.clicks),
-            uniqueClicksGrowth: safeBigIntDiff(current.unique_clicks, previous?.uniqueClicks),
-            inlineLinkClicksGrowth: safeBigIntDiff(current.inline_link_clicks, previous?.inlineLinkClicks),
-            uniqueInlineLinkClicksGrowth: safeBigIntDiff(current.unique_inline_link_clicks, previous?.uniqueInlineLinkClicks),
-            ctrGrowth: safeDecimalDiff(current.ctr, previous?.ctr),
-            uniqueCtrGrowth: safeDecimalDiff(current.unique_ctr, previous?.uniqueCtr),
-            spendGrowth: safeDecimalDiff(current.spend, previous?.spend),
-            cpcGrowth: safeDecimalDiff(current.cpc, previous?.cpc),
-            cpmGrowth: safeDecimalDiff(current.cpm, previous?.cpm),
-            inlinePostEngagementGrowth: safeBigIntDiff(current.inline_post_engagement, previous?.inlinePostEngagement),
-            uniqueInlinePostEngagementGrowth: safeBigIntDiff(current.unique_inline_post_engagement, previous?.uniqueInlinePostEngagement),
-            // JSON fields growth (store as new actions in this hour)
-            actionsGrowth: current.actions,
-            actionValuesGrowth: current.action_values,
-            conversionsGrowth: current.conversions,
-            conversionValuesGrowth: current.conversion_values,
-        };
-    }
 
     // ==================== MAPPERS ====================
 
+    /**
+     * Map only essential insight metrics (optimized)
+     */
     private mapInsightMetrics(data: any) {
         // Helper to extract action value from actions array
         const getActionValue = (actions: any[], actionType: string): number => {
@@ -1612,76 +1599,19 @@ export class InsightsSyncService {
         const spend = Number(data.spend || 0);
         const costPerResult = results > 0 ? spend / results : 0;
 
+        // Return only essential fields
         return {
             impressions: data.impressions ? BigInt(data.impressions) : null,
             reach: data.reach ? BigInt(data.reach) : null,
-            frequency: data.frequency,
             clicks: data.clicks ? BigInt(data.clicks) : null,
-            uniqueClicks: data.unique_clicks ? BigInt(data.unique_clicks) : null,
-            inlineLinkClicks: data.inline_link_clicks ? BigInt(data.inline_link_clicks) : null,
-            uniqueInlineLinkClicks: data.unique_inline_link_clicks ? BigInt(data.unique_inline_link_clicks) : null,
-            outboundClicks: data.outbound_clicks,
-            uniqueOutboundClicks: data.unique_outbound_clicks,
             ctr: data.ctr,
-            uniqueCtr: data.unique_ctr,
-            inlineLinkClickCtr: data.inline_link_click_ctr,
-            uniqueLinkClicksCtr: data.unique_link_clicks_ctr,
-            outboundClicksCtr: data.outbound_clicks_ctr,
             spend: data.spend,
             cpc: data.cpc,
             cpm: data.cpm,
-            cpp: data.cpp,
-            costPerUniqueClick: data.cost_per_unique_click,
-            costPerInlineLinkClick: data.cost_per_inline_link_click,
-            costPerUniqueInlineLinkClick: data.cost_per_unique_inline_link_click,
-            costPerOutboundClick: data.cost_per_outbound_click,
-            costPerUniqueOutboundClick: data.cost_per_unique_outbound_click,
-            actions: data.actions,
-            actionValues: data.action_values,
-            conversions: data.conversions,
-            conversionValues: data.conversion_values,
-            costPerActionType: data.cost_per_action_type,
-            costPerConversion: data.cost_per_conversion,
-            costPerUniqueActionType: data.cost_per_unique_action_type,
-            // Messaging & Results (extracted from actions for easier querying)
             messagingStarted: messagingStarted > 0 ? BigInt(messagingStarted) : null,
             costPerMessaging: costPerMessaging > 0 ? costPerMessaging : null,
             results: results > 0 ? BigInt(results) : null,
             costPerResult: costPerResult > 0 ? costPerResult : null,
-            purchaseRoas: data.purchase_roas,
-            websitePurchaseRoas: data.website_purchase_roas,
-            mobileAppPurchaseRoas: data.mobile_app_purchase_roas,
-            videoPlayActions: data.video_play_actions,
-            videoP25WatchedActions: data.video_p25_watched_actions,
-            videoP50WatchedActions: data.video_p50_watched_actions,
-            videoP75WatchedActions: data.video_p75_watched_actions,
-            videoP95WatchedActions: data.video_p95_watched_actions,
-            videoP100WatchedActions: data.video_p100_watched_actions,
-            video30SecWatchedActions: data.video_30_sec_watched_actions,
-            videoAvgTimeWatchedActions: data.video_avg_time_watched_actions,
-            videoTimeWatchedActions: data.video_time_watched_actions,
-            videoPlayCurveActions: data.video_play_curve_actions,
-            videoThruplayWatchedActions: data.video_thruplay_watched_actions,
-            videoContinuous2SecWatchedActions: data.video_continuous_2_sec_watched_actions,
-            socialSpend: data.social_spend,
-            inlinePostEngagement: data.inline_post_engagement ? BigInt(data.inline_post_engagement) : null,
-            uniqueInlinePostEngagement: data.unique_inline_post_engagement ? BigInt(data.unique_inline_post_engagement) : null,
-            qualityRanking: data.quality_ranking,
-            engagementRateRanking: data.engagement_rate_ranking,
-            conversionRateRanking: data.conversion_rate_ranking,
-            canvasAvgViewTime: data.canvas_avg_view_time,
-            canvasAvgViewPercent: data.canvas_avg_view_percent,
-            catalogSegmentActions: data.catalog_segment_actions,
-            catalogSegmentValue: data.catalog_segment_value,
-            estimatedAdRecallers: data.estimated_ad_recallers ? BigInt(data.estimated_ad_recallers) : null,
-            estimatedAdRecallRate: data.estimated_ad_recall_rate,
-            instantExperienceClicksToOpen: data.instant_experience_clicks_to_open,
-            instantExperienceClicksToStart: data.instant_experience_clicks_to_start,
-            instantExperienceOutboundClicks: data.instant_experience_outbound_clicks,
-            fullViewReach: data.full_view_reach ? BigInt(data.full_view_reach) : null,
-            fullViewImpressions: data.full_view_impressions ? BigInt(data.full_view_impressions) : null,
-            dateStart: data.date_start ? this.parseLocalDate(data.date_start) : null,
-            dateStop: data.date_stop ? this.parseLocalDate(data.date_stop) : null,
         };
     }
 
