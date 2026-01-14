@@ -176,6 +176,12 @@ export class InsightsSyncService {
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
+        // Prevent overlapping INSIGHTS_DAILY jobs for same account
+        if (await this.crawlJobService.hasRunningJob(accountId, CrawlJobType.INSIGHTS_DAILY)) {
+            this.logger.warn(`[JobSkip] INSIGHTS_DAILY already running for account ${accountId}, skip new daily sync`);
+            return 0;
+        }
+
         // Verify ownership
         const hasAccess = await this.verifyAccountAccess(userId, accountId);
         if (!hasAccess) {
@@ -395,6 +401,12 @@ export class InsightsSyncService {
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
+        // Prevent overlapping INSIGHTS_DEVICE jobs for same account
+        if (await this.crawlJobService.hasRunningJob(accountId, CrawlJobType.INSIGHTS_DEVICE)) {
+            this.logger.warn(`[JobSkip] INSIGHTS_DEVICE already running for account ${accountId}, skip new device sync`);
+            return 0;
+        }
+
         const accessToken = await this.tokenService.getTokenForAdAccount(accountId, userId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
@@ -525,6 +537,12 @@ export class InsightsSyncService {
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
+        // Prevent overlapping INSIGHTS_PLACEMENT jobs for same account
+        if (await this.crawlJobService.hasRunningJob(accountId, CrawlJobType.INSIGHTS_PLACEMENT)) {
+            this.logger.warn(`[JobSkip] INSIGHTS_PLACEMENT already running for account ${accountId}, skip new placement sync`);
+            return 0;
+        }
+
         const accessToken = await this.tokenService.getTokenForAdAccount(accountId, userId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
@@ -657,6 +675,12 @@ export class InsightsSyncService {
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
+        // Prevent overlapping INSIGHTS_AGE_GENDER jobs for same account
+        if (await this.crawlJobService.hasRunningJob(accountId, CrawlJobType.INSIGHTS_AGE_GENDER)) {
+            this.logger.warn(`[JobSkip] INSIGHTS_AGE_GENDER already running for account ${accountId}, skip new age/gender sync`);
+            return 0;
+        }
+
         const accessToken = await this.tokenService.getTokenForAdAccount(accountId, userId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
@@ -784,6 +808,12 @@ export class InsightsSyncService {
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
+        // Prevent overlapping INSIGHTS_REGION jobs for same account
+        if (await this.crawlJobService.hasRunningJob(accountId, CrawlJobType.INSIGHTS_REGION)) {
+            this.logger.warn(`[JobSkip] INSIGHTS_REGION already running for account ${accountId}, skip new region sync`);
+            return 0;
+        }
+
         const accessToken = await this.tokenService.getTokenForAdAccount(accountId, userId);
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
@@ -911,6 +941,12 @@ export class InsightsSyncService {
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
+        // Prevent overlapping INSIGHTS_HOURLY jobs for same account
+        if (await this.crawlJobService.hasRunningJob(accountId, CrawlJobType.INSIGHTS_HOURLY)) {
+            this.logger.warn(`[JobSkip] INSIGHTS_HOURLY already running for account ${accountId}, skip new hourly sync`);
+            return 0;
+        }
+
         const clamped = this.clampHourlyDateRange(dateStart, dateEnd);
         if (clamped.clamped) {
             this.logger.warn(
