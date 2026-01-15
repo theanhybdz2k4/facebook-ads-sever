@@ -11,11 +11,13 @@ export class AdAccountsService {
     async getAdAccounts(userId: number, filters?: {
         accountStatus?: number;
         search?: string;
+        branchId?: number;
     }) {
         return this.prisma.adAccount.findMany({
             where: {
                 fbAccount: { userId },
                 ...(filters?.accountStatus && { accountStatus: filters.accountStatus }),
+                ...(filters?.branchId !== undefined && { branchId: filters.branchId }),
                 ...(filters?.search && {
                     OR: [
                         { name: { contains: filters.search, mode: 'insensitive' } },
@@ -28,6 +30,13 @@ export class AdAccountsService {
                     select: {
                         id: true,
                         name: true,
+                    },
+                },
+                branch: {
+                    select: {
+                        id: true,
+                        name: true,
+                        code: true,
                     },
                 },
                 _count: {
@@ -56,6 +65,13 @@ export class AdAccountsService {
                     select: {
                         id: true,
                         name: true,
+                    },
+                },
+                branch: {
+                    select: {
+                        id: true,
+                        name: true,
+                        code: true,
                     },
                 },
             },

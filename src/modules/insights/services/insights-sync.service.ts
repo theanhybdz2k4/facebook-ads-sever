@@ -5,6 +5,7 @@ import { FacebookApiService } from '../../shared/services/facebook-api.service';
 import { TokensService } from '../../tokens/services/tokens.service';
 import { CrawlJobService } from '../../jobs/services/crawl-job.service';
 import { TelegramService } from '../../telegram/services/telegram.service';
+import { BranchStatsService } from '../../branches/services/branch-stats.service';
 import { CrawlJobType } from '@prisma/client';
 import { getVietnamDateString, getVietnamHour, getVietnamMinute } from '@n-utils';
 
@@ -18,6 +19,7 @@ export class InsightsSyncService {
         private readonly tokenService: TokensService,
         private readonly crawlJobService: CrawlJobService,
         private readonly telegramService: TelegramService,
+        private readonly branchStatsService: BranchStatsService,
     ) { }
 
     /**
@@ -252,13 +254,23 @@ export class InsightsSyncService {
 
             await this.crawlJobService.completeJob(job.id, allInsights.length);
             
-            // Send Telegram notification if insights were synced
+            // Send Telegram notification & aggregate branch stats if insights were synced
             if (allInsights.length > 0) {
                 try {
-                    // Get account info
+                    // Get account info (including branch)
                     const account = await this.prisma.adAccount.findUnique({
                         where: { id: accountId },
-                        select: { name: true, currency: true },
+                        select: {
+                            name: true,
+                            currency: true,
+                            branchId: true,
+                            branch: {
+                                select: {
+                                    id: true,
+                                    name: true,
+                                },
+                            },
+                        },
                     });
 
                     // Calculate totals
@@ -278,6 +290,7 @@ export class InsightsSyncService {
                     // Send report to Telegram
                     await this.telegramService.sendInsightsSyncReportToAdAccount(accountId, {
                         accountName: account?.name || accountId,
+                        branchName: account?.branch?.name || null,
                         date: dateStart,
                         adsCount: ads.length,
                         totalSpend: totals.totalSpend,
@@ -286,9 +299,24 @@ export class InsightsSyncService {
                         totalReach: totals.totalReach,
                         currency: account?.currency || 'VND',
                     });
+
+                    // Aggregate branch stats for all affected dates (if account belongs to a branch)
+                    if (account?.branchId) {
+                        const dates = Array.from(
+                            new Set(
+                                allInsights
+                                    .map((insight) => insight.date_start || insight.date || dateStart)
+                                    .filter(Boolean),
+                            ),
+                        ) as string[];
+
+                        for (const d of dates) {
+                            await this.branchStatsService.aggregateBranchStats(account.branchId, d);
+                        }
+                    }
                 } catch (error) {
-                    this.logger.error(`Failed to send Telegram notification: ${error.message}`);
-                    // Don't fail the sync if notification fails
+                    this.logger.error(`Post-sync hooks failed: ${error.message}`);
+                    // Don't fail the sync if notification or aggregation fails
                 }
             }
             

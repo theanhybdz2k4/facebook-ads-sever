@@ -1136,6 +1136,7 @@ ${campaignsText}
             totalClicks: number;
             totalReach: number;
             currency: string;
+            branchName?: string | null;
         },
     ) {
         const bots = await this.prisma.userTelegramBot.findMany({
@@ -1161,6 +1162,7 @@ ${campaignsText}
 📈 <b>Insights Sync Complete</b>
 
 📊 Account: <b>${data.accountName}</b>
+🏢 Cơ sở: <b>${data.branchName || 'Chưa gán'}</b>
 📅 Date: <b>${data.date}</b>
 🎯 Active Ads: <b>${data.adsCount}</b>
 

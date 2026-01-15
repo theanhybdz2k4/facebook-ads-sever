@@ -21,10 +21,12 @@ export class AdAccountsController {
         @CurrentUser() user: any,
         @Query('accountStatus') accountStatus?: string,
         @Query('search') search?: string,
+        @Query('branchId') branchId?: string,
     ) {
         return this.adAccountsService.getAdAccounts(user.id, {
             accountStatus: accountStatus ? parseInt(accountStatus, 10) : undefined,
             search,
+            branchId: branchId ? parseInt(branchId, 10) : undefined,
         });
     }
 
