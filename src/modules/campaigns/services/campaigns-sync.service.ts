@@ -76,6 +76,19 @@ export class CampaignsSyncService {
                 );
             }
 
+            // Mark campaigns that have ended (stopTime in the past) as PAUSED
+            const endedCampaignsResult = await this.prisma.campaign.updateMany({
+                where: {
+                    accountId,
+                    effectiveStatus: 'ACTIVE',
+                    stopTime: { lt: now },
+                },
+                data: { effectiveStatus: 'PAUSED', syncedAt: now },
+            });
+            if (endedCampaignsResult.count > 0) {
+                this.logger.log(`Marked ${endedCampaignsResult.count} ended campaigns as PAUSED for ${accountId}`);
+            }
+
             await this.crawlJobService.completeJob(job.id, campaigns.length);
             this.logger.log(`Synced ${campaigns.length} campaigns for ${accountId}`);
             return campaigns.length;

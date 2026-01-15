@@ -195,11 +195,20 @@ export class InsightsSyncService {
             throw new Error(`No valid token for account ${accountId}`);
         }
 
-        // Get all active ads for this account
+        // Get all active ads for this account (with truly active parent entities)
+        const now = new Date();
         const ads = await this.prisma.ad.findMany({
             where: { 
                 accountId,
                 effectiveStatus: 'ACTIVE',
+                // Only include ads where parent adset is truly active (not ended)
+                adset: {
+                    effectiveStatus: 'ACTIVE',
+                    OR: [
+                        { endTime: null },
+                        { endTime: { gte: now } },
+                    ],
+                },
             },
             select: { id: true, adsetId: true, campaignId: true },
         });
@@ -440,8 +449,19 @@ export class InsightsSyncService {
             throw new Error(`No valid token for account ${accountId}`);
         }
 
+        const now = new Date();
         const ads = await this.prisma.ad.findMany({
-            where: { accountId, effectiveStatus: 'ACTIVE' },
+            where: { 
+                accountId, 
+                effectiveStatus: 'ACTIVE',
+                adset: {
+                    effectiveStatus: 'ACTIVE',
+                    OR: [
+                        { endTime: null },
+                        { endTime: { gte: now } },
+                    ],
+                },
+            },
             select: { id: true },
         });
 
@@ -576,8 +596,19 @@ export class InsightsSyncService {
             throw new Error(`No valid token for account ${accountId}`);
         }
 
+        const now = new Date();
         const ads = await this.prisma.ad.findMany({
-            where: { accountId, effectiveStatus: 'ACTIVE' },
+            where: { 
+                accountId, 
+                effectiveStatus: 'ACTIVE',
+                adset: {
+                    effectiveStatus: 'ACTIVE',
+                    OR: [
+                        { endTime: null },
+                        { endTime: { gte: now } },
+                    ],
+                },
+            },
             select: { id: true },
         });
 
@@ -714,8 +745,19 @@ export class InsightsSyncService {
             throw new Error(`No valid token for account ${accountId}`);
         }
 
+        const now = new Date();
         const ads = await this.prisma.ad.findMany({
-            where: { accountId, effectiveStatus: 'ACTIVE' },
+            where: { 
+                accountId, 
+                effectiveStatus: 'ACTIVE',
+                adset: {
+                    effectiveStatus: 'ACTIVE',
+                    OR: [
+                        { endTime: null },
+                        { endTime: { gte: now } },
+                    ],
+                },
+            },
             select: { id: true },
         });
 

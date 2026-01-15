@@ -25,10 +25,22 @@ export class CampaignsService {
             }
         }
 
+        // Build where clause with proper ACTIVE filtering
+        // Facebook API returns effective_status = ACTIVE even for campaigns that have ended
+        // So we need to also check stopTime to exclude finished campaigns
+        const isFilteringActive = filters?.effectiveStatus === 'ACTIVE';
+        
         return this.prisma.campaign.findMany({
             where: {
                 ...(filters?.accountId && { accountId: filters.accountId }),
                 ...(filters?.effectiveStatus && { effectiveStatus: filters.effectiveStatus }),
+                // When filtering ACTIVE, exclude campaigns that have ended (stopTime in the past)
+                ...(isFilteringActive && {
+                    OR: [
+                        { stopTime: null },  // No end time set
+                        { stopTime: { gte: new Date() } },  // End time in the future
+                    ],
+                }),
                 ...(filters?.search && {
                     OR: [
                         { name: { contains: filters.search, mode: 'insensitive' } },

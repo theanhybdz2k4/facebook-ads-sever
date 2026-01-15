@@ -34,6 +34,14 @@ export class AdsService {
                         { id: { contains: filters.search } },
                     ],
                 }),
+                // Only show ads where parent adset is truly ACTIVE (not ended)
+                adset: {
+                    effectiveStatus: 'ACTIVE',
+                    OR: [
+                        { endTime: null },
+                        { endTime: { gte: new Date() } },
+                    ],
+                },
                 account: accountFilter,
             },
             include: {

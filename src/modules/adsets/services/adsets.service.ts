@@ -23,17 +23,36 @@ export class AdSetsService {
             }
         }
 
+        // Build where clause with proper ACTIVE filtering
+        // Facebook API returns effective_status = ACTIVE even for ended adsets
+        const isFilteringActive = filters?.effectiveStatus === 'ACTIVE';
+
         return this.prisma.adset.findMany({
             where: {
                 ...(filters?.accountId && { accountId: filters.accountId }),
                 ...(filters?.campaignId && { campaignId: filters.campaignId }),
                 ...(filters?.effectiveStatus && { effectiveStatus: filters.effectiveStatus }),
+                // When filtering ACTIVE, exclude adsets that have ended (endTime in the past)
+                ...(isFilteringActive && {
+                    OR: [
+                        { endTime: null },  // No end time set
+                        { endTime: { gte: new Date() } },  // End time in the future
+                    ],
+                }),
                 ...(filters?.search && {
                     OR: [
                         { name: { contains: filters.search, mode: 'insensitive' } },
                         { id: { contains: filters.search } },
                     ],
                 }),
+                // Only show adsets where parent campaign is truly ACTIVE (not ended)
+                campaign: {
+                    effectiveStatus: 'ACTIVE',
+                    OR: [
+                        { stopTime: null },
+                        { stopTime: { gte: new Date() } },
+                    ],
+                },
                 account: accountFilter,
             },
             include: {

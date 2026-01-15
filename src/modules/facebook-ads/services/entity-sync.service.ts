@@ -99,6 +99,19 @@ export class EntitySyncService {
                 );
             }
 
+            // Mark campaigns that have ended (stopTime in the past) as PAUSED
+            const endedCampaignsResult = await this.prisma.campaign.updateMany({
+                where: {
+                    accountId,
+                    effectiveStatus: 'ACTIVE',
+                    stopTime: { lt: now },
+                },
+                data: { effectiveStatus: 'PAUSED', syncedAt: now },
+            });
+            if (endedCampaignsResult.count > 0) {
+                this.logger.log(`Marked ${endedCampaignsResult.count} ended campaigns as PAUSED for ${accountId}`);
+            }
+
             await this.crawlJobService.completeJob(job.id, campaigns.length);
             this.logger.log(`Synced ${campaigns.length} campaigns for ${accountId}`);
             return campaigns.length;
@@ -124,16 +137,38 @@ export class EntitySyncService {
 
         try {
             await this.crawlJobService.startJob(job.id);
-            // Fetch ALL adsets to keep `effective_status` in sync with Meta
-            const adsets = await this.facebookApi.getAdsets(accountId, accessToken, false);
             const now = new Date();
 
-            // Get all currently ACTIVE adsets in DB for this account
-            const existingActiveAdsets = await this.prisma.adset.findMany({
+            // Only sync adsets from ACTIVE campaigns
+            const activeCampaigns = await this.prisma.campaign.findMany({
                 where: { accountId, effectiveStatus: 'ACTIVE' },
                 select: { id: true },
             });
-            const fetchedIds = new Set(adsets.map(a => a.id));
+
+            if (activeCampaigns.length === 0) {
+                this.logger.log(`No active campaigns for ${accountId}, skipping adsets sync`);
+                await this.crawlJobService.completeJob(job.id, 0);
+                return 0;
+            }
+
+            // Fetch adsets for all active campaigns
+            const allAdsets: any[] = [];
+            for (const campaign of activeCampaigns) {
+                const adsets = await this.facebookApi.getAdsetsByCampaign(campaign.id, accessToken, accountId);
+                allAdsets.push(...adsets);
+            }
+
+            // Get all currently ACTIVE adsets in DB for active campaigns only
+            const activeCampaignIds = activeCampaigns.map(c => c.id);
+            const existingActiveAdsets = await this.prisma.adset.findMany({
+                where: { 
+                    accountId, 
+                    effectiveStatus: 'ACTIVE',
+                    campaignId: { in: activeCampaignIds },
+                },
+                select: { id: true },
+            });
+            const fetchedIds = new Set(allAdsets.map(a => a.id));
 
             // Mark adsets no longer returned as ACTIVE -> INACTIVE
             const missingIds = existingActiveAdsets
@@ -149,9 +184,9 @@ export class EntitySyncService {
             }
 
             // Batch upsert all adsets in a single transaction
-            if (adsets.length > 0) {
+            if (allAdsets.length > 0) {
                 await this.prisma.$transaction(
-                    adsets.map((adset) =>
+                    allAdsets.map((adset) =>
                         this.prisma.adset.upsert({
                             where: { id: adset.id },
                             create: this.mapAdset(adset, accountId, now),
@@ -161,9 +196,22 @@ export class EntitySyncService {
                 );
             }
 
-            await this.crawlJobService.completeJob(job.id, adsets.length);
-            this.logger.log(`Synced ${adsets.length} adsets for ${accountId}`);
-            return adsets.length;
+            // Mark adsets that have ended (endTime in the past) as INACTIVE
+            const endedAdsetsResult = await this.prisma.adset.updateMany({
+                where: {
+                    accountId,
+                    effectiveStatus: 'ACTIVE',
+                    endTime: { lt: now },
+                },
+                data: { effectiveStatus: 'INACTIVE', syncedAt: now },
+            });
+            if (endedAdsetsResult.count > 0) {
+                this.logger.log(`Marked ${endedAdsetsResult.count} ended adsets as INACTIVE for ${accountId}`);
+            }
+
+            await this.crawlJobService.completeJob(job.id, allAdsets.length);
+            this.logger.log(`Synced ${allAdsets.length} adsets from ${activeCampaigns.length} active campaigns for ${accountId}`);
+            return allAdsets.length;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
             throw error;
@@ -255,16 +303,38 @@ export class EntitySyncService {
 
         try {
             await this.crawlJobService.startJob(job.id);
-            // Fetch ALL ads to keep `effective_status` in sync with Meta
-            const ads = await this.facebookApi.getAds(accountId, accessToken, false);
             const now = new Date();
 
-            // Get all currently ACTIVE ads in DB for this account
-            const existingActiveAds = await this.prisma.ad.findMany({
+            // Only sync ads from ACTIVE adsets
+            const activeAdsets = await this.prisma.adset.findMany({
                 where: { accountId, effectiveStatus: 'ACTIVE' },
                 select: { id: true },
             });
-            const fetchedIds = new Set(ads.map(a => a.id));
+
+            if (activeAdsets.length === 0) {
+                this.logger.log(`No active adsets for ${accountId}, skipping ads sync`);
+                await this.crawlJobService.completeJob(job.id, 0);
+                return 0;
+            }
+
+            // Fetch ads for all active adsets
+            const allAds: any[] = [];
+            for (const adset of activeAdsets) {
+                const ads = await this.facebookApi.getAdsByAdset(adset.id, accessToken, accountId);
+                allAds.push(...ads);
+            }
+
+            // Get all currently ACTIVE ads in DB for active adsets only
+            const activeAdsetIds = activeAdsets.map(a => a.id);
+            const existingActiveAds = await this.prisma.ad.findMany({
+                where: { 
+                    accountId, 
+                    effectiveStatus: 'ACTIVE',
+                    adsetId: { in: activeAdsetIds },
+                },
+                select: { id: true },
+            });
+            const fetchedIds = new Set(allAds.map(a => a.id));
 
             // Mark ads no longer returned as ACTIVE -> INACTIVE
             const missingIds = existingActiveAds
@@ -279,25 +349,10 @@ export class EntitySyncService {
                 this.logger.log(`Marked ${missingIds.length} ads as INACTIVE for ${accountId}`);
             }
 
-            // Pre-fetch existing adset IDs to filter out orphan ads
-            const existingAdsets = await this.prisma.adset.findMany({
-                where: { accountId },
-                select: { id: true },
-            });
-            const adsetIds = new Set(existingAdsets.map(a => a.id));
-
-            // Filter ads that have valid parent adsets
-            const validAds = ads.filter(ad => adsetIds.has(ad.adset_id));
-            const skippedCount = ads.length - validAds.length;
-
-            if (skippedCount > 0) {
-                this.logger.warn(`Skipping ${skippedCount} ads with missing parent adsets`);
-            }
-
-            // Batch upsert all valid ads in single transaction
-            if (validAds.length > 0) {
+            // Batch upsert all ads in single transaction
+            if (allAds.length > 0) {
                 await this.prisma.$transaction(
-                    validAds.map((ad) =>
+                    allAds.map((ad) =>
                         this.prisma.ad.upsert({
                             where: { id: ad.id },
                             create: this.mapAd(ad, accountId, now),
@@ -307,9 +362,9 @@ export class EntitySyncService {
                 );
             }
 
-            await this.crawlJobService.completeJob(job.id, validAds.length);
-            this.logger.log(`Synced ${validAds.length} ads for ${accountId} (skipped ${skippedCount})`);
-            return validAds.length;
+            await this.crawlJobService.completeJob(job.id, allAds.length);
+            this.logger.log(`Synced ${allAds.length} ads from ${activeAdsets.length} active adsets for ${accountId}`);
+            return allAds.length;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
             throw error;
