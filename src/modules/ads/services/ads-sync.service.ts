@@ -34,17 +34,42 @@ export class AdsSyncService {
 
         try {
             await this.crawlJobService.startJob(job.id);
-            const ads = await this.facebookApi.getAds(accountId, accessToken);
+            // Fetch ALL ads so `effective_status` in DB always reflects Meta
+            const ads = await this.facebookApi.getAds(accountId, accessToken, false);
             const now = new Date();
+
+            // Get all currently ACTIVE ads in DB for this account
+            const existingActiveAds = await this.prisma.ad.findMany({
+                where: { accountId, effectiveStatus: 'ACTIVE' },
+                select: { id: true },
+            });
+            const fetchedIds = new Set(ads.map(a => a.id));
+
+            // Mark ads no longer returned as ACTIVE -> INACTIVE
+            const missingIds = existingActiveAds
+                .filter(a => !fetchedIds.has(a.id))
+                .map(a => a.id);
+
+            if (missingIds.length > 0) {
+                await this.prisma.ad.updateMany({
+                    where: { id: { in: missingIds } },
+                    data: { effectiveStatus: 'INACTIVE', syncedAt: now },
+                });
+                this.logger.log(`Marked ${missingIds.length} ads as INACTIVE for ${accountId}`);
+            }
+
+            // Pre-fetch existing adset IDs to filter out orphan ads
+            const existingAdsets = await this.prisma.adset.findMany({
+                where: { accountId },
+                select: { id: true },
+            });
+            const adsetIds = new Set(existingAdsets.map(a => a.id));
 
             // Filter out ads with missing parent adsets
             let skippedCount = 0;
             const validAds = [];
             for (const ad of ads) {
-                const adsetExists = await this.prisma.adset.findUnique({
-                    where: { id: ad.adset_id },
-                });
-                if (adsetExists) {
+                if (adsetIds.has(ad.adset_id)) {
                     validAds.push(ad);
                 } else {
                     skippedCount++;
@@ -101,8 +126,29 @@ export class AdsSyncService {
 
         try {
             await this.crawlJobService.startJob(job.id);
-            const ads = await this.facebookApi.getAdsByAdset(adsetId, accessToken, accountId);
+            // Fetch ALL ads under this adset
+            const ads = await this.facebookApi.getAdsByAdset(adsetId, accessToken, accountId, false);
             const now = new Date();
+
+            // Get all currently ACTIVE ads in DB for this adset
+            const existingActiveAds = await this.prisma.ad.findMany({
+                where: { adsetId, effectiveStatus: 'ACTIVE' },
+                select: { id: true },
+            });
+            const fetchedIds = new Set(ads.map(a => a.id));
+
+            // Mark ads no longer returned as ACTIVE -> INACTIVE
+            const missingIds = existingActiveAds
+                .filter(a => !fetchedIds.has(a.id))
+                .map(a => a.id);
+
+            if (missingIds.length > 0) {
+                await this.prisma.ad.updateMany({
+                    where: { id: { in: missingIds } },
+                    data: { effectiveStatus: 'INACTIVE', syncedAt: now },
+                });
+                this.logger.log(`Marked ${missingIds.length} ads as INACTIVE for adset ${adsetId}`);
+            }
 
             if (ads.length > 0) {
                 await this.prisma.$transaction(

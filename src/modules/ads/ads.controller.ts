@@ -19,12 +19,14 @@ export class AdsController {
         @Query('adsetId') adsetId?: string,
         @Query('effectiveStatus') effectiveStatus?: string,
         @Query('search') search?: string,
+        @Query('branchId') branchId?: string,
     ) {
         return this.adsService.getAds(user.id, {
             accountId,
             adsetId,
             effectiveStatus,
             search,
+            branchId,
         });
     }
 

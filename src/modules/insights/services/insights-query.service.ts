@@ -13,6 +13,7 @@ export class InsightsQueryService {
         accountId?: string;
         dateStart?: string;
         dateEnd?: string;
+        branchId?: string;
     }) {
         let dateFilter = {};
         if (filters?.dateStart && filters?.dateEnd) {
@@ -22,11 +23,22 @@ export class InsightsQueryService {
             dateFilter = { date: { gte: startUTC, lte: endUTCInclusive } };
         }
 
+        const accountFilter: any = {
+            fbAccount: { userId },
+        };
+
+        if (filters?.branchId && filters.branchId !== 'all') {
+            const parsedBranchId = Number(filters.branchId);
+            if (!Number.isNaN(parsedBranchId)) {
+                accountFilter.branchId = parsedBranchId;
+            }
+        }
+
         return this.prisma.adInsightsDaily.findMany({
             where: {
                 ...(filters?.accountId && { accountId: filters.accountId }),
                 ...dateFilter,
-                account: { fbAccount: { userId } },
+                account: accountFilter,
             },
             include: {
                 ad: {

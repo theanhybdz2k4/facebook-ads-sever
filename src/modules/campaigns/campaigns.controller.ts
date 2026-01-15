@@ -18,11 +18,13 @@ export class CampaignsController {
         @Query('accountId') accountId?: string,
         @Query('effectiveStatus') effectiveStatus?: string,
         @Query('search') search?: string,
+        @Query('branchId') branchId?: string,
     ) {
         return this.campaignsService.getCampaigns(user.id, {
             accountId,
             effectiveStatus,
             search,
+            branchId,
         });
     }
 

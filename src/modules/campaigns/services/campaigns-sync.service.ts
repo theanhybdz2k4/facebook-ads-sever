@@ -38,19 +38,43 @@ export class CampaignsSyncService {
 
         try {
             await this.crawlJobService.startJob(job.id);
-            const campaigns = await this.facebookApi.getCampaigns(accountId, accessToken);
+            // Fetch ALL campaigns so that `effective_status` in DB always
+            // reflects the latest state on Meta (ACTIVE, PAUSED, DELETED, ...)
+            const campaigns = await this.facebookApi.getCampaigns(accountId, accessToken, false);
             const now = new Date();
 
+            // Get all currently ACTIVE campaigns in DB for this account
+            const existingActiveCampaigns = await this.prisma.campaign.findMany({
+                where: { accountId, effectiveStatus: 'ACTIVE' },
+                select: { id: true },
+            });
+            const fetchedIds = new Set(campaigns.map(c => c.id));
+
+            // Mark campaigns no longer returned as ACTIVE -> PAUSED
+            const missingIds = existingActiveCampaigns
+                .filter(c => !fetchedIds.has(c.id))
+                .map(c => c.id);
+
+            if (missingIds.length > 0) {
+                await this.prisma.campaign.updateMany({
+                    where: { id: { in: missingIds } },
+                    data: { effectiveStatus: 'PAUSED', syncedAt: now },
+                });
+                this.logger.log(`Marked ${missingIds.length} campaigns as PAUSED for ${accountId}`);
+            }
+
             // Batch upsert all campaigns in a single transaction
-            await this.prisma.$transaction(
-                campaigns.map((campaign) =>
-                    this.prisma.campaign.upsert({
-                        where: { id: campaign.id },
-                        create: this.mapCampaign(campaign, accountId, now),
-                        update: this.mapCampaign(campaign, accountId, now),
-                    })
-                )
-            );
+            if (campaigns.length > 0) {
+                await this.prisma.$transaction(
+                    campaigns.map((campaign) =>
+                        this.prisma.campaign.upsert({
+                            where: { id: campaign.id },
+                            create: this.mapCampaign(campaign, accountId, now),
+                            update: this.mapCampaign(campaign, accountId, now),
+                        })
+                    )
+                );
+            }
 
             await this.crawlJobService.completeJob(job.id, campaigns.length);
             this.logger.log(`Synced ${campaigns.length} campaigns for ${accountId}`);

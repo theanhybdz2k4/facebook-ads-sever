@@ -19,7 +19,7 @@ export class InsightsService {
     }
 
     // Delegate to query service
-    async getDailyInsights(userId: number, filters?: { accountId?: string; dateStart?: string; dateEnd?: string }) {
+    async getDailyInsights(userId: number, filters?: { accountId?: string; dateStart?: string; dateEnd?: string; branchId?: string }) {
         return this.insightsQueryService.getDailyInsights(userId, filters);
     }
 

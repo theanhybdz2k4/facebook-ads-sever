@@ -154,8 +154,16 @@ export class FacebookApiService {
     }
 
     // ==================== CAMPAIGNS ====================
-
-    async getCampaigns(accountId: string, accessToken: string, onlyActive = true): Promise<any[]> {
+    /**
+     * Get campaigns for an ad account.
+     *
+     * By default we fetch ALL campaigns and rely on `effective_status`
+     * returned from Meta to filter on the consumer side (e.g. only ACTIVE).
+     *
+     * Set `onlyActive = true` if you explicitly want Meta to return only
+     * currently ACTIVE campaigns.
+     */
+    async getCampaigns(accountId: string, accessToken: string, onlyActive = false): Promise<any[]> {
         const params: Record<string, string> = { fields: CAMPAIGN_FIELDS, limit: '100' };
         if (onlyActive) {
             params.effective_status = JSON.stringify(['ACTIVE']);

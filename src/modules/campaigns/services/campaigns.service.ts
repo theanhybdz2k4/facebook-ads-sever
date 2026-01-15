@@ -12,7 +12,19 @@ export class CampaignsService {
         accountId?: string;
         effectiveStatus?: string;
         search?: string;
+        branchId?: string;
     }) {
+        const accountFilter: any = {
+            fbAccount: { userId },
+        };
+
+        if (filters?.branchId && filters.branchId !== 'all') {
+            const parsedBranchId = Number(filters.branchId);
+            if (!Number.isNaN(parsedBranchId)) {
+                accountFilter.branchId = parsedBranchId;
+            }
+        }
+
         return this.prisma.campaign.findMany({
             where: {
                 ...(filters?.accountId && { accountId: filters.accountId }),
@@ -23,7 +35,7 @@ export class CampaignsService {
                         { id: { contains: filters.search } },
                     ],
                 }),
-                account: { fbAccount: { userId } },
+                account: accountFilter,
             },
             include: {
                 account: {

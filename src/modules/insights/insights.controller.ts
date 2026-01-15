@@ -18,11 +18,13 @@ export class InsightsController {
         @Query('accountId') accountId?: string,
         @Query('dateStart') dateStart?: string,
         @Query('dateEnd') dateEnd?: string,
+        @Query('branchId') branchId?: string,
     ) {
         return this.insightsService.getDailyInsights(user.id, {
             accountId,
             dateStart,
             dateEnd,
+            branchId,
         });
     }
 

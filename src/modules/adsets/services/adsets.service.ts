@@ -10,7 +10,19 @@ export class AdSetsService {
         campaignId?: string;
         effectiveStatus?: string;
         search?: string;
+        branchId?: string;
     }) {
+        const accountFilter: any = {
+            fbAccount: { userId },
+        };
+
+        if (filters?.branchId && filters.branchId !== 'all') {
+            const parsedBranchId = Number(filters.branchId);
+            if (!Number.isNaN(parsedBranchId)) {
+                accountFilter.branchId = parsedBranchId;
+            }
+        }
+
         return this.prisma.adset.findMany({
             where: {
                 ...(filters?.accountId && { accountId: filters.accountId }),
@@ -22,7 +34,7 @@ export class AdSetsService {
                         { id: { contains: filters.search } },
                     ],
                 }),
-                account: { fbAccount: { userId } },
+                account: accountFilter,
             },
             include: {
                 account: { select: { id: true, name: true } },
