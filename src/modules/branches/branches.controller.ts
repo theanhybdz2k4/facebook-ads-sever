@@ -89,23 +89,105 @@ export class BranchesController {
         return this.branchesService.deleteBranch(parseInt(id, 10), user.id);
     }
 
-    @Get(':id/stats')
-    @ApiOperation({ summary: 'Get daily stats for a branch (public)' })
+    @Get(':code/stats')
+    @ApiOperation({ summary: 'Get daily stats for a branch by code (public)' })
     async getBranchStats(
-        @Param('id') id: string,
+        @Param('code') code: string,
+        @Query('userId') userId?: string,
         @Query('dateStart') dateStart?: string,
         @Query('dateEnd') dateEnd?: string,
     ) {
+        if (!userId) {
+            throw new BadRequestException('userId query param is required');
+        }
+
+        const branch = await this.branchesService.getBranchByCode(code, parseInt(userId, 10));
+
         const today = getVietnamDateString();
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
         const defaultStart = thirtyDaysAgo.toISOString().split('T')[0];
 
-        return this.branchStatsService.getBranchStats(
-            parseInt(id, 10),
+        const stats = await this.branchStatsService.getBranchStats(
+            branch.id,
             dateStart || defaultStart,
             dateEnd || today,
         );
+
+        const daily = stats.map((stat) => {
+            const totalSpend = Number(stat.totalSpend);
+            const totalImpressions = Number(stat.totalImpressions);
+            const totalClicks = Number(stat.totalClicks);
+            const totalReach = Number(stat.totalReach);
+            const totalResults = Number(stat.totalResults);
+            const totalMessaging = Number(stat.totalMessaging);
+
+            const ctr = totalImpressions > 0 ? totalClicks / totalImpressions : 0;
+            const cpc = totalClicks > 0 ? totalSpend / totalClicks : 0;
+            const cpm = totalImpressions > 0 ? (totalSpend / totalImpressions) * 1000 : 0;
+            const cpr = totalResults > 0 ? totalSpend / totalResults : 0;
+            const costPerMessage = totalMessaging > 0 ? totalSpend / totalMessaging : 0;
+
+            return {
+                date: stat.date.toISOString().split('T')[0],
+                totalSpend,
+                totalImpressions,
+                totalClicks,
+                totalReach,
+                totalResults,
+                totalMessaging,
+                ctr,
+                cpc,
+                cpm,
+                cpr,
+                costPerMessage,
+            };
+        });
+
+        const totals = daily.reduce(
+            (acc, d) => {
+                acc.totalSpend += d.totalSpend;
+                acc.totalImpressions += d.totalImpressions;
+                acc.totalClicks += d.totalClicks;
+                acc.totalReach += d.totalReach;
+                acc.totalResults += d.totalResults;
+                acc.totalMessaging += d.totalMessaging;
+                return acc;
+            },
+            {
+                totalSpend: 0,
+                totalImpressions: 0,
+                totalClicks: 0,
+                totalReach: 0,
+                totalResults: 0,
+                totalMessaging: 0,
+            },
+        );
+
+        const ctr =
+            totals.totalImpressions > 0 ? totals.totalClicks / totals.totalImpressions : 0;
+        const cpc = totals.totalClicks > 0 ? totals.totalSpend / totals.totalClicks : 0;
+        const cpm =
+            totals.totalImpressions > 0
+                ? (totals.totalSpend / totals.totalImpressions) * 1000
+                : 0;
+        const cpr = totals.totalResults > 0 ? totals.totalSpend / totals.totalResults : 0;
+        const costPerMessage =
+            totals.totalMessaging > 0 ? totals.totalSpend / totals.totalMessaging : 0;
+
+        return {
+            id: branch.id,
+            name: branch.name,
+            code: branch.code,
+            daysWithData: daily.length,
+            ...totals,
+            ctr,
+            cpc,
+            cpm,
+            cpr,
+            costPerMessage,
+            daily,
+        };
     }
 
     @Post(':id/stats/aggregate')

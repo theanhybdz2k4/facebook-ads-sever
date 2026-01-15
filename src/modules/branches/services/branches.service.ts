@@ -60,6 +60,21 @@ export class BranchesService {
     }
 
     /**
+     * Get branch by code for a specific user
+     */
+    async getBranchByCode(code: string, userId: number) {
+        const branch = await this.prisma.branch.findFirst({
+            where: { code, userId },
+        });
+
+        if (!branch) {
+            throw new NotFoundException(`Branch with code "${code}" not found`);
+        }
+
+        return branch;
+    }
+
+    /**
      * Create a new branch
      */
     async createBranch(userId: number, dto: CreateBranchDto) {
