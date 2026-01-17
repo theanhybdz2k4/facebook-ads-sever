@@ -47,25 +47,24 @@ export class InsightsSyncService {
             return;
         }
 
-        // 2. Sync each account
-        for (const account of adAccounts) {
+        // 2. Sync ALL accounts in PARALLEL
+        await Promise.all(adAccounts.map(async (account) => {
             try {
                 this.logger.log(`[BranchSync] Syncing account ${account.name} (${account.id})...`);
                 
-                // Sync Daily Insights (Main)
-                await this.syncDailyInsights(account.id, userId, dateStart, dateEnd);
-
-                // Sync Breakdowns (Device, Age/Gender, Region)
-                await this.syncAccountBreakdowns(account.id, userId, dateStart, dateEnd);
+                // Parallelize Daily Insights and Breakdowns for each account
+                await Promise.all([
+                    this.syncDailyInsights(account.id, userId, dateStart, dateEnd),
+                    this.syncAccountBreakdowns(account.id, userId, dateStart, dateEnd),
+                    this.syncPlacementInsights(account.id, userId, dateStart, dateEnd),
+                ]);
             } catch (error) {
                 this.logger.error(`[BranchSync] Failed to sync account ${account.id}: ${error.message}`);
                 // Continue with other accounts even if one fails
             }
-        }
+        }));
 
-        // 3. Aggregate stats for the branch
-        // We aggregate for each day in range to be safe
-        // Simply parsing date strings to iterate days
+        // 3. Aggregate stats for the branch - each day in range
         const start = new Date(dateStart);
         const end = new Date(dateEnd);
         for (let d = start; d <= end; d.setDate(d.getDate() + 1)) {
@@ -617,7 +616,7 @@ export class InsightsSyncService {
                     ${date}::date,
                     ${data.ad_id}::text,
                     ${accountId}::text,
-                    ${data.region || 'unknown'}::text,
+                    ${data.region || null}::text,
                     ${data.country || 'unknown'}::text,
                     ${metrics.impressions}::bigint,
                     ${metrics.reach}::bigint,
@@ -628,7 +627,6 @@ export class InsightsSyncService {
                     ${JSON.stringify(metrics.actionValues)}::jsonb,
                     ${JSON.stringify(metrics.conversions)}::jsonb,
                     ${JSON.stringify(metrics.costPerActionType)}::jsonb,
-                    ${JSON.stringify(metrics.videoThruplayWatchedActions)}::jsonb,
                     ${syncedAt}::timestamp,
                     NOW()
                 )`;
@@ -639,7 +637,6 @@ export class InsightsSyncService {
                     date, ad_id, account_id, region, country,
                     impressions, reach, clicks, unique_clicks, spend,
                     actions, action_values, conversions, cost_per_action_type,
-                    video_thruplay_watched_actions,
                     synced_at, created_at
                 )
                 VALUES ${Prisma.join(values)}
@@ -655,7 +652,6 @@ export class InsightsSyncService {
                     action_values = EXCLUDED.action_values,
                     conversions = EXCLUDED.conversions,
                     cost_per_action_type = EXCLUDED.cost_per_action_type,
-                    video_thruplay_watched_actions = EXCLUDED.video_thruplay_watched_actions,
                     synced_at = EXCLUDED.synced_at
             `;
         }
@@ -690,53 +686,66 @@ export class InsightsSyncService {
 
         const now = new Date();
 
-        // 1. Sync Device Breakdown
-        this.logger.log(`[BulkSync] Fetching DEVICE breakdown for account ${accountId}...`);
-        const deviceInsights = await this.facebookApi.getInsights(
-            accountId,
-            accessToken,
-            dateStart,
-            dateEnd,
-            'ad',
-            'device_platform'
-        );
-        if (deviceInsights.length > 0) {
-            this.logger.log(`[BulkSync] Upserting ${deviceInsights.length} device insights...`);
-            await this.batchUpsertDeviceInsights(deviceInsights, accountId, now);
-        }
+        // Parallelize all breakdown syncs
+        await Promise.all([
+            // 1. Sync Device Breakdown
+            (async () => {
+                this.logger.log(`[BulkSync] Fetching DEVICE breakdown for account ${accountId}...`);
+                const deviceInsights = await this.facebookApi.getInsights(
+                    accountId,
+                    accessToken,
+                    dateStart,
+                    dateEnd,
+                    'ad',
+                    'device_platform'
+                );
+                if (deviceInsights.length > 0) {
+                    this.logger.log(`[BulkSync] Upserting ${deviceInsights.length} device insights...`);
+                    await this.batchUpsertDeviceInsights(deviceInsights, accountId, now);
+                }
+            })(),
 
-        // 2. Sync Age/Gender Breakdown
-        this.logger.log(`[BulkSync] Fetching AGE/GENDER breakdown for account ${accountId}...`);
-        const ageGenderInsights = await this.facebookApi.getInsights(
-            accountId,
-            accessToken,
-            dateStart,
-            dateEnd,
-            'ad',
-            'age,gender'
-        );
-        if (ageGenderInsights.length > 0) {
-            this.logger.log(`[BulkSync] Upserting ${ageGenderInsights.length} age/gender insights...`);
-            await this.batchUpsertAgeGenderInsights(ageGenderInsights, accountId, now);
-        }
+            // 2. Sync Age/Gender Breakdown
+            (async () => {
+                this.logger.log(`[BulkSync] Fetching AGE/GENDER breakdown for account ${accountId}...`);
+                const ageGenderInsights = await this.facebookApi.getInsights(
+                    accountId,
+                    accessToken,
+                    dateStart,
+                    dateEnd,
+                    'ad',
+                    'age,gender'
+                );
+                if (ageGenderInsights.length > 0) {
+                    this.logger.log(`[BulkSync] Upserting ${ageGenderInsights.length} age/gender insights...`);
+                    await this.batchUpsertAgeGenderInsights(ageGenderInsights, accountId, now);
+                } else {
+                    this.logger.warn(`[BulkSync] No age/gender insights returned for account ${accountId} (${dateStart} - ${dateEnd})`);
+                }
+            })(),
 
-        // 3. Sync Region Breakdown
-        this.logger.log(`[BulkSync] Fetching REGION breakdown for account ${accountId}...`);
-        const regionInsights = await this.facebookApi.getInsights(
-            accountId,
-            accessToken,
-            dateStart,
-            dateEnd,
-            'ad',
-            'country,region'
-        );
-        if (regionInsights.length > 0) {
-            this.logger.log(`[BulkSync] Upserting ${regionInsights.length} region insights...`);
-            await this.batchUpsertRegionInsights(regionInsights, accountId, now);
-        }
+            // 3. Sync Region Breakdown
+            (async () => {
+                this.logger.log(`[BulkSync] Fetching REGION breakdown for account ${accountId}...`);
+                const regionInsights = await this.facebookApi.getInsights(
+                    accountId,
+                    accessToken,
+                    dateStart,
+                    dateEnd,
+                    'ad',
+                    'country,region'
+                );
+                if (regionInsights.length > 0) {
+                    this.logger.log(`[BulkSync] Upserting ${regionInsights.length} region insights...`);
+                    await this.batchUpsertRegionInsights(regionInsights, accountId, now);
+                } else {
+                    this.logger.warn(`[BulkSync] No region insights returned for account ${accountId} (${dateStart} - ${dateEnd})`);
+                }
+            })()
+        ]);
         
         this.logger.log(`[BulkSync] Completed breakdown sync for account ${accountId}`);
-    }
+    }    
 
     // ==================== PLACEMENT BREAKDOWN ====================
 

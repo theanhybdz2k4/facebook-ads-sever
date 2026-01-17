@@ -8,11 +8,28 @@ export class BranchStatsService {
 
     constructor(private readonly prisma: PrismaService) { }
 
-    /**
-     * Parse YYYY-MM-DD date string to UTC midnight Date
-     */
     private parseLocalDate(dateStr: string): Date {
         return new Date(`${dateStr}T00:00:00.000Z`);
+    }
+
+    /**
+     * Reusable SQL for calculating total results from actions JSONB array
+     */
+    private getResultsSql(): Prisma.Sql {
+        return Prisma.sql`
+            COALESCE(
+                (
+                    SELECT SUM((elem->>'value')::numeric)
+                    FROM jsonb_array_elements(actions) AS elem
+                    WHERE elem->>'action_type' IN (
+                        'onsite_conversion.messaging_conversation_started_7d',
+                        'onsite_conversion.messaging_first_reply',
+                        'lead',
+                        'omni_complete_registration'
+                    )
+                ), 0
+            )
+        `;
     }
 
     /**
@@ -321,6 +338,119 @@ export class BranchStatsService {
     }
 
     /**
+     * Get aggregate dashboard stats (summary + breakdowns) for all user's branches
+     */
+    async getDashboardStats(userId: number, dateStart: string, dateEnd: string) {
+        const adAccounts = await this.prisma.adAccount.findMany({
+            where: { branch: { userId } },
+            select: { id: true },
+        });
+        const accountIds = adAccounts.map(a => a.id);
+
+        // Fetch everything in parallel
+        const [branches, device, ageGender, region] = await Promise.all([
+            this.getBranchesSummary(userId, dateStart, dateEnd),
+            accountIds.length > 0 
+                ? this.aggregateDeviceGlobal(accountIds, dateStart, dateEnd)
+                : Promise.resolve([]),
+            accountIds.length > 0
+                ? this.aggregateAgeGenderGlobal(accountIds, dateStart, dateEnd)
+                : Promise.resolve([]),
+            accountIds.length > 0
+                ? this.aggregateRegionGlobal(accountIds, dateStart, dateEnd)
+                : Promise.resolve([]),
+        ]);
+
+        return {
+            branches,
+            breakdowns: {
+                device,
+                ageGender,
+                region
+            }
+        };
+    }
+
+    private async aggregateDeviceGlobal(accountIds: string[], dateStart: string, dateEnd: string) {
+        const result = await this.prisma.$queryRaw<any[]>`
+            SELECT 
+                device_platform as device,
+                SUM(spend) as spend,
+                SUM(impressions) as impressions,
+                SUM(clicks) as clicks,
+                SUM(${this.getResultsSql()}) as results
+            FROM ad_insights_device_daily
+            WHERE 
+                account_id IN (${Prisma.join(accountIds)})
+                AND date >= ${this.parseLocalDate(dateStart)}
+                AND date <= ${this.parseLocalDate(dateEnd)}
+            GROUP BY device_platform
+            ORDER BY spend DESC
+        `;
+        return result.map(item => ({
+            device: item.device,
+            spend: Number(item.spend || 0),
+            impressions: Number(item.impressions || 0),
+            clicks: Number(item.clicks || 0),
+            results: Number(item.results || 0),
+        }));
+    }
+
+    private async aggregateAgeGenderGlobal(accountIds: string[], dateStart: string, dateEnd: string) {
+        const result = await this.prisma.$queryRaw<any[]>`
+            SELECT 
+                age,
+                gender,
+                SUM(spend) as spend,
+                SUM(impressions) as impressions,
+                SUM(clicks) as clicks,
+                SUM(${this.getResultsSql()}) as results
+            FROM ad_insights_age_gender_daily
+            WHERE 
+                account_id IN (${Prisma.join(accountIds)})
+                AND date >= ${this.parseLocalDate(dateStart)}
+                AND date <= ${this.parseLocalDate(dateEnd)}
+            GROUP BY age, gender
+            ORDER BY age ASC
+        `;
+        return result.map(item => ({
+            age: item.age,
+            gender: item.gender,
+            spend: Number(item.spend || 0),
+            impressions: Number(item.impressions || 0),
+            clicks: Number(item.clicks || 0),
+            results: Number(item.results || 0),
+        }));
+    }
+
+    private async aggregateRegionGlobal(accountIds: string[], dateStart: string, dateEnd: string) {
+        const result = await this.prisma.$queryRaw<any[]>`
+            SELECT 
+                region,
+                country,
+                SUM(spend) as spend,
+                SUM(impressions) as impressions,
+                SUM(clicks) as clicks,
+                SUM(${this.getResultsSql()}) as results
+            FROM ad_insights_region_daily
+            WHERE 
+                account_id IN (${Prisma.join(accountIds)})
+                AND date >= ${this.parseLocalDate(dateStart)}
+                AND date <= ${this.parseLocalDate(dateEnd)}
+            GROUP BY region, country
+            ORDER BY spend DESC
+        `;
+        return result.map(item => ({
+            region: item.region,
+            country: item.country,
+            spend: Number(item.spend || 0),
+            impressions: Number(item.impressions || 0),
+            clicks: Number(item.clicks || 0),
+            results: Number(item.results || 0),
+        }));
+    }
+
+    /**
      * Get aggregated device stats for a branch (Raw SQL)
      */
     async getBranchDeviceStats(branchId: number, dateStart: string, dateEnd: string) {
@@ -342,7 +472,8 @@ export class BranchStatsService {
                 device_platform as device,
                 SUM(spend) as spend,
                 SUM(impressions) as impressions,
-                SUM(clicks) as clicks
+                SUM(clicks) as clicks,
+                SUM(${this.getResultsSql()}) as results
             FROM ad_insights_device_daily
             WHERE 
                 account_id IN (${Prisma.join(accountIds)})
@@ -357,7 +488,7 @@ export class BranchStatsService {
             spend: Number(item.spend || 0),
             impressions: Number(item.impressions || 0),
             clicks: Number(item.clicks || 0),
-            results: 0, // Column not available in breakdown tables
+            results: Number(item.results || 0),
         }));
     }
 
@@ -380,7 +511,8 @@ export class BranchStatsService {
                 gender,
                 SUM(spend) as spend,
                 SUM(impressions) as impressions,
-                SUM(clicks) as clicks
+                SUM(clicks) as clicks,
+                SUM(${this.getResultsSql()}) as results
             FROM ad_insights_age_gender_daily
             WHERE 
                 account_id IN (${Prisma.join(accountIds)})
@@ -396,7 +528,7 @@ export class BranchStatsService {
             spend: Number(item.spend || 0),
             impressions: Number(item.impressions || 0),
             clicks: Number(item.clicks || 0),
-            results: 0, // Column not available
+            results: Number(item.results || 0),
         }));
     }
 
@@ -419,7 +551,8 @@ export class BranchStatsService {
                 country,
                 SUM(spend) as spend,
                 SUM(impressions) as impressions,
-                SUM(clicks) as clicks
+                SUM(clicks) as clicks,
+                SUM(${this.getResultsSql()}) as results
             FROM ad_insights_region_daily
             WHERE 
                 account_id IN (${Prisma.join(accountIds)})
@@ -435,7 +568,7 @@ export class BranchStatsService {
             spend: Number(item.spend || 0),
             impressions: Number(item.impressions || 0),
             clicks: Number(item.clicks || 0),
-            results: 0, // Column not available
+            results: Number(item.results || 0),
         }));
     }
 

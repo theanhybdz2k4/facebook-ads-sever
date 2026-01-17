@@ -1,1 +1,0 @@
-{"ok":true,"result":{"message_id":909,"from":{"id":6799465970,"is_bot":true,"first_name":"ColorME Bussiness","username":"colormeta_bot"},"chat":{"id":6036092529,"first_name":"Th\u1ebf Anh","last_name":"Tr\u1ea7n","type":"private"},"date":1767686688,"text":"Test message from backend","entities":[{"offset":0,"length":25,"type":"bold"}]}}

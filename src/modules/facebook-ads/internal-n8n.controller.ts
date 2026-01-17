@@ -326,7 +326,7 @@ export class InternalN8nController {
             };
         }
 
-        // Default path for other types (ads, adset, campaign, full, ...)
+        // Default path for other types (ads, adset, campaign, insight_*, ...)
         const results = [];
 
         for (const user of usersToSync) {
@@ -487,9 +487,8 @@ export class InternalN8nController {
             return { message: 'No active ad accounts', accountsSynced: 0 };
         }
 
-        let accountsSynced = 0;
-
-        for (const account of adAccounts) {
+        // Helper to sync a single account based on type
+        const syncAccount = async (account: { id: string; name: string }) => {
             switch (type) {
                 case 'campaign':
                     await this.schedulerService.triggerEntitySync(account.id, 'campaigns');
@@ -502,10 +501,7 @@ export class InternalN8nController {
                     break;
                 case 'insight':
                 case 'insight_daily':
-                    // REQ: Only sync today, remove 3-day window
-                    const dateStart = date;
-
-                    await this.schedulerService.triggerInsightsSync(account.id, dateStart, date, 'daily');
+                    await this.schedulerService.triggerInsightsSync(account.id, date, date, 'daily');
                     break;
                 case 'insight_device':
                     await this.schedulerService.triggerInsightsSync(account.id, date, date, 'device');
@@ -533,9 +529,12 @@ export class InternalN8nController {
                     await this.schedulerService.triggerInsightsSync(account.id, date, date, 'daily');
                     break;
             }
-            accountsSynced++;
-        }
+            return account.name;
+        };
 
-        return { accountsSynced, accounts: adAccounts.map((a) => a.name) };
+        // Sync ALL accounts in parallel
+        const results = await Promise.all(adAccounts.map(syncAccount));
+
+        return { accountsSynced: results.length, accounts: results };
     }
 }

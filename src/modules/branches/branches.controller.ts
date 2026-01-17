@@ -2,6 +2,7 @@ import { Controller, Get, Post, Put, Delete, Param, Body, Query, UseGuards, BadR
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { BranchesService, CreateBranchDto, UpdateBranchDto } from './services/branches.service';
+import { PrismaService } from '@n-database/prisma/prisma.service';
 import { BranchStatsService } from './services/branch-stats.service';
 import { InsightsSyncService } from '../insights/services/insights-sync.service';
 import { CurrentUser } from '../shared/decorators/current-user.decorator';
@@ -11,6 +12,7 @@ import { getVietnamDateString } from '@n-utils';
 @Controller('branches')
 export class BranchesController {
     constructor(
+        private readonly prisma: PrismaService,
         private readonly branchesService: BranchesService,
         private readonly branchStatsService: BranchStatsService,
         @Inject(forwardRef(() => InsightsSyncService))
@@ -34,6 +36,27 @@ export class BranchesController {
         @Body() dto: CreateBranchDto,
     ) {
         return this.branchesService.createBranch(user.id, dto);
+    }
+
+    @Get('stats/dashboard')
+    @UseGuards(JwtAuthGuard)
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Get consolidated dashboard stats (branches + breakdowns) for current user' })
+    async getDashboardStats(
+        @CurrentUser() user: any,
+        @Query('dateStart') dateStart?: string,
+        @Query('dateEnd') dateEnd?: string,
+    ) {
+        const today = getVietnamDateString();
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const defaultStart = thirtyDaysAgo.toISOString().split('T')[0];
+
+        return this.branchStatsService.getDashboardStats(
+            user.id,
+            dateStart || defaultStart,
+            dateEnd || today,
+        );
     }
 
     @Get('stats/summary')
