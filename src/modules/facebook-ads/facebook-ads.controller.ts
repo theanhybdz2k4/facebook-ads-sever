@@ -155,6 +155,19 @@ export class FacebookAdsController {
         return this.insightsSyncService.sendLatestHourTelegramReport();
     }
 
+    @Post('cleanup-hourly')
+    @UseGuards(JwtAuthGuard)
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Cleanup old hourly insights (older than yesterday)' })
+    async cleanupHourlyInsights() {
+        const deletedCount = await this.insightsSyncService.cleanupAllOldHourlyInsights();
+        return {
+            success: true,
+            message: `Cleaned up ${deletedCount} old hourly insights`,
+            deletedCount,
+        };
+    }
+
     // ==================== LEGACY CRON ENDPOINTS (for n8n) ====================
     // NOTE: These are kept for backward compatibility with n8n workflows
     // New code should use /internal/n8n/* endpoints instead

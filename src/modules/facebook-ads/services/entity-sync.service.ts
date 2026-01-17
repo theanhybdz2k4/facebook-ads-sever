@@ -61,9 +61,8 @@ export class EntitySyncService {
 
         try {
             await this.crawlJobService.startJob(job.id);
-            // Fetch ALL campaigns so that we always have the latest
-            // `effective_status` from Meta (ACTIVE, PAUSED, etc.)
-            const campaigns = await this.facebookApi.getCampaigns(accountId, accessToken, false);
+            // Only fetch ACTIVE campaigns - paused/ended campaigns will be replaced by new ones
+            const campaigns = await this.facebookApi.getCampaigns(accountId, accessToken, true);
             const now = new Date();
 
             // Get all currently ACTIVE campaigns in DB for this account

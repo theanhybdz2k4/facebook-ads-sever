@@ -98,6 +98,14 @@ export class PrismaService
   }
 
   softDeleteMiddleware: Prisma.Middleware = async (params, next) => {
+    // Only apply soft delete to models that have deletedAt field
+    const modelHasDeletedAt = this.modelsWithDeletedAt.has(params.model || '');
+
+    if (!modelHasDeletedAt) {
+      // For models without deletedAt, do real delete
+      return next(params);
+    }
+
     if (params.action === 'delete') {
       return next({
         ...params,

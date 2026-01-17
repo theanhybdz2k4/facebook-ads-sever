@@ -230,8 +230,8 @@ export class InsightsQueryService {
                 cpm: Number(d.cpm) || 0,
                 results: Number(d.results) || 0,
                 costPerResult: Number(d.costPerResult) || 0,
-                messages: Number(d.messagingStarted) || 0,
-                costPerMessage: Number(d.costPerMessaging) || 0,
+                messagingStarted: Number(d.messagingStarted) || 0,
+                costPerMessaging: Number(d.costPerMessaging) || 0,
             })),
             deviceBreakdown: deviceBreakdown.map((d) => ({
                 device: d.devicePlatform,
@@ -307,6 +307,8 @@ export class InsightsQueryService {
                 cpm: Number(h.cpm) || 0,
                 results: Number(h.results) || 0,
                 costPerResult: Number(h.costPerResult) || 0,
+                messagingStarted: Number(h.messagingStarted) || 0,
+                costPerMessaging: Number(h.costPerMessaging) || 0,
             };
         });
     }

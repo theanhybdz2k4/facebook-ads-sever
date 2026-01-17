@@ -57,7 +57,7 @@ export class InternalN8nController {
         private readonly schedulerService: CrawlSchedulerService,
         private readonly insightsSyncService: InsightsSyncService,
         private readonly prisma: PrismaService,
-    ) {}
+    ) { }
 
     /**
      * Main sync endpoint for n8n
@@ -136,6 +136,14 @@ export class InternalN8nController {
                 telegramResult = { success: false, message: (error as Error).message };
             }
 
+            // Auto-cleanup old hourly insights after sync
+            let cleanedUp = 0;
+            try {
+                cleanedUp = await this.insightsSyncService.cleanupAllOldHourlyInsights();
+            } catch (error) {
+                // Log but don't fail the sync
+            }
+
             return {
                 success: true,
                 type: dto.type,
@@ -146,6 +154,7 @@ export class InternalN8nController {
                 totalDuration,
                 accounts: results,
                 telegram: telegramResult,
+                cleanedUp,
             };
         }
 
@@ -296,6 +305,23 @@ export class InternalN8nController {
                 dateRange: `${dateStart} to ${dateEnd}`,
                 days,
             },
+        };
+    }
+
+    /**
+     * Cleanup old hourly insights from all accounts
+     * Should be called daily to ensure no orphan data remains
+     */
+    @Post('cleanup-hourly')
+    @HttpCode(HttpStatus.OK)
+    @ApiOperation({ summary: 'Cleanup old hourly insights older than yesterday' })
+    async cleanupHourlyInsights() {
+        const deletedCount = await this.insightsSyncService.cleanupAllOldHourlyInsights();
+
+        return {
+            success: true,
+            message: `Cleaned up ${deletedCount} old hourly insights`,
+            deletedCount,
         };
     }
 

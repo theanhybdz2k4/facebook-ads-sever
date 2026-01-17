@@ -1510,6 +1510,35 @@ export class InsightsSyncService {
     }
 
     /**
+     * GLOBAL cleanup - cleans ALL accounts' old hourly insights
+     * Call this from a scheduled cron to ensure no orphan data remains
+     */
+    async cleanupAllOldHourlyInsights(): Promise<number> {
+        const todayStr = getVietnamDateString();
+        const today = this.parseLocalDate(todayStr);
+        
+        // Calculate yesterday
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+        // Delete ALL hourly insights older than yesterday (no accountId filter)
+        const result = await this.prisma.adInsightsHourly.deleteMany({
+            where: {
+                date: {
+                    lt: yesterday,
+                },
+            },
+        });
+
+        this.logger.log(
+            `[GlobalHourlyCleanup] keepWindow=${yesterdayStr}..${todayStr} deleted=${result.count}`,
+        );
+
+        return result.count;
+    }
+
+    /**
      * Cleanup old daily insights - keep only last 7 days
      * This prevents database from growing too large for Supabase free tier
      */
