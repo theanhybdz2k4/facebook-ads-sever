@@ -59,18 +59,18 @@ export class CrawlJobService {
     }
 
     /**
-     * Complete job successfully
+     * Complete job successfully - DELETE it to keep DB clean
      */
     async completeJob(jobId: number, totalRecords: number) {
-        return this.prisma.crawlJob.update({
-            where: { id: jobId },
-            data: {
-                status: CrawlJobStatus.COMPLETED,
-                completedAt: new Date(),
-                totalRecords,
-                processedRecords: totalRecords,
-            },
-        });
+        try {
+            return await this.prisma.crawlJob.delete({
+                where: { id: jobId },
+            });
+        } catch (error) {
+            // In case it was already deleted or doesn't exist
+            this.logger.warn(`Could not delete completed job ${jobId}: ${error.message}`);
+            return null;
+        }
     }
 
     /**
@@ -149,11 +149,11 @@ export class CrawlJobService {
     }
 
     /**
-     * Cleanup old crawl jobs - keep only last 7 days
+     * Cleanup old crawl jobs - keep only last 24 hours (primarily for FAILED jobs)
      */
     async cleanupOldJobs(): Promise<number> {
         const cutoffDate = new Date();
-        cutoffDate.setDate(cutoffDate.getDate() - 7);
+        cutoffDate.setDate(cutoffDate.getDate() - 1); // Only 1 day retention
 
         const result = await this.prisma.crawlJob.deleteMany({
             where: {
@@ -164,7 +164,7 @@ export class CrawlJobService {
         });
 
         if (result.count > 0) {
-            this.logger.log(`Cleaned up ${result.count} old crawl jobs (keeping last 7 days)`);
+            this.logger.log(`Cleaned up ${result.count} old crawl jobs (keeping last 24 hours)`);
         }
 
         return result.count;

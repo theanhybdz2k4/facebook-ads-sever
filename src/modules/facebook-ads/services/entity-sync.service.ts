@@ -75,7 +75,19 @@ export class EntitySyncService {
 
             // Batch upsert all campaigns
             if (campaigns.length > 0) {
-               await this.bulkUpsert('campaigns', campaigns.map(c => this.mapCampaign(c, accountId, now)));
+                await this.bulkUpsert(
+                    'campaigns',
+                    campaigns.map(c => this.mapCampaign(c, accountId, now)),
+                    ['id'],
+                    [
+                        'special_ad_categories',
+                        'special_ad_category_country',
+                        'pacing_type',
+                        'issues_info',
+                        'recommendations',
+                    ],
+                    ['start_time', 'stop_time', 'created_time', 'updated_time', 'synced_at'],
+                );
             }
 
             await this.crawlJobService.completeJob(job.id, campaigns.length);
@@ -117,7 +129,21 @@ export class EntitySyncService {
 
             // Batch upsert all adsets
             if (allAdsets.length > 0) {
-                 await this.bulkUpsert('adsets', allAdsets.map(a => this.mapAdset(a, accountId, now)));
+                 await this.bulkUpsert(
+                    'adsets',
+                    allAdsets.map(a => this.mapAdset(a, accountId, now)),
+                    ['id'],
+                    [
+                        'pacing_type',
+                        'targeting',
+                        'promoted_object',
+                        'attribution_spec',
+                        'learning_stage_info',
+                        'issues_info',
+                        'recommendations',
+                    ],
+                    ['start_time', 'end_time', 'created_time', 'updated_time', 'synced_at'],
+                );
             }
 
             await this.crawlJobService.completeJob(job.id, allAdsets.length);
@@ -168,20 +194,22 @@ export class EntitySyncService {
                 return 0;
             }
 
-            // Fetch ads for all active adsets
-            const allAds: any[] = [];
-            for (const adset of activeAdsets) {
-                const ads = await this.facebookApi.getAdsByAdset(adset.id, accessToken, accountId);
-                allAds.push(...ads);
-            }
+            // OPTIMIZATION: Fetch ALL active ads for the account in ONE API call
+            // instead of looping through each active adset.
+            this.logger.log(`Fetching all active ads for account ${accountId}...`);
+            const allFetchedAds = await this.facebookApi.getAds(accountId, accessToken, true);
+            
+            const activeAdsetIds = new Set(activeAdsets.map(a => a.id));
+            const allAds = allFetchedAds.filter(ad => activeAdsetIds.has(ad.adset_id));
+
+            this.logger.log(`Found ${allAds.length} active ads belonging to ${activeAdsets.length} active adsets`);
 
             // Get all currently ACTIVE ads in DB for active adsets only
-            const activeAdsetIds = activeAdsets.map(a => a.id);
             const existingActiveAds = await this.prisma.ad.findMany({
                 where: { 
                     accountId, 
                     effectiveStatus: 'ACTIVE',
-                    adsetId: { in: activeAdsetIds },
+                    adsetId: { in: Array.from(activeAdsetIds) },
                 },
                 select: { id: true },
             });
@@ -202,7 +230,20 @@ export class EntitySyncService {
 
             // Batch upsert all ads
             if (allAds.length > 0) {
-                await this.bulkUpsert('ads', allAds.map(a => this.mapAd(a, accountId, now)));
+                await this.bulkUpsert(
+                    'ads',
+                    allAds.map(a => this.mapAd(a, accountId, now)),
+                    ['id'],
+                    [
+                        'creative',
+                        'tracking_specs',
+                        'conversion_specs',
+                        'ad_review_feedback',
+                        'issues_info',
+                        'recommendations',
+                    ],
+                    ['created_time', 'updated_time', 'synced_at'],
+                );
             }
 
             await this.crawlJobService.completeJob(job.id, allAds.length);
@@ -263,7 +304,20 @@ export class EntitySyncService {
 
             // Since we're syncing by adset, the adset already exists - just batch upsert
             if (ads.length > 0) {
-                await this.bulkUpsert('ads', ads.map(a => this.mapAd(a, accountId, now)));
+                await this.bulkUpsert(
+                    'ads',
+                    ads.map(a => this.mapAd(a, accountId, now)),
+                    ['id'],
+                    [
+                        'creative',
+                        'tracking_specs',
+                        'conversion_specs',
+                        'ad_review_feedback',
+                        'issues_info',
+                        'recommendations',
+                    ],
+                    ['created_time', 'updated_time', 'synced_at'],
+                );
             }
 
             await this.crawlJobService.completeJob(job.id, ads.length);
@@ -302,7 +356,15 @@ export class EntitySyncService {
                 await this.bulkUpsert(
                     'creatives',
                     allCreatives.map(c => this.mapCreative(c, accountId, now)),
-                    ['id'] // On conflict update these columns (actually we update all mapped columns)
+                    ['id'], // On conflict update these columns (actually we update all mapped columns)
+                    [
+                        'object_story_spec',
+                        'asset_feed_spec',
+                        'degrees_of_freedom_spec',
+                        'contextual_multi_ads',
+                        'template_url_spec',
+                    ],
+                    ['created_time', 'synced_at'],
                 );
             }
 
@@ -347,22 +409,73 @@ export class EntitySyncService {
             
             // Campaigns
             if (campaigns.length > 0) {
-                await this.bulkUpsert('campaigns', campaigns.map(c => this.mapCampaign(c, accountId, now)));
+                await this.bulkUpsert(
+                    'campaigns',
+                    campaigns.map(c => this.mapCampaign(c, accountId, now)),
+                    ['id'],
+                    [
+                        'special_ad_categories',
+                        'special_ad_category_country',
+                        'pacing_type',
+                        'issues_info',
+                        'recommendations',
+                    ],
+                    ['start_time', 'stop_time', 'created_time', 'updated_time', 'synced_at'],
+                );
             }
             
             // Adsets
             if (adsets.length > 0) {
-                await this.bulkUpsert('adsets', adsets.map(a => this.mapAdset(a, accountId, now)));
+                await this.bulkUpsert(
+                    'adsets',
+                    adsets.map(a => this.mapAdset(a, accountId, now)),
+                    ['id'],
+                    [
+                        'pacing_type',
+                        'targeting',
+                        'promoted_object',
+                        'attribution_spec',
+                        'learning_stage_info',
+                        'issues_info',
+                        'recommendations',
+                    ],
+                    ['start_time', 'end_time', 'created_time', 'updated_time', 'synced_at'],
+                );
             }
 
             // Creatives
             if (creatives.length > 0) {
-                await this.bulkUpsert('creatives', creatives.map(c => this.mapCreative(c, accountId, now)));
+                await this.bulkUpsert(
+                    'creatives',
+                    creatives.map(c => this.mapCreative(c, accountId, now)),
+                    ['id'],
+                    [
+                        'object_story_spec',
+                        'asset_feed_spec',
+                        'degrees_of_freedom_spec',
+                        'contextual_multi_ads',
+                        'template_url_spec',
+                    ],
+                    ['created_time', 'synced_at'],
+                );
             }
 
             // Ads
             if (ads.length > 0) {
-                await this.bulkUpsert('ads', ads.map(a => this.mapAd(a, accountId, now)));
+                await this.bulkUpsert(
+                    'ads',
+                    ads.map(a => this.mapAd(a, accountId, now)),
+                    ['id'],
+                    [
+                        'creative',
+                        'tracking_specs',
+                        'conversion_specs',
+                        'ad_review_feedback',
+                        'issues_info',
+                        'recommendations',
+                    ],
+                    ['created_time', 'updated_time', 'synced_at'],
+                );
             }
 
             // 3. Update Sync Status (Legacy support)
@@ -443,7 +556,7 @@ export class EntitySyncService {
     private mapCampaign(data: any, accountId: string, syncedAt: Date) {
         return {
             id: data.id,
-            accountId: accountId,
+            account_id: accountId,
             name: data.name,
             objective: data.objective,
             status: data.status || 'UNKNOWN',
@@ -455,10 +568,10 @@ export class EntitySyncService {
             special_ad_category_country: JSON.stringify(data.special_ad_category_country),
             daily_budget: data.daily_budget,
             lifetime_budget: data.lifetime_budget,
-            budget_remaining: data.budget_remaining,
+            budget_remaining: data.budget_remaining ? Number(data.budget_remaining) : null,
             spend_cap: data.spend_cap,
             bid_strategy: data.bid_strategy,
-            pacing_type: JSON.stringify(data.pacing_type),
+            pacing_type: data.pacing_type ? JSON.stringify(data.pacing_type) : null,
             start_time: data.start_time ? new Date(data.start_time).toISOString() : null,
             stop_time: data.stop_time ? new Date(data.stop_time).toISOString() : null,
             created_time: data.created_time ? new Date(data.created_time).toISOString() : null,
@@ -485,13 +598,13 @@ export class EntitySyncService {
             effective_status: data.effective_status,
             daily_budget: data.daily_budget,
             lifetime_budget: data.lifetime_budget,
-            budget_remaining: data.budget_remaining,
+            budget_remaining: data.budget_remaining ? Number(data.budget_remaining) : null,
             bid_amount: data.bid_amount,
             bid_strategy: data.bid_strategy,
             billing_event: data.billing_event,
             optimization_goal: data.optimization_goal,
             optimization_sub_event: data.optimization_sub_event,
-            pacing_type: JSON.stringify(data.pacing_type),
+            pacing_type: data.pacing_type ? JSON.stringify(data.pacing_type) : null,
             targeting: JSON.stringify(data.targeting || {}),
             promoted_object: JSON.stringify(data.promoted_object),
             destination_type: data.destination_type,
@@ -534,7 +647,7 @@ export class EntitySyncService {
             created_time: data.created_time ? new Date(data.created_time).toISOString() : null,
             updated_time: data.updated_time ? new Date(data.updated_time).toISOString() : null,
             demolink_hash: data.demolink_hash,
-            engagement_audience: JSON.stringify(data.engagement_audience),
+            engagement_audience: data.engagement_audience != null ? Boolean(data.engagement_audience) : null,
             issues_info: JSON.stringify(data.issues_info),
             recommendations: JSON.stringify(data.recommendations),
             synced_at: syncedAt.toISOString(),
@@ -587,20 +700,31 @@ export class EntitySyncService {
      * Efficiently upserts multiple records using raw SQL.
      * Handles huge batches by splitting them if needed (Postgres limit is ~65k params).
      */
-    private async bulkUpsert(tableName: string, records: any[], conflictCols: string[] = ['id']) {
+    private async bulkUpsert(
+        tableName: string,
+        records: any[],
+        conflictCols: string[],
+        jsonbCols: string[] = [],
+        timestampCols: string[] = [],
+        numericCols: string[] = [],
+    ) {
         if (records.length === 0) return;
 
-        // Split into chunks to avoid parameter limit (65535)
-        // Avg cols ~30 => 2000 records per chunk is safe
-        // Reduced to 200 to avoid potential large query failures
-        const CHUNK_SIZE = 200;
-        for (let i = 0; i < records.length; i += CHUNK_SIZE) {
-            const chunk = records.slice(i, i + CHUNK_SIZE);
-            await this.executeBulkUpsertChunk(tableName, chunk, conflictCols);
+        const chunkSize = 50; // Small chunk size for complex entities
+        for (let i = 0; i < records.length; i += chunkSize) {
+            const chunk = records.slice(i, i + chunkSize);
+            await this.executeBulkUpsertChunk(tableName, chunk, conflictCols, jsonbCols, timestampCols, numericCols);
         }
     }
 
-    private async executeBulkUpsertChunk(tableName: string, records: any[], conflictCols: string[]) {
+    private async executeBulkUpsertChunk(
+        tableName: string,
+        records: any[],
+        conflictCols: string[],
+        jsonbCols: string[] = [],
+        timestampCols: string[] = [],
+        numericCols: string[] = [],
+    ) {
         const keys = Object.keys(records[0]);
         // Filter out keys that might be undefined in some records to ensure consistency
         // (Assuming records structure is uniform, effectively keys from first record)
@@ -616,7 +740,15 @@ export class EntitySyncService {
         for (const record of records) {
             const recordPlaceholders: string[] = [];
             for (const key of keys) {
-                recordPlaceholders.push(`$${paramIndex}`);
+                if (jsonbCols.includes(key)) {
+                    recordPlaceholders.push(`$${paramIndex}::jsonb`);
+                } else if (timestampCols.includes(key)) {
+                    recordPlaceholders.push(`$${paramIndex}::timestamp`);
+                } else if (numericCols.includes(key)) {
+                    recordPlaceholders.push(`$${paramIndex}::numeric`);
+                } else {
+                    recordPlaceholders.push(`$${paramIndex}`);
+                }
                 values.push(record[key]);
                 paramIndex++;
             }

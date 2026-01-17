@@ -385,11 +385,21 @@ export class InsightsSyncService {
     private async batchUpsertDailyInsights(insights: any[], accountId: string, syncedAt: Date) {
         if (insights.length === 0) return;
 
+        // CRITICAL: Filter out insights without ad_id (would violate NOT NULL constraint)
+        const validInsights = insights.filter(i => i.ad_id);
+        if (validInsights.length === 0) {
+            this.logger.warn(`[DailySync] No valid insights (all missing ad_id) for account ${accountId}`);
+            return;
+        }
+        if (validInsights.length < insights.length) {
+            this.logger.warn(`[DailySync] Filtered out ${insights.length - validInsights.length} insights without ad_id`);
+        }
+
         // Process in chunks to avoid query size limits
         const batchSize = 1000;
 
-        for (let i = 0; i < insights.length; i += batchSize) {
-            const batch = insights.slice(i, i + batchSize);
+        for (let i = 0; i < validInsights.length; i += batchSize) {
+            const batch = validInsights.slice(i, i + batchSize);
 
             const values = batch.map((data) => {
                 const date = this.parseLocalDate(data.date_start).toISOString();
@@ -561,10 +571,15 @@ export class InsightsSyncService {
 
     private async batchUpsertDeviceInsights(insights: any[], accountId: string, syncedAt: Date) {
         if (insights.length === 0) return;
+
+        // CRITICAL: Filter out insights without ad_id (would violate NOT NULL constraint)
+        const validInsights = insights.filter(i => i.ad_id);
+        if (validInsights.length === 0) return;
+
         const batchSize = 1000;
 
-        for (let i = 0; i < insights.length; i += batchSize) {
-            const batch = insights.slice(i, i + batchSize);
+        for (let i = 0; i < validInsights.length; i += batchSize) {
+            const batch = validInsights.slice(i, i + batchSize);
             const values = batch.map((data) => {
                 const date = this.parseLocalDate(data.date_start).toISOString();
                 const metrics = this.mapBreakdownMetrics(data);
@@ -579,11 +594,11 @@ export class InsightsSyncService {
                     ${metrics.clicks}::bigint,
                     ${metrics.uniqueClicks}::bigint,
                     ${metrics.spend}::decimal,
-                    ${metrics.actions}::jsonb,
-                    ${metrics.actionValues}::jsonb,
-                    ${metrics.conversions}::jsonb,
-                    ${metrics.costPerActionType}::jsonb,
-                    ${metrics.videoThruplayWatchedActions}::jsonb,
+                    ${JSON.stringify(metrics.actions)}::jsonb,
+                    ${JSON.stringify(metrics.actionValues)}::jsonb,
+                    ${JSON.stringify(metrics.conversions)}::jsonb,
+                    ${JSON.stringify(metrics.costPerActionType)}::jsonb,
+                    ${JSON.stringify(metrics.videoThruplayWatchedActions)}::jsonb,
                     ${syncedAt}::timestamp,
                     NOW()
                 )`;
@@ -620,10 +635,15 @@ export class InsightsSyncService {
 
     private async batchUpsertRegionInsights(insights: any[], accountId: string, syncedAt: Date) {
         if (insights.length === 0) return;
+
+        // CRITICAL: Filter out insights without ad_id (would violate NOT NULL constraint)
+        const validInsights = insights.filter(i => i.ad_id);
+        if (validInsights.length === 0) return;
+
         const batchSize = 1000;
 
-        for (let i = 0; i < insights.length; i += batchSize) {
-            const batch = insights.slice(i, i + batchSize);
+        for (let i = 0; i < validInsights.length; i += batchSize) {
+            const batch = validInsights.slice(i, i + batchSize);
             const values = batch.map((data) => {
                 const date = this.parseLocalDate(data.date_start).toISOString();
                 const metrics = this.mapBreakdownMetrics(data);
@@ -639,11 +659,11 @@ export class InsightsSyncService {
                     ${metrics.clicks}::bigint,
                     ${metrics.uniqueClicks}::bigint,
                     ${metrics.spend}::decimal,
-                    ${metrics.actions}::jsonb,
-                    ${metrics.actionValues}::jsonb,
-                    ${metrics.conversions}::jsonb,
-                    ${metrics.costPerActionType}::jsonb,
-                    ${metrics.videoThruplayWatchedActions}::jsonb,
+                    ${JSON.stringify(metrics.actions)}::jsonb,
+                    ${JSON.stringify(metrics.actionValues)}::jsonb,
+                    ${JSON.stringify(metrics.conversions)}::jsonb,
+                    ${JSON.stringify(metrics.costPerActionType)}::jsonb,
+                    ${JSON.stringify(metrics.videoThruplayWatchedActions)}::jsonb,
                     ${syncedAt}::timestamp,
                     NOW()
                 )`;
@@ -845,10 +865,15 @@ export class InsightsSyncService {
 
     private async batchUpsertPlacementInsights(insights: any[], accountId: string, syncedAt: Date) {
         if (insights.length === 0) return;
+
+        // CRITICAL: Filter out insights without ad_id (would violate NOT NULL constraint)
+        const validInsights = insights.filter(i => i.ad_id);
+        if (validInsights.length === 0) return;
+
         const batchSize = 1000;
 
-        for (let i = 0; i < insights.length; i += batchSize) {
-            const batch = insights.slice(i, i + batchSize);
+        for (let i = 0; i < validInsights.length; i += batchSize) {
+            const batch = validInsights.slice(i, i + batchSize);
             const values = batch.map((data) => {
                 const date = this.parseLocalDate(data.date_start).toISOString();
                 const metrics = this.mapBreakdownMetrics(data);
@@ -865,11 +890,11 @@ export class InsightsSyncService {
                     ${metrics.clicks}::bigint,
                     ${metrics.uniqueClicks}::bigint,
                     ${metrics.spend}::decimal,
-                    ${metrics.actions}::jsonb,
-                    ${metrics.actionValues}::jsonb,
-                    ${metrics.conversions}::jsonb,
-                    ${metrics.costPerActionType}::jsonb,
-                    ${metrics.videoThruplayWatchedActions}::jsonb,
+                    ${JSON.stringify(metrics.actions)}::jsonb,
+                    ${JSON.stringify(metrics.actionValues)}::jsonb,
+                    ${JSON.stringify(metrics.conversions)}::jsonb,
+                    ${JSON.stringify(metrics.costPerActionType)}::jsonb,
+                    ${JSON.stringify(metrics.videoThruplayWatchedActions)}::jsonb,
                     ${syncedAt}::timestamp,
                     NOW()
                 )`;
@@ -995,10 +1020,15 @@ export class InsightsSyncService {
 
     private async batchUpsertAgeGenderInsights(insights: any[], accountId: string, syncedAt: Date) {
         if (insights.length === 0) return;
+
+        // CRITICAL: Filter out insights without ad_id (would violate NOT NULL constraint)
+        const validInsights = insights.filter(i => i.ad_id);
+        if (validInsights.length === 0) return;
+
         const batchSize = 1000;
 
-        for (let i = 0; i < insights.length; i += batchSize) {
-            const batch = insights.slice(i, i + batchSize);
+        for (let i = 0; i < validInsights.length; i += batchSize) {
+            const batch = validInsights.slice(i, i + batchSize);
             const values = batch.map((data) => {
                 const date = this.parseLocalDate(data.date_start).toISOString();
                 const metrics = this.mapBreakdownMetrics(data);
@@ -1014,10 +1044,10 @@ export class InsightsSyncService {
                     ${metrics.clicks}::bigint,
                     ${metrics.uniqueClicks}::bigint,
                     ${metrics.spend}::decimal,
-                    ${metrics.actions}::jsonb,
-                    ${metrics.actionValues}::jsonb,
-                    ${metrics.conversions}::jsonb,
-                    ${metrics.costPerActionType}::jsonb,
+                    ${JSON.stringify(metrics.actions)}::jsonb,
+                    ${JSON.stringify(metrics.actionValues)}::jsonb,
+                    ${JSON.stringify(metrics.conversions)}::jsonb,
+                    ${JSON.stringify(metrics.costPerActionType)}::jsonb,
                     ${syncedAt}::timestamp,
                     NOW()
                 )`;
@@ -1490,8 +1520,18 @@ export class InsightsSyncService {
     private async batchUpsertHourlyInsights(insights: any[], accountId: string, syncedAt: Date) {
         if (insights.length === 0) return;
 
+        // CRITICAL: Filter out insights without ad_id (would violate NOT NULL constraint)
+        const validInsights = insights.filter(i => i.ad_id);
+        if (validInsights.length === 0) {
+            this.logger.warn(`[HourlySync] No valid insights (all missing ad_id) for account ${accountId}`);
+            return;
+        }
+        if (validInsights.length < insights.length) {
+            this.logger.warn(`[HourlySync] Filtered out ${insights.length - validInsights.length} insights without ad_id`);
+        }
+
         // Sort to reduce chances of deadlocks: date -> ad_id -> hourlyStats
-        insights.sort((a, b) => {
+        validInsights.sort((a, b) => {
             const dateCompare = (a.date_start || '').localeCompare(b.date_start || '');
             if (dateCompare !== 0) return dateCompare;
             const adCompare = (a.ad_id || '').localeCompare(b.ad_id || '');
@@ -1502,8 +1542,8 @@ export class InsightsSyncService {
 
         const batchSize = 1000;
 
-        for (let i = 0; i < insights.length; i += batchSize) {
-            const batch = insights.slice(i, i + batchSize);
+        for (let i = 0; i < validInsights.length; i += batchSize) {
+            const batch = validInsights.slice(i, i + batchSize);
             const values = batch.map((data) => {
                 const date = this.parseLocalDate(data.date_start).toISOString();
                 const hourlyStats = data.hourly_stats_aggregated_by_advertiser_time_zone || '00:00:00 - 00:59:59';
@@ -2101,14 +2141,14 @@ export class InsightsSyncService {
             impressions: data.impressions ? BigInt(data.impressions) : null,
             reach: data.reach ? BigInt(data.reach) : null,
             clicks: data.clicks ? BigInt(data.clicks) : null,
-            ctr: data.ctr,
-            spend: data.spend,
-            cpc: data.cpc,
-            cpm: data.cpm,
+            ctr: data.ctr != null ? Number(data.ctr) : null,
+            spend: data.spend != null ? Number(data.spend) : 0,
+            cpc: data.cpc != null ? Number(data.cpc) : null,
+            cpm: data.cpm != null ? Number(data.cpm) : null,
             messagingStarted: messagingStarted > 0 ? BigInt(messagingStarted) : null,
-            costPerMessaging: costPerMessaging > 0 ? costPerMessaging : null,
+            costPerMessaging: costPerMessaging > 0 ? Number(costPerMessaging) : null,
             results: results > 0 ? BigInt(results) : null,
-            costPerResult: costPerResult > 0 ? costPerResult : null,
+            costPerResult: costPerResult > 0 ? Number(costPerResult) : null,
         };
     }
 
@@ -2118,12 +2158,12 @@ export class InsightsSyncService {
             reach: data.reach ? BigInt(data.reach) : null,
             clicks: data.clicks ? BigInt(data.clicks) : null,
             uniqueClicks: data.unique_clicks ? BigInt(data.unique_clicks) : null,
-            spend: data.spend,
-            actions: data.actions,
-            actionValues: data.action_values,
-            conversions: data.conversions,
-            costPerActionType: data.cost_per_action_type,
-            videoThruplayWatchedActions: data.video_thruplay_watched_actions,
+            spend: data.spend != null ? Number(data.spend) : 0,
+            actions: data.actions || [],
+            actionValues: data.action_values || [],
+            conversions: data.conversions || [],
+            costPerActionType: data.cost_per_action_type || [],
+            videoThruplayWatchedActions: data.video_thruplay_watched_actions || [],
         };
     }
 

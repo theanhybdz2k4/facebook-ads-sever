@@ -5,12 +5,14 @@ import {
     UseGuards,
     HttpCode,
     HttpStatus,
+    Logger,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiHeader } from '@nestjs/swagger';
 import { InternalApiKeyGuard } from '../auth/guards/internal-api-key.guard';
 import { CrawlSchedulerService } from '../cron/services/cron-scheduler.service';
 import { InsightsSyncService } from '../insights/services/insights-sync.service';
 import { BranchStatsService } from '../branches/services/branch-stats.service';
+import { CrawlJobService } from '../jobs/services/crawl-job.service';
 import { PrismaService } from '@n-database/prisma/prisma.service';
 import { getVietnamDateString, getVietnamHour } from '@n-utils';
 import { IsString, IsOptional, IsNumber, IsArray } from 'class-validator';
@@ -70,41 +72,103 @@ export class N8nSyncDto {
     required: true,
 })
 export class InternalN8nController {
+    private readonly logger = new Logger(InternalN8nController.name);
+
     constructor(
         private readonly schedulerService: CrawlSchedulerService,
         private readonly insightsSyncService: InsightsSyncService,
         private readonly branchStatsService: BranchStatsService,
+        private readonly crawlJobService: CrawlJobService,
         private readonly prisma: PrismaService,
     ) { }
 
     /**
-     * Dispatcher endpoint: Iterates through ALL supported sync types
-     * and triggers them based on user settings for the current hour.
+     * Dispatcher endpoint: OPTIMIZED V2 - Syncs ALL enabled types with smart deduplication.
+     * - 'insight' = hourly + daily, so skip separate insight_hourly/insight_daily
+     * - Groups types into parallel batches for speed
+     * - Still ensures full data sync based on user cron settings
      */
     @Post('dispatch')
     @HttpCode(HttpStatus.OK)
-    @ApiOperation({ summary: 'Dispatch all configured sync types for the current hour' })
+    @ApiOperation({ summary: 'Dispatch all configured sync types for the current hour (optimized)' })
     async dispatch(@Body() dto: { hour?: number; date?: string }) {
+        const startTime = Date.now();
         const currentHour = dto.hour ?? getVietnamHour();
         const currentDate = dto.date ?? getVietnamDateString();
 
-        const results = [];
+        const results: any[] = [];
+        const processedTypes = new Set<string>();
 
-        // Iterate through all supported types
-        // Note: Some types might overlap (e.g., insight & insight_hourly), but processSyncType handles logic
-        for (const type of SUPPORTED_SYNC_TYPES) {
-            try {
-                const result = await this.processSyncType(type, currentHour, currentDate);
-                if (result.syncedUsers > 0) {
+        // Define sync type groups for parallel processing
+        // Types in the same group run in PARALLEL, groups run SEQUENTIALLY
+        const typeGroups = [
+            // Group 1: Critical insights (most important, run first)
+            ['insight'],
+            // Group 2: Breakdown insights (can run in parallel)
+            ['insight_device', 'insight_placement', 'insight_age_gender', 'insight_region'],
+            // Group 3: Entity syncs (can run in parallel)
+            ['campaign', 'adset', 'ads', 'creative'],
+        ];
+
+        for (const group of typeGroups) {
+            // Filter types that haven't been processed yet
+            const typesToProcess = group.filter(type => {
+                // Skip if already processed
+                if (processedTypes.has(type)) return false;
+
+                // DEDUPLICATION LOGIC:
+                // If 'insight' was processed, skip insight_hourly and insight_daily
+                // because 'insight' already does both hourly + daily
+                if (processedTypes.has('insight')) {
+                    if (type === 'insight_hourly' || type === 'insight_daily') {
+                        return false;
+                    }
+                }
+
+                return true;
+            });
+
+            if (typesToProcess.length === 0) continue;
+
+            // Process types in this group IN PARALLEL
+            const groupResults = await Promise.all(
+                typesToProcess.map(async (type) => {
+                    try {
+                        const result = await this.processSyncType(type, currentHour, currentDate);
+                        processedTypes.add(type);
+                        
+                        // Mark related types as processed to avoid duplication
+                        if (type === 'insight') {
+                            processedTypes.add('insight_hourly');
+                            processedTypes.add('insight_daily');
+                        }
+                        
+                        return result;
+                    } catch (error) {
+                        return {
+                            type,
+                            success: false,
+                            error: (error as Error).message,
+                        };
+                    }
+                })
+            );
+
+            // Only add results with synced users > 0 or errors
+            for (const result of groupResults) {
+                if ((result as any).syncedUsers > 0 || (result as any).error) {
                     results.push(result);
                 }
-            } catch (error) {
-                results.push({
-                    type,
-                    success: false,
-                    error: error.message,
-                });
             }
+        }
+
+        const totalDuration = Date.now() - startTime;
+
+        // 5. Cleanup old crawl jobs (those older than 24h)
+        try {
+            await this.crawlJobService.cleanupOldJobs();
+        } catch (cleanupError) {
+            this.logger.error(`Failed to cleanup old jobs: ${cleanupError.message}`);
         }
 
         return {
@@ -112,6 +176,7 @@ export class InternalN8nController {
             hour: currentHour,
             date: currentDate,
             dispatchedTypes: results.length,
+            totalDuration,
             details: results,
         };
     }
@@ -149,7 +214,9 @@ export class InternalN8nController {
 
         // Special handling for insights: use optimized hourly sync + Telegram
         if (type === 'insight' || type === 'insight_hourly') {
-            const DELAY_BETWEEN_ACCOUNTS_MS = 2000; // 2 seconds delay to avoid quota
+            // OPTIMIZED V2: Larger batch, shorter delay
+            const BATCH_SIZE = 5; // Process 5 accounts in parallel (was 3)
+            const DELAY_BETWEEN_BATCHES_MS = 200; // 200ms between batches (was 500ms)
 
             // Get all ad accounts for these users
             const allAccounts: { id: string; name: string; userId: number }[] = [];
@@ -170,51 +237,59 @@ export class InternalN8nController {
                 };
             }
 
-            const results = [];
-            for (let i = 0; i < allAccounts.length; i++) {
-                const account = allAccounts[i];
-                try {
-                    // 1. Quick hourly sync
-                    const hourlyResult = await this.insightsSyncService.syncHourlyInsightsQuick(account.id);
+            const results: any[] = [];
 
-                    if (type === 'insight') {
-                        // REQ: Only sync today, remove 3-day window
-                        const dateStart = date;
+            // Process accounts in parallel batches
+            for (let i = 0; i < allAccounts.length; i += BATCH_SIZE) {
+                const batch = allAccounts.slice(i, i + BATCH_SIZE);
 
+                const batchResults = await Promise.all(
+                    batch.map(async (account) => {
                         try {
-                            await this.insightsSyncService.syncDailyInsights(account.id, undefined, dateStart, date);
-                        } catch (dailyError) {
-                            // If daily sync fails, try to aggregate anyway if we have any data (e.g. from hourly)
-                            // This acts as a self-healing mechanism
-                            const branchRes = await this.prisma.adAccount.findUnique({
-                                where: { id: account.id },
-                                select: { branchId: true }
-                            });
-                            if (branchRes?.branchId) {
-                                await this.branchStatsService.aggregateBranchStats(branchRes.branchId, date);
+                            // 1. Quick hourly sync (uses account-level API)
+                            const hourlyResult = await this.insightsSyncService.syncHourlyInsightsQuick(account.id);
+
+                            // 2. For 'insight' type: also sync daily insights
+                            // This ensures complete data for both hourly monitoring and daily reports
+                            if (type === 'insight') {
+                                try {
+                                    await this.insightsSyncService.syncDailyInsights(account.id, undefined, date, date);
+                                } catch (dailyError) {
+                                    // If daily sync fails, still aggregate if we have hourly data
+                                    const branchRes = await this.prisma.adAccount.findUnique({
+                                        where: { id: account.id },
+                                        select: { branchId: true }
+                                    });
+                                    if (branchRes?.branchId) {
+                                        await this.branchStatsService.aggregateBranchStats(branchRes.branchId, date);
+                                    }
+                                    // Log error but don't fail the whole sync
+                                    console.error(`[InsightSync] Daily sync failed for ${account.id}: ${(dailyError as Error).message}`);
+                                }
                             }
-                            throw dailyError; // Re-throw to be caught by outer block
+
+                            return {
+                                accountId: account.id,
+                                name: account.name,
+                                userId: account.userId,
+                                ...hourlyResult
+                            };
+                        } catch (error) {
+                            return {
+                                accountId: account.id,
+                                name: account.name,
+                                userId: account.userId,
+                                error: (error as Error).message,
+                            };
                         }
-                    }
+                    })
+                );
 
-                    results.push({
-                        accountId: account.id,
-                        name: account.name,
-                        userId: account.userId,
-                        ...hourlyResult
-                    });
-                } catch (error) {
-                    results.push({
-                        accountId: account.id,
-                        name: account.name,
-                        userId: account.userId,
-                        error: error.message,
-                    });
-                }
+                results.push(...batchResults);
 
-                // Rate limit: delay between accounts (skip delay after last account)
-                if (i < allAccounts.length - 1) {
-                    await new Promise((resolve) => setTimeout(resolve, DELAY_BETWEEN_ACCOUNTS_MS));
+                // Small delay between batches (only if not last batch)
+                if (i + BATCH_SIZE < allAccounts.length) {
+                    await new Promise((resolve) => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS));
                 }
             }
 

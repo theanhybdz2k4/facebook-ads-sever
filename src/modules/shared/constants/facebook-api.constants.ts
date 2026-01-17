@@ -61,6 +61,7 @@ export const CREATIVE_FIELDS = [
 
 // Insights fields
 export const INSIGHTS_FIELDS = [
+    'ad_id', 'adset_id', 'campaign_id', 'account_id', 'date_start', 'date_stop',
     'impressions', 'reach', 'frequency', 'clicks', 'unique_clicks',
     'inline_link_clicks', 'unique_inline_link_clicks', 'outbound_clicks',
     'unique_outbound_clicks', 'ctr', 'unique_ctr', 'inline_link_click_ctr',
@@ -86,6 +87,7 @@ export const INSIGHTS_FIELDS = [
 
 // Insights breakdown fields (smaller set)
 export const INSIGHTS_BREAKDOWN_FIELDS = [
+    'ad_id', 'adset_id', 'campaign_id', 'account_id', 'date_start', 'date_stop',
     'impressions', 'reach', 'clicks', 'unique_clicks', 'spend',
     'actions', 'action_values', 'conversions', 'cost_per_action_type',
     'video_thruplay_watched_actions'

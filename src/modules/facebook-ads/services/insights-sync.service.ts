@@ -1005,6 +1005,7 @@ export class InsightsSyncService {
     /**
      * Quick sync of today's hourly insights only - OPTIMIZED VERSION
      * - Only syncs today's data
+     * - Uses SINGLE account-level API call (instead of per-ad calls)
      * - Uses batch transaction for faster DB writes
      * - No Telegram sending (decoupled)
      */
@@ -1018,50 +1019,36 @@ export class InsightsSyncService {
             throw new Error(`No valid token for account ${accountId}`);
         }
 
-        // Get all active ads
-        const ads = await this.prisma.ad.findMany({
-            where: { accountId, effectiveStatus: 'ACTIVE' },
-            select: { id: true, adsetId: true, campaignId: true },
-        });
+        this.logger.log(`[QuickSync] Fetching hourly insights for account ${accountId} using account-level API...`);
 
-        if (ads.length === 0) {
+        const syncedAt = new Date();
+
+        // OPTIMIZED: Single API call at account level instead of per-ad
+        // This reduces API calls from O(n) to O(1), dramatically improving performance
+        let allInsights: any[] = [];
+        try {
+            allInsights = await this.facebookApi.getInsights(
+                accountId,
+                accessToken,
+                today,
+                today,
+                'ad',
+                'hourly_stats_aggregated_by_advertiser_time_zone',
+            );
+        } catch (error) {
+            this.logger.error(`[QuickSync] Failed to fetch insights for account ${accountId}: ${error.message}`);
             return { count: 0, duration: Date.now() - startTime };
         }
 
-        this.logger.log(`[QuickSync] Fetching hourly insights for ${ads.length} active ads...`);
-
-        // 1. Collect ALL insights first (NO DB writes here)
-        const allInsights: any[] = [];
-        const syncedAt = new Date();
-
-        for (const ad of ads) {
-            try {
-                const insights = await this.facebookApi.getAdInsights(
-                    ad.id,
-                    accessToken,
-                    today,
-                    today,
-                    'hourly_stats_aggregated_by_advertiser_time_zone',
-                    accountId,
-                );
-
-                for (const insight of insights) {
-                    insight.ad_id = ad.id;
-                    insight.adset_id = ad.adsetId;
-                    insight.campaign_id = ad.campaignId;
-                    allInsights.push(insight);
-                }
-            } catch (error) {
-                this.logger.warn(`[QuickSync] Failed to get insights for ad ${ad.id}: ${error.message}`);
-            }
+        if (allInsights.length === 0) {
+            this.logger.log(`[QuickSync] No insights returned for account ${accountId}`);
+            return { count: 0, duration: Date.now() - startTime };
         }
 
-        this.logger.log(`[QuickSync] Collected ${allInsights.length} insights, batch saving to DB...`);
+        this.logger.log(`[QuickSync] Collected ${allInsights.length} insights in single API call, batch saving to DB...`);
 
         // 2. BATCH UPSERT in single transaction
-        if (allInsights.length > 0) {
-            await this.batchUpsertHourlyInsights(allInsights, accountId, syncedAt);
-        }
+        await this.batchUpsertHourlyInsights(allInsights, accountId, syncedAt);
 
         // 3. Cleanup old data
         await this.cleanupOldHourlyInsights(accountId);

@@ -55,7 +55,6 @@ export class InsightsQueryService {
                 },
             },
             orderBy: { date: 'desc' },
-            take: 100,
         });
     }
 
