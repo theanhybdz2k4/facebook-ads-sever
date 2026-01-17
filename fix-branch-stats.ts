@@ -32,12 +32,10 @@ async function fixStats() {
     await branchStatsService.aggregateBranchStats(branch.id, targetDate);
 
     // 3. Verify
-    const stats = await prisma.branchDailyStats.findUnique({
+    const stats = await prisma.branchDailyStats.findFirst({
         where: {
-            branchId_date: {
-                date: new Date(targetDate),
-                branchId: branch.id
-            }
+            branchId: branch.id,
+            date: new Date(targetDate)
         }
     });
 

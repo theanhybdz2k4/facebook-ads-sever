@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { PrismaService } from '@n-database/prisma/prisma.service';
 import { Prisma } from '@prisma/client';
 import { FacebookApiService } from '../../shared/services/facebook-api.service';
@@ -19,8 +19,62 @@ export class InsightsSyncService {
         private readonly tokenService: TokensService,
         private readonly crawlJobService: CrawlJobService,
         private readonly telegramService: TelegramService,
+        @Inject(forwardRef(() => BranchStatsService))
         private readonly branchStatsService: BranchStatsService,
     ) { }
+
+    // ... existing code ...
+
+    /**
+     * Sync all insights (daily + breakdowns) for all accounts in a branch
+     */
+    async syncBranch(
+        branchId: number,
+        userId: number,
+        dateStart: string,
+        dateEnd: string,
+    ): Promise<void> {
+        this.logger.log(`[BranchSync] Starting sync for branch ${branchId} (${dateStart} - ${dateEnd})`);
+
+        // 1. Get all ad accounts for this branch
+        const adAccounts = await this.prisma.adAccount.findMany({
+            where: { branchId },
+            select: { id: true, name: true },
+        });
+
+        if (adAccounts.length === 0) {
+            this.logger.warn(`No ad accounts found for branch ${branchId}`);
+            return;
+        }
+
+        // 2. Sync each account
+        for (const account of adAccounts) {
+            try {
+                this.logger.log(`[BranchSync] Syncing account ${account.name} (${account.id})...`);
+                
+                // Sync Daily Insights (Main)
+                await this.syncDailyInsights(account.id, userId, dateStart, dateEnd);
+
+                // Sync Breakdowns (Device, Age/Gender, Region)
+                await this.syncAccountBreakdowns(account.id, userId, dateStart, dateEnd);
+            } catch (error) {
+                this.logger.error(`[BranchSync] Failed to sync account ${account.id}: ${error.message}`);
+                // Continue with other accounts even if one fails
+            }
+        }
+
+        // 3. Aggregate stats for the branch
+        // We aggregate for each day in range to be safe
+        // Simply parsing date strings to iterate days
+        const start = new Date(dateStart);
+        const end = new Date(dateEnd);
+        for (let d = start; d <= end; d.setDate(d.getDate() + 1)) {
+            const dateStr = d.toISOString().split('T')[0];
+            await this.branchStatsService.aggregateBranchStats(branchId, dateStr);
+        }
+
+        this.logger.log(`[BranchSync] Completed sync for branch ${branchId}`);
+    }
 
     /**
      * Parse YYYY-MM-DD date string to UTC midnight Date
@@ -560,6 +614,143 @@ export class InsightsSyncService {
                     synced_at = EXCLUDED.synced_at
             `;
         }
+    }
+
+    // ==================== REGION BREAKDOWN ====================
+
+    private async batchUpsertRegionInsights(insights: any[], accountId: string, syncedAt: Date) {
+        if (insights.length === 0) return;
+        const batchSize = 1000;
+
+        for (let i = 0; i < insights.length; i += batchSize) {
+            const batch = insights.slice(i, i + batchSize);
+            const values = batch.map((data) => {
+                const date = this.parseLocalDate(data.date_start).toISOString();
+                const metrics = this.mapBreakdownMetrics(data);
+
+                return Prisma.sql`(
+                    ${date}::date,
+                    ${data.ad_id}::text,
+                    ${accountId}::text,
+                    ${data.region || 'unknown'}::text,
+                    ${data.country || 'unknown'}::text,
+                    ${metrics.impressions}::bigint,
+                    ${metrics.reach}::bigint,
+                    ${metrics.clicks}::bigint,
+                    ${metrics.uniqueClicks}::bigint,
+                    ${metrics.spend}::decimal,
+                    ${metrics.actions}::jsonb,
+                    ${metrics.actionValues}::jsonb,
+                    ${metrics.conversions}::jsonb,
+                    ${metrics.costPerActionType}::jsonb,
+                    ${metrics.videoThruplayWatchedActions}::jsonb,
+                    ${syncedAt}::timestamp,
+                    NOW()
+                )`;
+            });
+
+            await this.prisma.$executeRaw`
+                INSERT INTO ad_insights_region_daily (
+                    date, ad_id, account_id, region, country,
+                    impressions, reach, clicks, unique_clicks, spend,
+                    actions, action_values, conversions, cost_per_action_type,
+                    video_thruplay_watched_actions,
+                    synced_at, created_at
+                )
+                VALUES ${Prisma.join(values)}
+                ON CONFLICT (date, ad_id, region, country)
+                DO UPDATE SET
+                    account_id = EXCLUDED.account_id,
+                    impressions = EXCLUDED.impressions,
+                    reach = EXCLUDED.reach,
+                    clicks = EXCLUDED.clicks,
+                    unique_clicks = EXCLUDED.unique_clicks,
+                    spend = EXCLUDED.spend,
+                    actions = EXCLUDED.actions,
+                    action_values = EXCLUDED.action_values,
+                    conversions = EXCLUDED.conversions,
+                    cost_per_action_type = EXCLUDED.cost_per_action_type,
+                    video_thruplay_watched_actions = EXCLUDED.video_thruplay_watched_actions,
+                    synced_at = EXCLUDED.synced_at
+            `;
+        }
+    }
+
+    // ==================== BULK SYNC BREAKDOWNS ====================
+
+    /**
+     * Efficiently syncs all breakdowns for an entire account by querying graph API with level='ad' and breakdowns.
+     */
+    async syncAccountBreakdowns(
+        accountId: string,
+        userId: number | undefined,
+        dateStart: string,
+        dateEnd: string,
+    ): Promise<void> {
+        // Verify ownership if userId is provided
+        if (userId) {
+            const hasAccess = await this.verifyAccountAccess(userId, accountId);
+            if (!hasAccess) {
+                throw new Error(`Ad account ${accountId} not found or access denied`);
+            }
+        }
+
+        const accessToken = userId
+            ? await this.tokenService.getTokenForAdAccount(accountId, userId)
+            : await this.tokenService.getTokenForAdAccountInternal(accountId);
+
+        if (!accessToken) {
+            throw new Error(`No valid token for account ${accountId}`);
+        }
+
+        const now = new Date();
+
+        // 1. Sync Device Breakdown
+        this.logger.log(`[BulkSync] Fetching DEVICE breakdown for account ${accountId}...`);
+        const deviceInsights = await this.facebookApi.getInsights(
+            accountId,
+            accessToken,
+            dateStart,
+            dateEnd,
+            'ad',
+            'device_platform'
+        );
+        if (deviceInsights.length > 0) {
+            this.logger.log(`[BulkSync] Upserting ${deviceInsights.length} device insights...`);
+            await this.batchUpsertDeviceInsights(deviceInsights, accountId, now);
+        }
+
+        // 2. Sync Age/Gender Breakdown
+        this.logger.log(`[BulkSync] Fetching AGE/GENDER breakdown for account ${accountId}...`);
+        const ageGenderInsights = await this.facebookApi.getInsights(
+            accountId,
+            accessToken,
+            dateStart,
+            dateEnd,
+            'ad',
+            'age,gender'
+        );
+        if (ageGenderInsights.length > 0) {
+            this.logger.log(`[BulkSync] Upserting ${ageGenderInsights.length} age/gender insights...`);
+            await this.batchUpsertAgeGenderInsights(ageGenderInsights, accountId, now);
+        }
+
+        // 3. Sync Region Breakdown
+        this.logger.log(`[BulkSync] Fetching REGION breakdown for account ${accountId}...`);
+        const regionInsights = await this.facebookApi.getInsights(
+            accountId,
+            accessToken,
+            dateStart,
+            dateEnd,
+            'ad',
+            'country,region'
+        );
+        if (regionInsights.length > 0) {
+            this.logger.log(`[BulkSync] Upserting ${regionInsights.length} region insights...`);
+            await this.batchUpsertRegionInsights(regionInsights, accountId, now);
+        }
+        
+        this.logger.log(`[BulkSync] Completed breakdown sync for account ${accountId}`);
     }
 
     // ==================== PLACEMENT BREAKDOWN ====================

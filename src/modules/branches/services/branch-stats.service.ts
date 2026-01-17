@@ -321,6 +321,125 @@ export class BranchStatsService {
     }
 
     /**
+     * Get aggregated device stats for a branch (Raw SQL)
+     */
+    async getBranchDeviceStats(branchId: number, dateStart: string, dateEnd: string) {
+        // Get accounts first to filter
+        const adAccounts = await this.prisma.adAccount.findMany({
+            where: { branchId },
+            select: { id: true },
+        });
+
+        if (adAccounts.length === 0) return [];
+        
+        // Prisma.join for IN clause is tricky, so we rely on explicit casting for array
+        const accountIds = adAccounts.map(a => a.id);
+        if (accountIds.length === 0) return [];
+
+        // Use raw query for aggregation to avoid complex Typescript circular errors with massive Prisma types
+        const result = await this.prisma.$queryRaw<any[]>`
+            SELECT 
+                device_platform as device,
+                SUM(spend) as spend,
+                SUM(impressions) as impressions,
+                SUM(clicks) as clicks
+            FROM ad_insights_device_daily
+            WHERE 
+                account_id IN (${Prisma.join(accountIds)})
+                AND date >= ${this.parseLocalDate(dateStart)}
+                AND date <= ${this.parseLocalDate(dateEnd)}
+            GROUP BY device_platform
+            ORDER BY spend DESC
+        `;
+
+        return result.map(item => ({
+            device: item.device,
+            spend: Number(item.spend || 0),
+            impressions: Number(item.impressions || 0),
+            clicks: Number(item.clicks || 0),
+            results: 0, // Column not available in breakdown tables
+        }));
+    }
+
+    /**
+     * Get aggregated age/gender stats for a branch (Raw SQL)
+     */
+    async getBranchAgeGenderStats(branchId: number, dateStart: string, dateEnd: string) {
+        const adAccounts = await this.prisma.adAccount.findMany({
+            where: { branchId },
+            select: { id: true },
+        });
+
+        if (adAccounts.length === 0) return [];
+        const accountIds = adAccounts.map(a => a.id);
+        if (accountIds.length === 0) return [];
+
+        const result = await this.prisma.$queryRaw<any[]>`
+            SELECT 
+                age,
+                gender,
+                SUM(spend) as spend,
+                SUM(impressions) as impressions,
+                SUM(clicks) as clicks
+            FROM ad_insights_age_gender_daily
+            WHERE 
+                account_id IN (${Prisma.join(accountIds)})
+                AND date >= ${this.parseLocalDate(dateStart)}
+                AND date <= ${this.parseLocalDate(dateEnd)}
+            GROUP BY age, gender
+            ORDER BY age ASC
+        `;
+
+        return result.map(item => ({
+            age: item.age,
+            gender: item.gender,
+            spend: Number(item.spend || 0),
+            impressions: Number(item.impressions || 0),
+            clicks: Number(item.clicks || 0),
+            results: 0, // Column not available
+        }));
+    }
+
+    /**
+     * Get aggregated region stats for a branch (Raw SQL)
+     */
+    async getBranchRegionStats(branchId: number, dateStart: string, dateEnd: string) {
+        const adAccounts = await this.prisma.adAccount.findMany({
+            where: { branchId },
+            select: { id: true },
+        });
+
+        if (adAccounts.length === 0) return [];
+        const accountIds = adAccounts.map(a => a.id);
+        if (accountIds.length === 0) return [];
+
+        const result = await this.prisma.$queryRaw<any[]>`
+            SELECT 
+                region,
+                country,
+                SUM(spend) as spend,
+                SUM(impressions) as impressions,
+                SUM(clicks) as clicks
+            FROM ad_insights_region_daily
+            WHERE 
+                account_id IN (${Prisma.join(accountIds)})
+                AND date >= ${this.parseLocalDate(dateStart)}
+                AND date <= ${this.parseLocalDate(dateEnd)}
+            GROUP BY region, country
+            ORDER BY spend DESC
+        `;
+
+        return result.map(item => ({
+            region: item.region,
+            country: item.country,
+            spend: Number(item.spend || 0),
+            impressions: Number(item.impressions || 0),
+            clicks: Number(item.clicks || 0),
+            results: 0, // Column not available
+        }));
+    }
+
+    /**
      * Cleanup old stats (keep only last 30 days)
      */
     async cleanupOldStats(): Promise<number> {

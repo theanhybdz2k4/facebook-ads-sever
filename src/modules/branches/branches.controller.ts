@@ -1,8 +1,9 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, Query, UseGuards, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Body, Query, UseGuards, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { BranchesService, CreateBranchDto, UpdateBranchDto } from './services/branches.service';
 import { BranchStatsService } from './services/branch-stats.service';
+import { InsightsSyncService } from '../insights/services/insights-sync.service';
 import { CurrentUser } from '../shared/decorators/current-user.decorator';
 import { getVietnamDateString } from '@n-utils';
 
@@ -12,6 +13,8 @@ export class BranchesController {
     constructor(
         private readonly branchesService: BranchesService,
         private readonly branchStatsService: BranchStatsService,
+        @Inject(forwardRef(() => InsightsSyncService))
+        private readonly insightsSyncService: InsightsSyncService,
     ) { }
 
     @Get()
@@ -206,11 +209,80 @@ export class BranchesController {
         return this.branchStatsService.aggregateBranchStats(parseInt(id, 10), date);
     }
 
+    @Get(':id/stats/device')
+    @UseGuards(JwtAuthGuard)
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Get device breakdown stats for a branch' })
+    async getBranchDeviceStats(
+        @Param('id') id: string,
+        @CurrentUser() user: any,
+        @Query('dateStart') dateStart: string,
+        @Query('dateEnd') dateEnd: string,
+    ) {
+        await this.branchesService.getBranch(parseInt(id, 10), user.id);
+        return this.branchStatsService.getBranchDeviceStats(parseInt(id, 10), dateStart, dateEnd);
+    }
+
+    @Get(':id/stats/age-gender')
+    @UseGuards(JwtAuthGuard)
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Get age/gender breakdown stats for a branch' })
+    async getBranchAgeGenderStats(
+        @Param('id') id: string,
+        @CurrentUser() user: any,
+        @Query('dateStart') dateStart: string,
+        @Query('dateEnd') dateEnd: string,
+    ) {
+        await this.branchesService.getBranch(parseInt(id, 10), user.id);
+        return this.branchStatsService.getBranchAgeGenderStats(parseInt(id, 10), dateStart, dateEnd);
+    }
+
+    @Get(':id/stats/region')
+    @UseGuards(JwtAuthGuard)
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Get region breakdown stats for a branch' })
+    async getBranchRegionStats(
+        @Param('id') id: string,
+        @CurrentUser() user: any,
+        @Query('dateStart') dateStart: string,
+        @Query('dateEnd') dateEnd: string,
+    ) {
+        await this.branchesService.getBranch(parseInt(id, 10), user.id);
+        return this.branchStatsService.getBranchRegionStats(parseInt(id, 10), dateStart, dateEnd);
+    }
+
     @Post('stats/rebuild')
     @UseGuards(JwtAuthGuard)
     @ApiBearerAuth()
     @ApiOperation({ summary: 'Rebuild branch stats for current user from all historical insights' })
     async rebuildBranchStats(@CurrentUser() user: any) {
         return this.branchStatsService.rebuildStatsForUser(user.id);
+    }
+
+    @Post(':id/sync')
+    @UseGuards(JwtAuthGuard)
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Trigger sync (crawl + aggregate) for a branch' })
+    async syncBranch(
+        @Param('id') id: string,
+        @CurrentUser() user: any,
+        @Body() dto: { dateStart: string; dateEnd: string },
+    ) {
+        // Verify branch ownership
+        const branchIds = await this.branchesService.getBranches(user.id);
+        const hasAccess = branchIds.some(b => b.id === parseInt(id, 10));
+        if (!hasAccess) {
+             // If getBranches doesn't return ID directly we might need a better check, but existing service methods like getBranch() throw exception if not found/owned
+             await this.branchesService.getBranch(parseInt(id, 10), user.id);
+        }
+
+        await this.insightsSyncService.syncBranch(
+            parseInt(id, 10),
+            user.id,
+            dto.dateStart,
+            dto.dateEnd
+        );
+
+        return { success: true, message: 'Branch sync started' };
     }
 }
