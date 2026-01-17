@@ -301,50 +301,15 @@ export class InsightsSyncService {
 
             await this.crawlJobService.completeJob(job.id, allInsights.length);
 
-            // Send Telegram notification & aggregate branch stats if insights were synced
+            // Aggregate branch stats if insights were synced (no Telegram - use insight_branch type for that)
             if (allInsights.length > 0) {
                 try {
                     // Get account info (including branch)
                     const account = await this.prisma.adAccount.findUnique({
                         where: { id: accountId },
                         select: {
-                            name: true,
-                            currency: true,
                             branchId: true,
-                            branch: {
-                                select: {
-                                    id: true,
-                                    name: true,
-                                },
-                            },
                         },
-                    });
-
-                    // Calculate totals
-                    const totals = allInsights.reduce((acc, insight) => {
-                        acc.totalSpend += Number(insight.spend || 0);
-                        acc.totalImpressions += Number(insight.impressions || 0);
-                        acc.totalClicks += Number(insight.clicks || 0);
-                        acc.totalReach += Number(insight.reach || 0);
-                        return acc;
-                    }, {
-                        totalSpend: 0,
-                        totalImpressions: 0,
-                        totalClicks: 0,
-                        totalReach: 0,
-                    });
-
-                    // Send report to Telegram
-                    await this.telegramService.sendInsightsSyncReportToAdAccount(accountId, {
-                        accountName: account?.name || accountId,
-                        branchName: account?.branch?.name || null,
-                        date: dateStart,
-                        adsCount: allInsights.length,
-                        totalSpend: totals.totalSpend,
-                        totalImpressions: totals.totalImpressions,
-                        totalClicks: totals.totalClicks,
-                        totalReach: totals.totalReach,
-                        currency: account?.currency || 'VND',
                     });
 
                     // Aggregate branch stats for all affected dates (if account belongs to a branch)
@@ -363,7 +328,7 @@ export class InsightsSyncService {
                     }
                 } catch (error) {
                     this.logger.error(`Post-sync hooks failed: ${error.message}`);
-                    // Don't fail the sync if notification or aggregation fails
+                    // Don't fail the sync if aggregation fails
                 }
             }
 

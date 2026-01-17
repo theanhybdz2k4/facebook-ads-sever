@@ -56,6 +56,15 @@ export class FacebookApiService {
                 }),
             );
 
+            // DEBUG LOGGING
+            if (url.includes('insights')) {
+                const logParams = { ...params, access_token: '***' };
+                this.logger.log(`[FB_API] Calling ${url} with params: ${JSON.stringify(logParams)}`);
+                if (Array.isArray((response.data as any).data)) {
+                    this.logger.log(`[FB_API] Response data length: ${(response.data as any).data.length}`);
+                }
+            }
+
             // Parse throttle header
             if (accountId) {
                 const throttleHeader = response.headers['x-fb-ads-insights-throttle'];
@@ -68,7 +77,7 @@ export class FacebookApiService {
             };
         } catch (error) {
             const fbError = error.response?.data?.error;
-            
+
             // Code 17: User request limit reached
             if (fbError?.code === 17 && retryCount < MAX_RETRIES) {
                 const waitTime = Math.pow(2, retryCount) * 30000; // 30s, 60s, 120s

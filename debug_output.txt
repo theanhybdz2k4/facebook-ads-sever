@@ -1,0 +1,59 @@
+Connecting to database...
+Found access token: EAAeAaASdY...
+Using date: 2026-01-17
+Calling Facebook API: https://graph.facebook.com/v24.0/act_461903055427781/insights
+Params: {
+  "access_token": "***",
+  "fields": "impressions,reach,clicks,unique_clicks,spend,actions,action_values,conversions,cost_per_action_type,video_thruplay_watched_actions",
+  "level": "ad",
+  "breakdowns": "hourly_stats_aggregated_by_advertiser_time_zone",
+  "time_range": "{\"since\":\"2026-01-17\",\"until\":\"2026-01-17\"}",
+  "time_increment": "1",
+  "limit": "500"
+}
+Response Status: 200
+Data Length: 159
+First Item: {
+  "impressions": "57",
+  "clicks": "1",
+  "spend": "1883",
+  "actions": [
+    {
+      "action_type": "link_click",
+      "value": "1"
+    },
+    {
+      "action_type": "page_engagement",
+      "value": "2"
+    },
+    {
+      "action_type": "post_engagement",
+      "value": "1"
+    },
+    {
+      "action_type": "like",
+      "value": "1"
+    }
+  ],
+  "cost_per_action_type": [
+    {
+      "action_type": "link_click",
+      "value": "1883"
+    },
+    {
+      "action_type": "like",
+      "value": "1883"
+    },
+    {
+      "action_type": "post_engagement",
+      "value": "1883"
+    },
+    {
+      "action_type": "page_engagement",
+      "value": "941.5"
+    }
+  ],
+  "date_start": "2026-01-17",
+  "date_stop": "2026-01-17",
+  "hourly_stats_aggregated_by_advertiser_time_zone": "00:00:00 - 00:59:59"
+}

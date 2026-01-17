@@ -53,6 +53,7 @@ export class TelegramService {
                 { command: 'hour', description: 'Báo cáo giờ vừa qua' },
                 { command: 'today', description: 'Báo cáo hôm nay' },
                 { command: 'week', description: 'Báo cáo 7 ngày' },
+                { command: 'coso', description: 'Báo cáo theo cơ sở' },
                 { command: 'budget', description: 'Ngân sách' },
                 { command: 'help', description: 'Hỗ trợ' },
             ];
@@ -201,6 +202,9 @@ export class TelegramService {
             } else if (text.startsWith('/budget')) {
                 this.logger.log(`Handling /budget command for bot ${botId}, chatId: ${chatId}`);
                 await this.handleBudgetCommand(bot, chatId);
+            } else if (text.startsWith('/coso')) {
+                this.logger.log(`Handling /coso command for bot ${botId}, chatId: ${chatId}`);
+                await this.handleBranchCommand(bot, chatId);
             } else if (text.startsWith('/help')) {
                 this.logger.log(`Handling /help command for bot ${botId}, chatId: ${chatId}`);
                 await this.handleHelpCommand(bot.botToken, chatId);
@@ -360,6 +364,7 @@ ${statusText}
 /hour - Báo cáo giờ vừa qua
 /today - Báo cáo hôm nay (từng bài)
 /week - Báo cáo 7 ngày (từng bài)
+/coso - Báo cáo theo cơ sở
 /budget - Xem ngân sách
 /help - Hướng dẫn sử dụng`;
 
@@ -995,6 +1000,145 @@ ${campaignsText}
         }
     }
 
+    /**
+     * Handle /coso command - Branch-based report
+     * Shows stats grouped by branch (cơ sở)
+     */
+    private async handleBranchCommand(bot: any, chatId: string) {
+        try {
+            this.logger.log(`handleBranchCommand called for bot ${bot.id}, chatId: ${chatId}`);
+            
+            const todayStr = getVietnamDateString();
+            const today = new Date(todayStr);
+
+            // Get all ad accounts for this user with their branches
+            const adAccounts = await this.prisma.adAccount.findMany({
+                where: {
+                    fbAccount: { userId: bot.userId },
+                    accountStatus: 1,
+                },
+                select: {
+                    id: true,
+                    name: true,
+                    currency: true,
+                    branchId: true,
+                    branch: { select: { id: true, name: true } },
+                },
+            });
+
+            if (adAccounts.length === 0) {
+                await this.sendMessageTo(bot.botToken, chatId, `
+🏢 <b>Báo cáo theo cơ sở</b>
+📅 ${todayStr}
+
+❌ Không có tài khoản quảng cáo nào.
+                `);
+                return;
+            }
+
+            // Get today's insights for all accounts
+            const insightsByAccount = await this.prisma.adInsightsDaily.groupBy({
+                by: ['accountId'],
+                where: {
+                    date: today,
+                    accountId: { in: adAccounts.map(a => a.id) },
+                },
+                _sum: {
+                    spend: true,
+                    impressions: true,
+                    clicks: true,
+                    reach: true,
+                    results: true,
+                    messagingStarted: true,
+                },
+                _count: {
+                    adId: true,
+                },
+            });
+
+            // Create a map for quick lookup
+            const insightsMap = new Map(insightsByAccount.map(i => [i.accountId, i]));
+
+            // Group accounts by branch
+            const branchMap = new Map<string, {
+                branchName: string;
+                accounts: Array<{
+                    name: string;
+                    currency: string;
+                    spend: number;
+                    impressions: number;
+                    clicks: number;
+                    results: number;
+                    messaging: number;
+                    adsCount: number;
+                }>;
+            }>();
+
+            for (const account of adAccounts) {
+                const branchKey = account.branch?.name || 'Chưa gán cơ sở';
+                const insights = insightsMap.get(account.id);
+
+                if (!branchMap.has(branchKey)) {
+                    branchMap.set(branchKey, { branchName: branchKey, accounts: [] });
+                }
+
+                branchMap.get(branchKey)!.accounts.push({
+                    name: account.name,
+                    currency: account.currency || 'VND',
+                    spend: Number(insights?._sum?.spend || 0),
+                    impressions: Number(insights?._sum?.impressions || 0),
+                    clicks: Number(insights?._sum?.clicks || 0),
+                    results: Number(insights?._sum?.results || 0),
+                    messaging: Number(insights?._sum?.messagingStarted || 0),
+                    adsCount: insights?._count?.adId || 0,
+                });
+            }
+
+            // Build message for each branch
+            let message = `🏢 <b>Báo cáo theo cơ sở</b>\n📅 ${todayStr}\n\n`;
+
+            let totalSpend = 0;
+            let totalResults = 0;
+            let totalMessaging = 0;
+
+            for (const [branchName, branchData] of branchMap) {
+                const branchSpend = branchData.accounts.reduce((sum, a) => sum + a.spend, 0);
+                const branchResults = branchData.accounts.reduce((sum, a) => sum + a.results, 0);
+                const branchMessaging = branchData.accounts.reduce((sum, a) => sum + a.messaging, 0);
+                const branchAds = branchData.accounts.reduce((sum, a) => sum + a.adsCount, 0);
+
+                totalSpend += branchSpend;
+                totalResults += branchResults;
+                totalMessaging += branchMessaging;
+
+                const cpr = branchResults > 0 ? Math.round(branchSpend / branchResults).toLocaleString('en-US') : '0';
+                const cpm = branchMessaging > 0 ? Math.round(branchSpend / branchMessaging).toLocaleString('en-US') : '0';
+
+                message += `🏬 <b>${branchName}</b>\n`;
+                message += `├── 💵 Spend: <b>${branchSpend.toLocaleString('en-US')} VND</b>\n`;
+                message += `├── 🎯 Results: <b>${branchResults}</b> (CPR: ${cpr})\n`;
+                message += `├── 💬 New Msg: <b>${branchMessaging}</b> (Cost: ${cpm})\n`;
+                message += `└── 📊 Ads: ${branchAds} | Accounts: ${branchData.accounts.length}\n\n`;
+            }
+
+            // Add totals
+            const totalCpr = totalResults > 0 ? Math.round(totalSpend / totalResults).toLocaleString('en-US') : '0';
+            message += `💰 <b>TỔNG CỘNG</b>\n`;
+            message += `├── 💵 Spend: <b>${totalSpend.toLocaleString('en-US')} VND</b>\n`;
+            message += `├── 🎯 Results: <b>${totalResults}</b> (CPR: ${totalCpr})\n`;
+            message += `└── 💬 New Msg: <b>${totalMessaging}</b>`;
+
+            const success = await this.sendMessageTo(bot.botToken, chatId, message);
+            
+            if (!success) {
+                this.logger.error(`Failed to send branch command response to chatId: ${chatId}`);
+            }
+        } catch (error) {
+            this.logger.error(`Error in handleBranchCommand: ${error.message}`, error.stack);
+            await this.sendMessageTo(bot.botToken, chatId, '❌ Có lỗi khi lấy báo cáo theo cơ sở. Vui lòng thử lại sau.');
+        }
+    }
+
     private async handleHelpCommand(botToken: string, chatId: string) {
         try {
             this.logger.log(`handleHelpCommand called for chatId: ${chatId}`);
@@ -1009,6 +1153,7 @@ ${campaignsText}
 /hour - Báo cáo giờ vừa qua
 /today - Báo cáo hôm nay
 /week - Báo cáo 7 ngày
+/coso - Báo cáo theo cơ sở
 /budget - Xem ngân sách
 
 <b>🔔 Thông báo tự động:</b>

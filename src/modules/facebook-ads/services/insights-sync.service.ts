@@ -1020,6 +1020,7 @@ export class InsightsSyncService {
         }
 
         this.logger.log(`[QuickSync] Fetching hourly insights for account ${accountId} using account-level API...`);
+        this.logger.log(`[QuickSync] Date used: ${today}`);
 
         const syncedAt = new Date();
 
@@ -1035,6 +1036,7 @@ export class InsightsSyncService {
                 'ad',
                 'hourly_stats_aggregated_by_advertiser_time_zone',
             );
+            this.logger.log(`[QuickSync] Facebook API returned ${allInsights.length} insights`);
         } catch (error) {
             this.logger.error(`[QuickSync] Failed to fetch insights for account ${accountId}: ${error.message}`);
             return { count: 0, duration: Date.now() - startTime };
