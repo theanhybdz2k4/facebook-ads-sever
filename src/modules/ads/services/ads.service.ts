@@ -61,16 +61,30 @@ export class AdsService {
             })
             .filter((id): id is string => !!id);
 
-        const creatives = await this.prisma.creative.findMany({
-            where: { id: { in: creativeIds } },
-            select: {
-                id: true,
-                imageUrl: true,
-                thumbnailUrl: true,
-            },
-        });
+        const [creatives, insights] = await Promise.all([
+            this.prisma.creative.findMany({
+                where: { id: { in: creativeIds } },
+                select: {
+                    id: true,
+                    imageUrl: true,
+                    thumbnailUrl: true,
+                },
+            }),
+            this.prisma.adInsightsDaily.groupBy({
+                by: ['adId'],
+                where: {
+                    adId: { in: ads.map(a => a.id) }
+                },
+                _sum: {
+                    spend: true,
+                    results: true,
+                    messagingStarted: true
+                }
+            })
+        ]);
 
         const creativeMap = new Map(creatives.map((c) => [c.id, c]));
+        const insightsMap = new Map(insights.map(i => [i.adId, i]));
 
         return ads.map((ad) => {
             let thumbnailUrl: string | null = null;
@@ -90,9 +104,23 @@ export class AdsService {
                     null;
             }
 
+            // Calculate metrics
+            const adInsights = insightsMap.get(ad.id);
+            const totalSpend = Number(adInsights?._sum?.spend || 0);
+            const totalResults = Number(adInsights?._sum?.results || 0);
+            const totalMessaging = Number(adInsights?._sum?.messagingStarted || 0);
+
+            const metrics = {
+                results: totalResults,
+                costPerResult: totalResults > 0 ? totalSpend / totalResults : 0,
+                messagingStarted: totalMessaging,
+                costPerMessaging: totalMessaging > 0 ? totalSpend / totalMessaging : 0,
+            };
+
             return {
                 ...ad,
                 thumbnailUrl,
+                metrics
             };
         });
     }
