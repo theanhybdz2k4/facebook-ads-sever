@@ -1127,60 +1127,7 @@ export class InsightsSyncService {
         }
     }
 
-    private async batchUpsertRegionInsights(insights: any[], accountId: string, syncedAt: Date) {
-        if (insights.length === 0) return;
-        const batchSize = 1000;
 
-        for (let i = 0; i < insights.length; i += batchSize) {
-            const batch = insights.slice(i, i + batchSize);
-            const values = batch.map((data) => {
-                const date = this.parseLocalDate(data.date_start).toISOString();
-                const metrics = this.mapBreakdownMetrics(data);
-
-                return Prisma.sql`(
-                    ${date}::date,
-                    ${data.ad_id}::text,
-                    ${accountId}::text,
-                    ${data.country || 'unknown'}::text,
-                    ${data.region || null}::text,
-                    ${metrics.impressions}::bigint,
-                    ${metrics.reach}::bigint,
-                    ${metrics.clicks}::bigint,
-                    ${metrics.uniqueClicks}::bigint,
-                    ${metrics.spend}::decimal,
-                    ${metrics.actions}::jsonb,
-                    ${metrics.actionValues}::jsonb,
-                    ${metrics.conversions}::jsonb,
-                    ${metrics.costPerActionType}::jsonb,
-                    ${syncedAt}::timestamp,
-                    NOW()
-                )`;
-            });
-
-            await this.prisma.$executeRaw`
-                INSERT INTO ad_insights_region_daily (
-                    date, ad_id, account_id, country, region,
-                    impressions, reach, clicks, unique_clicks, spend,
-                    actions, action_values, conversions, cost_per_action_type,
-                    synced_at, created_at
-                )
-                VALUES ${Prisma.join(values)}
-                ON CONFLICT (date, ad_id, country, "region")
-                DO UPDATE SET
-                    account_id = EXCLUDED.account_id,
-                    impressions = EXCLUDED.impressions,
-                    reach = EXCLUDED.reach,
-                    clicks = EXCLUDED.clicks,
-                    unique_clicks = EXCLUDED.unique_clicks,
-                    spend = EXCLUDED.spend,
-                    actions = EXCLUDED.actions,
-                    action_values = EXCLUDED.action_values,
-                    conversions = EXCLUDED.conversions,
-                    cost_per_action_type = EXCLUDED.cost_per_action_type,
-                    synced_at = EXCLUDED.synced_at
-            `;
-        }
-    }
 
     // ==================== HOURLY BREAKDOWN ====================
 
