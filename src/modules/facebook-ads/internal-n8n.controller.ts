@@ -9,20 +9,37 @@ import {
 import { ApiTags, ApiOperation, ApiHeader } from '@nestjs/swagger';
 import { InternalApiKeyGuard } from '../auth/guards/internal-api-key.guard';
 import { CrawlSchedulerService } from '../cron/services/cron-scheduler.service';
-import { InsightsSyncService } from './services/insights-sync.service';
+import { InsightsSyncService } from '../insights/services/insights-sync.service';
+import { BranchStatsService } from '../branches/services/branch-stats.service';
 import { PrismaService } from '@n-database/prisma/prisma.service';
 import { getVietnamDateString, getVietnamHour } from '@n-utils';
 import { IsString, IsOptional, IsNumber, IsArray } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+const SUPPORTED_SYNC_TYPES = [
+    'insight', // Hourly + Daily (if needed)
+    'insight_daily',
+    'insight_device',
+    'insight_placement',
+    'insight_age_gender',
+    'insight_region',
+    'insight_hourly',
+    'ads',
+    'adset',
+    'campaign',
+    'creative',
+    'ad_account',
+    'full',
+];
+
 // DTOs for n8n sync requests
 export class N8nSyncDto {
     @ApiProperty({
         description: 'Type of sync to perform',
-        enum: ['ads', 'adset', 'campaign', 'insight', 'ad_account', 'full'],
+        enum: SUPPORTED_SYNC_TYPES,
     })
     @IsString()
-    type: 'ads' | 'adset' | 'campaign' | 'insight' | 'ad_account' | 'full';
+    type: string;
 
     @ApiPropertyOptional({ description: 'Hour when this cron was triggered (0-23)' })
     @IsOptional()
@@ -56,34 +73,82 @@ export class InternalN8nController {
     constructor(
         private readonly schedulerService: CrawlSchedulerService,
         private readonly insightsSyncService: InsightsSyncService,
+        private readonly branchStatsService: BranchStatsService,
         private readonly prisma: PrismaService,
     ) { }
 
     /**
-     * Main sync endpoint for n8n
-     * n8n sends request every hour, backend decides which users to sync
+     * Dispatcher endpoint: Iterates through ALL supported sync types
+     * and triggers them based on user settings for the current hour.
+     */
+    @Post('dispatch')
+    @HttpCode(HttpStatus.OK)
+    @ApiOperation({ summary: 'Dispatch all configured sync types for the current hour' })
+    async dispatch(@Body() dto: { hour?: number; date?: string }) {
+        const currentHour = dto.hour ?? getVietnamHour();
+        const currentDate = dto.date ?? getVietnamDateString();
+
+        const results = [];
+
+        // Iterate through all supported types
+        // Note: Some types might overlap (e.g., insight & insight_hourly), but processSyncType handles logic
+        for (const type of SUPPORTED_SYNC_TYPES) {
+            try {
+                const result = await this.processSyncType(type, currentHour, currentDate);
+                if (result.syncedUsers > 0) {
+                    results.push(result);
+                }
+            } catch (error) {
+                results.push({
+                    type,
+                    success: false,
+                    error: error.message,
+                });
+            }
+        }
+
+        return {
+            success: true,
+            hour: currentHour,
+            date: currentDate,
+            dispatchedTypes: results.length,
+            details: results,
+        };
+    }
+
+    /**
+     * Main sync endpoint for specific type
      */
     @Post('sync')
     @HttpCode(HttpStatus.OK)
     @ApiOperation({ summary: 'Trigger sync based on type and user cron settings' })
     async handleSync(@Body() dto: N8nSyncDto) {
-        const currentHour = dto.hour ?? getVietnamHour();
-        const currentDate = dto.date ?? getVietnamDateString();
+        return this.processSyncType(
+            dto.type,
+            dto.hour ?? getVietnamHour(),
+            dto.date ?? getVietnamDateString(),
+            dto.accountIds
+        );
+    }
 
+    /**
+     * Core logic to process a sync request for a specific type
+     */
+    private async processSyncType(type: string, hour: number, date: string, accountIds?: string[]) {
         // Get users who have enabled this cron type at this hour
-        const usersToSync = await this.getUsersToSync(dto.type, currentHour);
+        const usersToSync = await this.getUsersToSync(type, hour);
 
         if (usersToSync.length === 0) {
             return {
                 success: true,
-                message: `No users configured for ${dto.type} sync at hour ${currentHour}`,
+                type,
+                message: `No users configured for ${type} sync at hour ${hour}`,
                 syncedUsers: 0,
             };
         }
 
-        // Special handling for insights: use optimized hourly sync + Telegram,
-        // so n8n chỉ cần gọi /sync với type='insight' là đủ (không cần endpoint riêng)
-        if (dto.type === 'insight') {
+        // Special handling for insights: use optimized hourly sync + Telegram
+        if (type === 'insight' || type === 'insight_hourly') {
             const DELAY_BETWEEN_ACCOUNTS_MS = 2000; // 2 seconds delay to avoid quota
 
             // Get all ad accounts for these users
@@ -98,9 +163,10 @@ export class InternalN8nController {
             if (allAccounts.length === 0) {
                 return {
                     success: true,
+                    type,
                     message: `Users configured but no active ad accounts found`,
                     syncedUsers: usersToSync.length,
-                    hour: currentHour,
+                    hour,
                 };
             }
 
@@ -108,8 +174,35 @@ export class InternalN8nController {
             for (let i = 0; i < allAccounts.length; i++) {
                 const account = allAccounts[i];
                 try {
-                    const result = await this.insightsSyncService.syncHourlyInsightsQuick(account.id);
-                    results.push({ accountId: account.id, name: account.name, userId: account.userId, ...result });
+                    // 1. Quick hourly sync
+                    const hourlyResult = await this.insightsSyncService.syncHourlyInsightsQuick(account.id);
+
+                    if (type === 'insight') {
+                        // REQ: Only sync today, remove 3-day window
+                        const dateStart = date;
+
+                        try {
+                            await this.insightsSyncService.syncDailyInsights(account.id, undefined, dateStart, date);
+                        } catch (dailyError) {
+                            // If daily sync fails, try to aggregate anyway if we have any data (e.g. from hourly)
+                            // This acts as a self-healing mechanism
+                            const branchRes = await this.prisma.adAccount.findUnique({
+                                where: { id: account.id },
+                                select: { branchId: true }
+                            });
+                            if (branchRes?.branchId) {
+                                await this.branchStatsService.aggregateBranchStats(branchRes.branchId, date);
+                            }
+                            throw dailyError; // Re-throw to be caught by outer block
+                        }
+                    }
+
+                    results.push({
+                        accountId: account.id,
+                        name: account.name,
+                        userId: account.userId,
+                        ...hourlyResult
+                    });
                 } catch (error) {
                     results.push({
                         accountId: account.id,
@@ -131,7 +224,7 @@ export class InternalN8nController {
             // Send Telegram notification AFTER all syncs complete (respecting bot settings + hours)
             let telegramResult = { success: false, message: 'Not sent' };
             try {
-                telegramResult = await this.insightsSyncService.sendLatestHourTelegramReport(currentHour);
+                telegramResult = await this.insightsSyncService.sendLatestHourTelegramReport(hour);
             } catch (error) {
                 telegramResult = { success: false, message: (error as Error).message };
             }
@@ -146,9 +239,9 @@ export class InternalN8nController {
 
             return {
                 success: true,
-                type: dto.type,
-                hour: currentHour,
-                date: currentDate,
+                type,
+                hour,
+                date,
                 syncedUsers: usersToSync.length,
                 totalCount,
                 totalDuration,
@@ -163,7 +256,7 @@ export class InternalN8nController {
 
         for (const user of usersToSync) {
             try {
-                const result = await this.executeSyncForUser(user, dto.type, currentDate);
+                const result = await this.executeSyncForUser(user, type, date);
                 results.push({ userId: user.id, ...result });
             } catch (error) {
                 results.push({ userId: user.id, error: (error as Error).message });
@@ -172,9 +265,9 @@ export class InternalN8nController {
 
         return {
             success: true,
-            type: dto.type,
-            hour: currentHour,
-            date: currentDate,
+            type,
+            hour,
+            date,
             syncedUsers: usersToSync.length,
             results,
         };
@@ -190,78 +283,7 @@ export class InternalN8nController {
     @HttpCode(HttpStatus.OK)
     @ApiOperation({ summary: 'Quick sync hourly insights based on user cron settings' })
     async syncHourlyInsights(@Body('hour') hourParam?: number) {
-        const currentHour = hourParam ?? getVietnamHour();
-        const DELAY_BETWEEN_ACCOUNTS_MS = 2000; // 2 seconds delay to avoid quota
-
-        // 1. Check user cron settings - only sync for users with 'insight' enabled at this hour
-        const usersToSync = await this.getUsersToSync('insight', currentHour);
-
-        if (usersToSync.length === 0) {
-            return {
-                success: true,
-                message: `No users configured for insight sync at hour ${currentHour}`,
-                syncedUsers: 0,
-                hour: currentHour,
-            };
-        }
-
-        // 2. Get all ad accounts for these users
-        const allAccounts: { id: string; name: string; userId: number }[] = [];
-        for (const user of usersToSync) {
-            const userAccounts = user.fbAccounts.flatMap((fb) =>
-                fb.adAccounts.map((acc) => ({ ...acc, userId: user.id }))
-            );
-            allAccounts.push(...userAccounts);
-        }
-
-        if (allAccounts.length === 0) {
-            return {
-                success: true,
-                message: `Users configured but no active ad accounts found`,
-                syncedUsers: usersToSync.length,
-                hour: currentHour,
-            };
-        }
-
-        // 3. Sync each account with delay to avoid quota limits
-        const results = [];
-        for (let i = 0; i < allAccounts.length; i++) {
-            const account = allAccounts[i];
-            try {
-                const result = await this.insightsSyncService.syncHourlyInsightsQuick(account.id);
-                results.push({ accountId: account.id, name: account.name, userId: account.userId, ...result });
-            } catch (error) {
-                results.push({ accountId: account.id, name: account.name, userId: account.userId, error: error.message });
-            }
-
-            // Rate limit: delay between accounts (skip delay after last account)
-            if (i < allAccounts.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_ACCOUNTS_MS));
-            }
-        }
-
-        const totalCount = results.reduce((sum, r) => sum + (r.count || 0), 0);
-        const totalDuration = results.reduce((sum, r) => sum + (r.duration || 0), 0);
-
-        // 4. Send Telegram notification AFTER all syncs complete
-        // Pass the hour parameter so Telegram service checks against correct allowedHours
-        let telegramResult = { success: false, message: 'Not sent' };
-        try {
-            telegramResult = await this.insightsSyncService.sendLatestHourTelegramReport(currentHour);
-        } catch (error) {
-            telegramResult = { success: false, message: error.message };
-        }
-
-        return {
-            success: true,
-            message: `Synced ${totalCount} hourly insights from ${allAccounts.length} accounts in ${totalDuration}ms`,
-            hour: currentHour,
-            syncedUsers: usersToSync.length,
-            totalCount,
-            totalDuration,
-            accounts: results,
-            telegram: telegramResult,
-        };
+        return this.processSyncType('insight_hourly', hourParam ?? getVietnamHour(), getVietnamDateString());
     }
 
     /**
@@ -335,6 +357,13 @@ export class InternalN8nController {
             adset: 'adset',
             campaign: 'campaign',
             insight: 'insight',
+            insight_daily: 'insight_daily',
+            insight_device: 'insight_device',
+            insight_placement: 'insight_placement',
+            insight_age_gender: 'insight_age_gender',
+            insight_region: 'insight_region',
+            insight_hourly: 'insight_hourly',
+            creative: 'creative',
             ad_account: 'ad_account',
             full: 'full',
         };
@@ -397,14 +426,36 @@ export class InternalN8nController {
                     await this.schedulerService.triggerEntitySync(account.id, 'ads');
                     break;
                 case 'insight':
-                    await this.schedulerService.triggerInsightsSync(account.id, date, date, 'all');
+                case 'insight_daily':
+                    // REQ: Only sync today, remove 3-day window
+                    const dateStart = date;
+
+                    await this.schedulerService.triggerInsightsSync(account.id, dateStart, date, 'daily');
+                    break;
+                case 'insight_device':
+                    await this.schedulerService.triggerInsightsSync(account.id, date, date, 'device');
+                    break;
+                case 'insight_placement':
+                    await this.schedulerService.triggerInsightsSync(account.id, date, date, 'placement');
+                    break;
+                case 'insight_age_gender':
+                    await this.schedulerService.triggerInsightsSync(account.id, date, date, 'age_gender');
+                    break;
+                case 'insight_region':
+                    await this.schedulerService.triggerInsightsSync(account.id, date, date, 'region');
+                    break;
+                case 'insight_hourly':
+                    await this.schedulerService.triggerInsightsSync(account.id, date, date, 'hourly');
+                    break;
+                case 'creative':
+                    await this.schedulerService.triggerEntitySync(account.id, 'creatives');
                     break;
                 case 'ad_account':
                     // Sync ad account info only - would need to implement
                     break;
                 case 'full':
                     await this.schedulerService.triggerEntitySync(account.id, 'all');
-                    await this.schedulerService.triggerInsightsSync(account.id, date, date, 'all');
+                    await this.schedulerService.triggerInsightsSync(account.id, date, date, 'daily');
                     break;
             }
             accountsSynced++;

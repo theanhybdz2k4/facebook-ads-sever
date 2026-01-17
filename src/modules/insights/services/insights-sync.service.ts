@@ -63,7 +63,7 @@ export class InsightsSyncService {
 
     async syncInsightsForAd(
         adId: string,
-        userId: number,
+        userId: number | undefined,
         dateStart: string,
         dateEnd: string,
         breakdown: string = 'all',
@@ -79,7 +79,19 @@ export class InsightsSyncService {
         }
 
         const accountId = ad.accountId;
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId, userId);
+
+        // Verify ownership if userId is provided
+        if (userId) {
+            const hasAccess = await this.verifyAccountAccess(userId, accountId);
+            if (!hasAccess) {
+                throw new Error(`Ad account ${accountId} not found or access denied`);
+            }
+        }
+
+        const accessToken = userId
+            ? await this.tokenService.getTokenForAdAccount(accountId, userId)
+            : await this.tokenService.getTokenForAdAccountInternal(accountId);
+
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -174,7 +186,7 @@ export class InsightsSyncService {
 
     async syncDailyInsights(
         accountId: string,
-        userId: number,
+        userId: number | undefined,
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
@@ -184,38 +196,20 @@ export class InsightsSyncService {
             return 0;
         }
 
-        // Verify ownership
-        const hasAccess = await this.verifyAccountAccess(userId, accountId);
-        if (!hasAccess) {
-            throw new Error(`Ad account ${accountId} not found or access denied`);
+        // Verify ownership if userId is provided
+        if (userId) {
+            const hasAccess = await this.verifyAccountAccess(userId, accountId);
+            if (!hasAccess) {
+                throw new Error(`Ad account ${accountId} not found or access denied`);
+            }
         }
 
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId, userId);
+        const accessToken = userId
+            ? await this.tokenService.getTokenForAdAccount(accountId, userId)
+            : await this.tokenService.getTokenForAdAccountInternal(accountId);
+
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
-        }
-
-        // Get all active ads for this account (with truly active parent entities)
-        const now = new Date();
-        const ads = await this.prisma.ad.findMany({
-            where: { 
-                accountId,
-                effectiveStatus: 'ACTIVE',
-                // Only include ads where parent adset is truly active (not ended)
-                adset: {
-                    effectiveStatus: 'ACTIVE',
-                    OR: [
-                        { endTime: null },
-                        { endTime: { gte: now } },
-                    ],
-                },
-            },
-            select: { id: true, adsetId: true, campaignId: true },
-        });
-
-        if (ads.length === 0) {
-            this.logger.log(`No active ads found for ${accountId}, skipping insights sync`);
-            return 0;
         }
 
         const job = await this.crawlJobService.createJob({
@@ -229,40 +223,30 @@ export class InsightsSyncService {
         try {
             await this.crawlJobService.startJob(job.id);
             const syncedAt = new Date();
-            
-            // 1. Collect ALL insights first (NO DB writes here)
-            const allInsights: any[] = [];
 
-            for (const ad of ads) {
-                try {
-                    const insights = await this.facebookApi.getAdInsights(
-                        ad.id,
-                        accessToken,
-                        dateStart,
-                        dateEnd,
-                        undefined,
-                        accountId,
-                    );
+            // 1. Bulk fetch ALL insights at account level (much faster than per-ad)
+            // We fetch directly from Facebook without filtering by what our DB thinks is active
+            this.logger.log(`[DailySync] Fetching bulk insights for account ${accountId}...`);
+            const allInsights = await this.facebookApi.getInsights(
+                accountId,
+                accessToken,
+                dateStart,
+                dateEnd,
+                'ad',
+            );
 
-                    for (const insight of insights) {
-                        insight.ad_id = ad.id;
-                        insight.adset_id = ad.adsetId;
-                        insight.campaign_id = ad.campaignId;
-                        allInsights.push(insight);
-                    }
-                } catch (error) {
-                    this.logger.warn(`Failed to get insights for ad ${ad.id}: ${error.message}`);
-                }
+            if (allInsights.length === 0) {
+                this.logger.log(`[DailySync] No insights returned for account ${accountId} in range ${dateStart} to ${dateEnd}`);
+                await this.crawlJobService.completeJob(job.id, 0);
+                return 0;
             }
 
             // 2. BATCH UPSERT all insights
             this.logger.log(`[DailySync] Batch upserting ${allInsights.length} daily insights...`);
-            if (allInsights.length > 0) {
-                await this.batchUpsertDailyInsights(allInsights, accountId, syncedAt);
-            }
+            await this.batchUpsertDailyInsights(allInsights, accountId, syncedAt);
 
             await this.crawlJobService.completeJob(job.id, allInsights.length);
-            
+
             // Send Telegram notification & aggregate branch stats if insights were synced
             if (allInsights.length > 0) {
                 try {
@@ -301,7 +285,7 @@ export class InsightsSyncService {
                         accountName: account?.name || accountId,
                         branchName: account?.branch?.name || null,
                         date: dateStart,
-                        adsCount: ads.length,
+                        adsCount: allInsights.length,
                         totalSpend: totals.totalSpend,
                         totalImpressions: totals.totalImpressions,
                         totalClicks: totals.totalClicks,
@@ -328,12 +312,12 @@ export class InsightsSyncService {
                     // Don't fail the sync if notification or aggregation fails
                 }
             }
-            
+
             // Cleanup old data
             await this.cleanupOldDailyInsights(accountId);
             await this.crawlJobService.cleanupOldJobs();
-            
-            this.logger.log(`[DailySync] Done! Saved ${allInsights.length} insights for ${ads.length} ads`);
+
+            this.logger.log(`[DailySync] Done! Saved ${allInsights.length} insights for ${accountId}`);
             return allInsights.length;
         } catch (error) {
             await this.crawlJobService.failJob(job.id, error.message);
@@ -349,14 +333,14 @@ export class InsightsSyncService {
 
         // Process in chunks to avoid query size limits
         const batchSize = 1000;
-        
+
         for (let i = 0; i < insights.length; i += batchSize) {
             const batch = insights.slice(i, i + batchSize);
-            
+
             const values = batch.map((data) => {
                 const date = this.parseLocalDate(data.date_start).toISOString();
                 const metrics = this.mapInsightMetrics(data);
-                
+
                 return Prisma.sql`(
                     ${date}::date,
                     ${data.ad_id}::text,
@@ -410,8 +394,8 @@ export class InsightsSyncService {
     }
 
     private async sendInsightToTelegram(insight: any, accountName: string, currency: string) {
-        const ctr = insight.impressions > 0 
-            ? ((insight.clicks / insight.impressions) * 100).toFixed(2) 
+        const ctr = insight.impressions > 0
+            ? ((insight.clicks / insight.impressions) * 100).toFixed(2)
             : '0';
 
         const message = `
@@ -434,7 +418,7 @@ export class InsightsSyncService {
 
     async syncDeviceInsights(
         accountId: string,
-        userId: number,
+        userId: number | undefined,
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
@@ -444,15 +428,26 @@ export class InsightsSyncService {
             return 0;
         }
 
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId, userId);
+        // Verify ownership if userId is provided
+        if (userId) {
+            const hasAccess = await this.verifyAccountAccess(userId, accountId);
+            if (!hasAccess) {
+                throw new Error(`Ad account ${accountId} not found or access denied`);
+            }
+        }
+
+        const accessToken = userId
+            ? await this.tokenService.getTokenForAdAccount(accountId, userId)
+            : await this.tokenService.getTokenForAdAccountInternal(accountId);
+
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
 
         const now = new Date();
         const ads = await this.prisma.ad.findMany({
-            where: { 
-                accountId, 
+            where: {
+                accountId,
                 effectiveStatus: 'ACTIVE',
                 adset: {
                     effectiveStatus: 'ACTIVE',
@@ -481,27 +476,17 @@ export class InsightsSyncService {
         try {
             await this.crawlJobService.startJob(job.id);
             const syncedAt = new Date();
-            const allInsights: any[] = [];
 
-            for (const ad of ads) {
-                try {
-                    const insights = await this.facebookApi.getAdInsights(
-                        ad.id,
-                        accessToken,
-                        dateStart,
-                        dateEnd,
-                        'device_platform',
-                        accountId,
-                    );
-
-                    for (const insight of insights) {
-                        insight.ad_id = ad.id;
-                        allInsights.push(insight);
-                    }
-                } catch (error) {
-                    this.logger.warn(`Failed to get device insights for ad ${ad.id}: ${error.message}`);
-                }
-            }
+            // 1. Bulk fetch at account level
+            this.logger.log(`[DeviceSync] Fetching bulk device insights for account ${accountId}...`);
+            const allInsights = await this.facebookApi.getInsights(
+                accountId,
+                accessToken,
+                dateStart,
+                dateEnd,
+                'ad',
+                'device_platform',
+            );
 
             // Batch upsert
             this.logger.log(`[DeviceSync] Batch upserting ${allInsights.length} insights...`);
@@ -511,7 +496,7 @@ export class InsightsSyncService {
 
             await this.crawlJobService.completeJob(job.id, allInsights.length);
             await this.cleanupOldBreakdownInsights(accountId);
-            
+
             this.logger.log(`[DeviceSync] Done! Saved ${allInsights.length} insights`);
             return allInsights.length;
         } catch (error) {
@@ -523,13 +508,13 @@ export class InsightsSyncService {
     private async batchUpsertDeviceInsights(insights: any[], accountId: string, syncedAt: Date) {
         if (insights.length === 0) return;
         const batchSize = 1000;
-        
+
         for (let i = 0; i < insights.length; i += batchSize) {
             const batch = insights.slice(i, i + batchSize);
             const values = batch.map((data) => {
                 const date = this.parseLocalDate(data.date_start).toISOString();
                 const metrics = this.mapBreakdownMetrics(data);
-                
+
                 return Prisma.sql`(
                     ${date}::date,
                     ${data.ad_id}::text,
@@ -581,7 +566,7 @@ export class InsightsSyncService {
 
     async syncPlacementInsights(
         accountId: string,
-        userId: number,
+        userId: number | undefined,
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
@@ -591,15 +576,26 @@ export class InsightsSyncService {
             return 0;
         }
 
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId, userId);
+        // Verify ownership if userId is provided
+        if (userId) {
+            const hasAccess = await this.verifyAccountAccess(userId, accountId);
+            if (!hasAccess) {
+                throw new Error(`Ad account ${accountId} not found or access denied`);
+            }
+        }
+
+        const accessToken = userId
+            ? await this.tokenService.getTokenForAdAccount(accountId, userId)
+            : await this.tokenService.getTokenForAdAccountInternal(accountId);
+
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
 
         const now = new Date();
         const ads = await this.prisma.ad.findMany({
-            where: { 
-                accountId, 
+            where: {
+                accountId,
                 effectiveStatus: 'ACTIVE',
                 adset: {
                     effectiveStatus: 'ACTIVE',
@@ -627,27 +623,17 @@ export class InsightsSyncService {
         try {
             await this.crawlJobService.startJob(job.id);
             const syncedAt = new Date();
-            const allInsights: any[] = [];
 
-            for (const ad of ads) {
-                try {
-                    const insights = await this.facebookApi.getAdInsights(
-                        ad.id,
-                        accessToken,
-                        dateStart,
-                        dateEnd,
-                        'publisher_platform,platform_position',
-                        accountId,
-                    );
-
-                    for (const insight of insights) {
-                        insight.ad_id = ad.id;
-                        allInsights.push(insight);
-                    }
-                } catch (error) {
-                    this.logger.warn(`Failed to get placement insights for ad ${ad.id}: ${error.message}`);
-                }
-            }
+            // 1. Bulk fetch at account level
+            this.logger.log(`[PlacementSync] Fetching bulk placement insights for account ${accountId}...`);
+            const allInsights = await this.facebookApi.getInsights(
+                accountId,
+                accessToken,
+                dateStart,
+                dateEnd,
+                'ad',
+                'publisher_platform,platform_position',
+            );
 
             // Batch upsert
             this.logger.log(`[PlacementSync] Batch upserting ${allInsights.length} insights...`);
@@ -657,7 +643,7 @@ export class InsightsSyncService {
 
             await this.crawlJobService.completeJob(job.id, allInsights.length);
             await this.cleanupOldBreakdownInsights(accountId);
-            
+
             this.logger.log(`[PlacementSync] Done! Saved ${allInsights.length} insights`);
             return allInsights.length;
         } catch (error) {
@@ -669,13 +655,13 @@ export class InsightsSyncService {
     private async batchUpsertPlacementInsights(insights: any[], accountId: string, syncedAt: Date) {
         if (insights.length === 0) return;
         const batchSize = 1000;
-        
+
         for (let i = 0; i < insights.length; i += batchSize) {
             const batch = insights.slice(i, i + batchSize);
             const values = batch.map((data) => {
                 const date = this.parseLocalDate(data.date_start).toISOString();
                 const metrics = this.mapBreakdownMetrics(data);
-                
+
                 return Prisma.sql`(
                     ${date}::date,
                     ${data.ad_id}::text,
@@ -730,7 +716,7 @@ export class InsightsSyncService {
 
     async syncAgeGenderInsights(
         accountId: string,
-        userId: number,
+        userId: number | undefined,
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
@@ -740,15 +726,26 @@ export class InsightsSyncService {
             return 0;
         }
 
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId, userId);
+        // Verify ownership if userId is provided
+        if (userId) {
+            const hasAccess = await this.verifyAccountAccess(userId, accountId);
+            if (!hasAccess) {
+                throw new Error(`Ad account ${accountId} not found or access denied`);
+            }
+        }
+
+        const accessToken = userId
+            ? await this.tokenService.getTokenForAdAccount(accountId, userId)
+            : await this.tokenService.getTokenForAdAccountInternal(accountId);
+
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
 
         const now = new Date();
         const ads = await this.prisma.ad.findMany({
-            where: { 
-                accountId, 
+            where: {
+                accountId,
                 effectiveStatus: 'ACTIVE',
                 adset: {
                     effectiveStatus: 'ACTIVE',
@@ -776,27 +773,17 @@ export class InsightsSyncService {
         try {
             await this.crawlJobService.startJob(job.id);
             const syncedAt = new Date();
-            const allInsights: any[] = [];
 
-            for (const ad of ads) {
-                try {
-                    const insights = await this.facebookApi.getAdInsights(
-                        ad.id,
-                        accessToken,
-                        dateStart,
-                        dateEnd,
-                        'age,gender',
-                        accountId,
-                    );
-
-                    for (const insight of insights) {
-                        insight.ad_id = ad.id;
-                        allInsights.push(insight);
-                    }
-                } catch (error) {
-                    this.logger.warn(`Failed to get age/gender insights for ad ${ad.id}: ${error.message}`);
-                }
-            }
+            // 1. Bulk fetch at account level
+            this.logger.log(`[AgeGenderSync] Fetching bulk age/gender insights for account ${accountId}...`);
+            const allInsights = await this.facebookApi.getInsights(
+                accountId,
+                accessToken,
+                dateStart,
+                dateEnd,
+                'ad',
+                'age,gender',
+            );
 
             // Batch upsert
             this.logger.log(`[AgeGenderSync] Batch upserting ${allInsights.length} insights...`);
@@ -806,7 +793,7 @@ export class InsightsSyncService {
 
             await this.crawlJobService.completeJob(job.id, allInsights.length);
             await this.cleanupOldBreakdownInsights(accountId);
-            
+
             this.logger.log(`[AgeGenderSync] Done! Saved ${allInsights.length} insights`);
             return allInsights.length;
         } catch (error) {
@@ -818,13 +805,13 @@ export class InsightsSyncService {
     private async batchUpsertAgeGenderInsights(insights: any[], accountId: string, syncedAt: Date) {
         if (insights.length === 0) return;
         const batchSize = 1000;
-        
+
         for (let i = 0; i < insights.length; i += batchSize) {
             const batch = insights.slice(i, i + batchSize);
             const values = batch.map((data) => {
                 const date = this.parseLocalDate(data.date_start).toISOString();
                 const metrics = this.mapBreakdownMetrics(data);
-                
+
                 return Prisma.sql`(
                     ${date}::date,
                     ${data.ad_id}::text,
@@ -874,7 +861,7 @@ export class InsightsSyncService {
 
     async syncRegionInsights(
         accountId: string,
-        userId: number,
+        userId: number | undefined,
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
@@ -884,7 +871,18 @@ export class InsightsSyncService {
             return 0;
         }
 
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId, userId);
+        // Verify ownership if userId is provided
+        if (userId) {
+            const hasAccess = await this.verifyAccountAccess(userId, accountId);
+            if (!hasAccess) {
+                throw new Error(`Ad account ${accountId} not found or access denied`);
+            }
+        }
+
+        const accessToken = userId
+            ? await this.tokenService.getTokenForAdAccount(accountId, userId)
+            : await this.tokenService.getTokenForAdAccountInternal(accountId);
+
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -909,27 +907,17 @@ export class InsightsSyncService {
         try {
             await this.crawlJobService.startJob(job.id);
             const syncedAt = new Date();
-            const allInsights: any[] = [];
 
-            for (const ad of ads) {
-                try {
-                    const insights = await this.facebookApi.getAdInsights(
-                        ad.id,
-                        accessToken,
-                        dateStart,
-                        dateEnd,
-                        'country,region',
-                        accountId,
-                    );
-
-                    for (const insight of insights) {
-                        insight.ad_id = ad.id;
-                        allInsights.push(insight);
-                    }
-                } catch (error) {
-                    this.logger.warn(`Failed to get region insights for ad ${ad.id}: ${error.message}`);
-                }
-            }
+            // 1. Bulk fetch at account level
+            this.logger.log(`[RegionSync] Fetching bulk region insights for account ${accountId}...`);
+            const allInsights = await this.facebookApi.getInsights(
+                accountId,
+                accessToken,
+                dateStart,
+                dateEnd,
+                'ad',
+                'country,region',
+            );
 
             // Batch upsert
             this.logger.log(`[RegionSync] Batch upserting ${allInsights.length} insights...`);
@@ -939,7 +927,7 @@ export class InsightsSyncService {
 
             await this.crawlJobService.completeJob(job.id, allInsights.length);
             await this.cleanupOldBreakdownInsights(accountId);
-            
+
             this.logger.log(`[RegionSync] Done! Saved ${allInsights.length} insights`);
             return allInsights.length;
         } catch (error) {
@@ -951,13 +939,13 @@ export class InsightsSyncService {
     private async batchUpsertRegionInsights(insights: any[], accountId: string, syncedAt: Date) {
         if (insights.length === 0) return;
         const batchSize = 1000;
-        
+
         for (let i = 0; i < insights.length; i += batchSize) {
             const batch = insights.slice(i, i + batchSize);
             const values = batch.map((data) => {
                 const date = this.parseLocalDate(data.date_start).toISOString();
                 const metrics = this.mapBreakdownMetrics(data);
-                
+
                 return Prisma.sql`(
                     ${date}::date,
                     ${data.ad_id}::text,
@@ -1007,7 +995,7 @@ export class InsightsSyncService {
 
     async syncHourlyInsights(
         accountId: string,
-        userId: number,
+        userId: number | undefined,
         dateStart: string,
         dateEnd: string,
     ): Promise<number> {
@@ -1026,7 +1014,18 @@ export class InsightsSyncService {
         dateStart = clamped.dateStart;
         dateEnd = clamped.dateEnd;
 
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId, userId);
+        // Verify ownership if userId is provided
+        if (userId) {
+            const hasAccess = await this.verifyAccountAccess(userId, accountId);
+            if (!hasAccess) {
+                throw new Error(`Ad account ${accountId} not found or access denied`);
+            }
+        }
+
+        const accessToken = userId
+            ? await this.tokenService.getTokenForAdAccount(accountId, userId)
+            : await this.tokenService.getTokenForAdAccountInternal(accountId);
+
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -1071,7 +1070,18 @@ export class InsightsSyncService {
                 select: { name: true, currency: true },
             });
 
-            // Collect insights for the current hour (send partial data even if hour is not complete)
+            // 1. Bulk fetch hourly insights at account level
+            this.logger.log(`[HourlySync] Fetching bulk hourly insights for account ${accountId}...`);
+            const allInsights = await this.facebookApi.getInsights(
+                accountId,
+                accessToken,
+                dateStart,
+                dateEnd,
+                'ad',
+                'hourly_stats_aggregated_by_advertiser_time_zone',
+            );
+
+            // 2. Process for Telegram (current hour of TODAY only)
             const currentHourInsights: Array<{
                 insight: any;
                 adName: string;
@@ -1080,46 +1090,31 @@ export class InsightsSyncService {
                 previewLink: string | null;
             }> = [];
 
-            // Collect ALL insights first, then batch upsert to avoid per-row upserts (performance)
-            const allInsights: any[] = [];
+            // Map ads for quick lookup
+            const adMap = new Map(ads.map(ad => [ad.id, ad]));
 
-            for (const ad of ads) {
-                try {
-                    const insights = await this.facebookApi.getAdInsights(
-                        ad.id,
-                        accessToken,
-                        dateStart,
-                        dateEnd,
-                        'hourly_stats_aggregated_by_advertiser_time_zone',
-                        accountId,
-                    );
+            for (const insight of allInsights) {
+                const adId = insight.ad_id;
+                const ad = adMap.get(adId);
 
-                    for (const insight of insights) {
-                        insight.ad_id = ad.id;
-                        insight.adset_id = insight.adset_id ?? ad.adsetId;
-                        insight.campaign_id = insight.campaign_id ?? ad.campaignId;
+                // Note: insight already has ad_id, but might need parent IDs from our DB if FB doesn't provide them at ad level
+                insight.adset_id = insight.adset_id || ad?.adsetId;
+                insight.campaign_id = insight.campaign_id || ad?.campaignId;
 
-                        allInsights.push(insight);
-                        totalInsights++;
-                        
-                        // Collect for Telegram (current hour of TODAY only)
-                        const hourRange = insight.hourly_stats_aggregated_by_advertiser_time_zone;
-                        const insightHour = hourRange ? parseInt(hourRange.split(':')[0]) : -1;
-                        const insightDate = insight.date_start; // YYYY-MM-DD format
-                        
-                        // Only collect if: same hour + today's date + has spend
-                        if (insightHour === currentHour && insightDate === todayStr && Number(insight.spend || 0) > 0) {
-                            currentHourInsights.push({
-                                insight,
-                                adName: ad.name || ad.id,
-                                campaignName: ad.campaign?.name || 'N/A',
-                                adsetName: ad.adset?.name || 'N/A',
-                                previewLink: ad.previewShareableLink,
-                            });
-                        }
-                    }
-                } catch (error) {
-                    this.logger.warn(`Failed to get hourly insights for ad ${ad.id}: ${error.message}`);
+                totalInsights++;
+
+                const hourRange = insight.hourly_stats_aggregated_by_advertiser_time_zone;
+                const insightHour = hourRange ? parseInt(hourRange.split(':')[0]) : -1;
+                const insightDate = insight.date_start;
+
+                if (insightHour === currentHour && insightDate === todayStr && Number(insight.spend || 0) > 0 && ad) {
+                    currentHourInsights.push({
+                        insight,
+                        adName: ad.name || ad.id,
+                        campaignName: ad.campaign?.name || 'N/A',
+                        adsetName: ad.adset?.name || 'N/A',
+                        previewLink: ad.previewShareableLink,
+                    });
                 }
             }
 
@@ -1232,7 +1227,7 @@ export class InsightsSyncService {
         await this.telegramService.sendMessage(summaryMsg);
 
         // Sort ads by spend and send each ad as separate message
-        const sortedAds = [...insightsData].sort((a, b) => 
+        const sortedAds = [...insightsData].sort((a, b) =>
             Number(b.insight.spend || 0) - Number(a.insight.spend || 0)
         );
 
@@ -1265,7 +1260,7 @@ export class InsightsSyncService {
             adMsg += `├── 📈 CPM: ${formatMoney(cpm)}\n`;
             adMsg += `├── 🎯 CPR: <b>${formatMoney(cpr)}</b>\n`;
             adMsg += `└── 💬 Cost/New Msg: <b>${formatMoney(costPerNewMsg)}</b>`;
-            
+
             if (previewLink) {
                 adMsg += `\n\n🔗 <a href="${previewLink}">Preview Ad</a>`;
             }
@@ -1287,11 +1282,14 @@ export class InsightsSyncService {
      * - Uses batch transaction for faster DB writes
      * - No Telegram sending (decoupled)
      */
-    async syncHourlyInsightsQuick(accountId: string, userId: number): Promise<{ count: number; duration: number }> {
+    async syncHourlyInsightsQuick(accountId: string, userId?: number): Promise<{ count: number; duration: number }> {
         const startTime = Date.now();
         const today = getVietnamDateString();
-        
-        const accessToken = await this.tokenService.getTokenForAdAccount(accountId, userId);
+
+        const accessToken = userId
+            ? await this.tokenService.getTokenForAdAccount(accountId, userId)
+            : await this.tokenService.getTokenForAdAccountInternal(accountId);
+
         if (!accessToken) {
             throw new Error(`No valid token for account ${accountId}`);
         }
@@ -1306,31 +1304,26 @@ export class InsightsSyncService {
             return { count: 0, duration: Date.now() - startTime };
         }
 
-        this.logger.log(`[QuickSync] Fetching hourly insights for ${ads.length} active ads...`);
+        this.logger.log(`[QuickSync] Fetching bulk hourly insights for account ${accountId}...`);
 
-        // 1. Collect ALL insights first (NO DB writes here)
-        const allInsights: any[] = [];
+        // 1. Bulk fetch at account level
+        const allInsights = await this.facebookApi.getInsights(
+            accountId,
+            accessToken,
+            today,
+            today,
+            'ad',
+            'hourly_stats_aggregated_by_advertiser_time_zone',
+        );
+
         const syncedAt = new Date();
+        const adMap = new Map(ads.map(ad => [ad.id, ad]));
 
-        for (const ad of ads) {
-            try {
-                const insights = await this.facebookApi.getAdInsights(
-                    ad.id,
-                    accessToken,
-                    today,
-                    today,
-                    'hourly_stats_aggregated_by_advertiser_time_zone',
-                    accountId,
-                );
-
-                for (const insight of insights) {
-                    insight.ad_id = ad.id;
-                    insight.adset_id = ad.adsetId;
-                    insight.campaign_id = ad.campaignId;
-                    allInsights.push(insight);
-                }
-            } catch (error) {
-                this.logger.warn(`[QuickSync] Failed to get insights for ad ${ad.id}: ${error.message}`);
+        for (const insight of allInsights) {
+            const ad = adMap.get(insight.ad_id);
+            if (ad) {
+                insight.adset_id = insight.adset_id || ad.adsetId;
+                insight.campaign_id = insight.campaign_id || ad.campaignId;
             }
         }
 
@@ -1370,14 +1363,14 @@ export class InsightsSyncService {
         });
 
         const batchSize = 1000;
-        
+
         for (let i = 0; i < insights.length; i += batchSize) {
             const batch = insights.slice(i, i + batchSize);
             const values = batch.map((data) => {
                 const date = this.parseLocalDate(data.date_start).toISOString();
                 const hourlyStats = data.hourly_stats_aggregated_by_advertiser_time_zone || '00:00:00 - 00:59:59';
                 const metrics = this.mapInsightMetrics(data);
-                
+
                 return Prisma.sql`(
                     ${date}::date,
                     ${data.ad_id}::text,
@@ -1436,7 +1429,7 @@ export class InsightsSyncService {
      * Get latest hour's insights from DB for Telegram report
      * Does NOT call Facebook API - just reads from DB
      */
-    async getLatestHourInsights(): Promise<{
+    async getLatestHourInsights(hour?: number): Promise<{
         insights: Array<{
             insight: any;
             adName: string;
@@ -1449,10 +1442,10 @@ export class InsightsSyncService {
         date: string;
         hour: string;
     } | null> {
-        const currentHour = getVietnamHour();
+        const currentHour = hour ?? getVietnamHour();
         const todayStr = getVietnamDateString();
         const today = this.parseLocalDate(todayStr);
-        
+
         // Format hour for query
         const hourString = currentHour.toString().padStart(2, '0');
         const hourlyTimeZone = `${hourString}:00:00 - ${hourString}:59:59`;
@@ -1513,7 +1506,7 @@ export class InsightsSyncService {
 
         // Get account info from first ad
         const firstAd = ads[0];
-        
+
         return {
             insights,
             accountName: firstAd?.account?.name || 'Unknown',
@@ -1526,13 +1519,13 @@ export class InsightsSyncService {
     /**
      * Send Telegram report for latest hour (reads from DB, no FB API call)
      */
-    async sendLatestHourTelegramReport(): Promise<{ success: boolean; message: string }> {
-        const data = await this.getLatestHourInsights();
-        
+    async sendLatestHourTelegramReport(hour?: number): Promise<{ success: boolean; message: string }> {
+        const data = await this.getLatestHourInsights(hour);
+
         if (!data || data.insights.length === 0) {
-            return { 
-                success: false, 
-                message: `No insights with spend > 0 for current hour (${getVietnamHour()}:00)` 
+            return {
+                success: false,
+                message: `No insights with spend > 0 for current hour (${getVietnamHour()}:00)`
             };
         }
 
@@ -1544,9 +1537,9 @@ export class InsightsSyncService {
             data.hour,
         );
 
-        return { 
-            success: true, 
-            message: `Sent Telegram report for ${data.insights.length} ads at ${data.date} ${data.hour}` 
+        return {
+            success: true,
+            message: `Sent Telegram report for ${data.insights.length} ads at ${data.date} ${data.hour}`
         };
     }
 
@@ -1554,18 +1547,34 @@ export class InsightsSyncService {
 
     async syncAllInsights(
         accountId: string,
-        userId: number,
+        userId: number | undefined,
         dateStart: string,
         dateEnd: string,
     ): Promise<void> {
         this.logger.log(`Syncing all insights for ${accountId}: ${dateStart} to ${dateEnd}`);
 
-        await this.syncDailyInsights(accountId, userId, dateStart, dateEnd);
-        await this.syncDeviceInsights(accountId, userId, dateStart, dateEnd);
-        await this.syncPlacementInsights(accountId, userId, dateStart, dateEnd);
-        await this.syncAgeGenderInsights(accountId, userId, dateStart, dateEnd);
-        await this.syncRegionInsights(accountId, userId, dateStart, dateEnd);
-        await this.syncHourlyInsights(accountId, userId, dateStart, dateEnd);
+        // Define groups of tasks to run in parallel batches
+        // This is "Throttled Parallelism" to avoid hitting rate limits too fast
+        const taskGroups = [
+            [
+                () => this.syncDailyInsights(accountId, userId, dateStart, dateEnd),
+                () => this.syncDeviceInsights(accountId, userId, dateStart, dateEnd),
+            ],
+            [
+                () => this.syncPlacementInsights(accountId, userId, dateStart, dateEnd),
+                () => this.syncAgeGenderInsights(accountId, userId, dateStart, dateEnd),
+            ],
+            [
+                () => this.syncRegionInsights(accountId, userId, dateStart, dateEnd),
+                () => this.syncHourlyInsights(accountId, userId, dateStart, dateEnd),
+            ],
+        ];
+
+        for (const group of taskGroups) {
+            await Promise.all(group.map(task => task()));
+            // Small jitter delay between batches to respect Meta rate limits
+            await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
+        }
 
         this.logger.log(`Completed all insights sync for ${accountId}`);
     }
@@ -1753,7 +1762,7 @@ export class InsightsSyncService {
         // Get today's date in Vietnam timezone (local midnight)
         const todayStr = getVietnamDateString();
         const today = this.parseLocalDate(todayStr);
-        
+
         // Calculate yesterday
         const yesterday = new Date(today);
         yesterday.setDate(yesterday.getDate() - 1);
@@ -1779,7 +1788,7 @@ export class InsightsSyncService {
     private async cleanupOldDailyInsights(accountId: string): Promise<number> {
         const todayStr = getVietnamDateString();
         const today = this.parseLocalDate(todayStr);
-        
+
         // Calculate cutoff date (7 days ago)
         const cutoffDate = new Date(today);
         cutoffDate.setDate(cutoffDate.getDate() - 7);
@@ -1807,7 +1816,7 @@ export class InsightsSyncService {
     private async cleanupOldBreakdownInsights(accountId: string): Promise<number> {
         const todayStr = getVietnamDateString();
         const today = this.parseLocalDate(todayStr);
-        
+
         // Calculate cutoff date (7 days ago)
         const cutoffDate = new Date(today);
         cutoffDate.setDate(cutoffDate.getDate() - 7);
@@ -1860,14 +1869,14 @@ export class InsightsSyncService {
     private getPreviousHourSlot(currentHourSlot: string, currentDate: Date): { date: Date; hourSlot: string } {
         // Parse hour from "HH:00:00 - HH:59:59" format
         const currentHour = parseInt(currentHourSlot.split(':')[0]);
-        
+
         if (currentHour === 0) {
             // Previous hour is 23:00 of yesterday
             const previousDate = new Date(currentDate);
             previousDate.setDate(previousDate.getDate() - 1);
             return { date: previousDate, hourSlot: '23:00:00 - 23:59:59' };
         }
-        
+
         // Build previous hour slot string
         const prevHour = currentHour - 1;
         const prevHourStr = prevHour.toString().padStart(2, '0');
@@ -1978,6 +1987,28 @@ export class InsightsSyncService {
             costPerActionType: data.cost_per_action_type,
             videoThruplayWatchedActions: data.video_thruplay_watched_actions,
         };
+    }
+
+    async cleanupAllOldHourlyInsights(): Promise<number> {
+        // Get today's date in Vietnam timezone
+        const todayStr = getVietnamDateString();
+        const today = this.parseLocalDate(todayStr);
+
+        // Calculate yesterday
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+
+        // Delete all hourly insights older than yesterday (strict 2-day retention)
+        const result = await this.prisma.adInsightsHourly.deleteMany({
+            where: {
+                date: {
+                    lt: yesterday,
+                },
+            },
+        });
+
+        this.logger.log(`[GlobalHourlyCleanup] Deleted ${result.count} old hourly records`);
+        return result.count;
     }
 
     private async verifyAccountAccess(userId: number, accountId: string): Promise<boolean> {

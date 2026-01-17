@@ -2,7 +2,20 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { PrismaService } from '@n-database/prisma/prisma.service';
 
 // Types for cron settings
-export type CronType = 'insight' | 'ads' | 'adset' | 'campaign' | 'ad_account' | 'full';
+export type CronType =
+    | 'insight'
+    | 'insight_daily'
+    | 'insight_device'
+    | 'insight_placement'
+    | 'insight_age_gender'
+    | 'insight_region'
+    | 'insight_hourly'
+    | 'ads'
+    | 'adset'
+    | 'campaign'
+    | 'creative'
+    | 'ad_account'
+    | 'full';
 
 export interface CreateCronSettingDto {
     cronType: CronType;
@@ -17,17 +30,24 @@ export interface UpdateCronSettingDto {
 
 // Estimated API calls per cron type
 const ESTIMATED_CALLS_PER_TYPE: Record<CronType, number> = {
-    insight: 5,      // Account insights + ad insights
-    ads: 3,          // Ads list
-    adset: 2,        // Adsets list
-    campaign: 1,     // Campaigns list
-    ad_account: 1,   // Account info
-    full: 15,        // All combined
+    insight: 5,             // Account insights + ad insights
+    insight_daily: 2,       // Daily breakdown
+    insight_device: 2,      // Device breakdown
+    insight_placement: 2,   // Placement breakdown
+    insight_age_gender: 2,  // Age/Gender breakdown
+    insight_region: 2,      // Region breakdown
+    insight_hourly: 5,      // Hourly Breakdown
+    ads: 3,                 // Ads list
+    adset: 2,               // Adsets list
+    campaign: 1,            // Campaigns list
+    creative: 10,           // Creatives (heavy)
+    ad_account: 1,          // Account info
+    full: 20,               // All combined
 };
 
 @Injectable()
 export class CronSettingsService {
-    constructor(private readonly prisma: PrismaService) {}
+    constructor(private readonly prisma: PrismaService) { }
 
     /**
      * Get all cron settings for a user
@@ -112,7 +132,7 @@ export class CronSettingsService {
                 const existing = await this.prisma.userCronSettings.findFirst({
                     where: { userId, cronType: dto.cronType },
                 });
-                
+
                 if (existing) {
                     return this.prisma.userCronSettings.update({
                         where: { id: existing.id },
@@ -197,15 +217,15 @@ export class CronSettingsService {
         const settings = await this.prisma.userCronSettings.findMany({
             where: { userId },
         });
-        
+
         const enabledAtHour = settings.filter(s => s.enabled && s.allowedHours.includes(hour));
-        
+
         // If 'full' is enabled for this hour, only return 'full' to avoid duplicate crawls
         const fullEnabled = enabledAtHour.some(s => s.cronType === 'full');
         if (fullEnabled) {
             return ['full'];
         }
-        
+
         return enabledAtHour.map(s => s.cronType);
     }
 

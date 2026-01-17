@@ -38,6 +38,7 @@ enum CrawlJobType {
   INSIGHTS_AGE_GENDER
   INSIGHTS_REGION
   INSIGHTS_HOURLY
+  ALL_ENTITIES
 }
 
 enum TokenType {

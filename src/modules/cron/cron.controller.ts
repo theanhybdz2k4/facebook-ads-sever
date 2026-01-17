@@ -35,7 +35,21 @@ export class CronController {
         @Body() dto: { cronType: string; allowedHours: number[]; enabled?: boolean },
     ) {
         // Validate cronType
-        const validCronTypes: CronType[] = ['insight', 'ads', 'adset', 'campaign', 'ad_account', 'full'];
+        const validCronTypes: CronType[] = [
+            'insight', 
+            'insight_daily', 
+            'insight_device', 
+            'insight_placement', 
+            'insight_age_gender', 
+            'insight_region', 
+            'insight_hourly', 
+            'ads', 
+            'adset', 
+            'campaign', 
+            'creative', 
+            'ad_account', 
+            'full'
+        ];
         if (!validCronTypes.includes(dto.cronType as CronType)) {
             throw new BadRequestException(`Invalid cronType. Must be one of: ${validCronTypes.join(', ')}`);
         }
@@ -58,7 +72,21 @@ export class CronController {
         @Body() dto: { allowedHours?: number[]; enabled?: boolean },
     ) {
         // Validate cronType
-        const validCronTypes: CronType[] = ['insight', 'ads', 'adset', 'campaign', 'ad_account', 'full'];
+        const validCronTypes: CronType[] = [
+            'insight', 
+            'insight_daily', 
+            'insight_device', 
+            'insight_placement', 
+            'insight_age_gender', 
+            'insight_region', 
+            'insight_hourly', 
+            'ads', 
+            'adset', 
+            'campaign', 
+            'creative', 
+            'ad_account', 
+            'full'
+        ];
         if (!validCronTypes.includes(cronType as CronType)) {
             throw new BadRequestException(`Invalid cronType. Must be one of: ${validCronTypes.join(', ')}`);
         }

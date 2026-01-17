@@ -6,7 +6,7 @@ import { Prisma } from '@prisma/client';
 export class BranchStatsService {
     private readonly logger = new Logger(BranchStatsService.name);
 
-    constructor(private readonly prisma: PrismaService) {}
+    constructor(private readonly prisma: PrismaService) { }
 
     /**
      * Parse YYYY-MM-DD date string to UTC midnight Date
@@ -118,57 +118,68 @@ export class BranchStatsService {
      * Rebuild stats for all branches of a user based on all historical insights
      */
     async rebuildStatsForUser(userId: number) {
-        // Get all branches for this user
-        const branches = await this.prisma.branch.findMany({
-            where: { userId },
-            select: { id: true },
-        });
+        this.logger.log(`Starting high-performance stats rebuild for user ${userId}`);
+        const startTime = Date.now();
 
-        if (branches.length === 0) {
-            this.logger.log(`User ${userId} has no branches, skipping rebuild`);
-            return { branches: 0, dates: 0 };
-        }
+        // Using a single raw SQL query to perform mass aggregation and upsert
+        // This replaces the N+1 loop (dates * branches) with one operation.
+        // We use EXCLUDED to update values if the record already exists (ON CONFLICT).
+        const result = await this.prisma.$executeRaw`
+            INSERT INTO branch_daily_stats (
+                branch_id, 
+                date, 
+                total_spend, 
+                total_impressions, 
+                total_clicks, 
+                total_reach, 
+                total_results, 
+                total_messaging, 
+                ad_account_count, 
+                ads_count, 
+                updated_at,
+                created_at
+            )
+            SELECT 
+                acc.branch_id,
+                ins.date,
+                COALESCE(SUM(ins.spend), 0) as total_spend,
+                COALESCE(SUM(ins.impressions), 0) as total_impressions,
+                COALESCE(SUM(ins.clicks), 0) as total_clicks,
+                COALESCE(SUM(ins.reach), 0) as total_reach,
+                COALESCE(SUM(ins.results), 0) as total_results,
+                COALESCE(SUM(ins.messaging_started), 0) as total_messaging,
+                CAST(COUNT(DISTINCT ins.account_id) AS INTEGER) as ad_account_count,
+                CAST(COUNT(DISTINCT ins.ad_id) AS INTEGER) as ads_count,
+                NOW() as updated_at,
+                NOW() as created_at
+            FROM ad_insights_daily ins
+            JOIN ad_accounts acc ON ins.account_id = acc.id
+            WHERE acc.branch_id IN (SELECT id FROM branches WHERE user_id = ${userId})
+            GROUP BY acc.branch_id, ins.date
+            ON CONFLICT (branch_id, date) DO UPDATE SET
+                total_spend = EXCLUDED.total_spend,
+                total_impressions = EXCLUDED.total_impressions,
+                total_clicks = EXCLUDED.total_clicks,
+                total_reach = EXCLUDED.total_reach,
+                total_results = EXCLUDED.total_results,
+                total_messaging = EXCLUDED.total_messaging,
+                ad_account_count = EXCLUDED.ad_account_count,
+                ads_count = EXCLUDED.ads_count,
+                updated_at = EXCLUDED.updated_at;
+        `;
 
-        const branchIds = branches.map(b => b.id);
-
-        // Find all ad accounts belonging to these branches
-        const adAccounts = await this.prisma.adAccount.findMany({
-            where: { branchId: { in: branchIds } },
-            select: { id: true },
-        });
-
-        if (adAccounts.length === 0) {
-            this.logger.log(`User ${userId} branches have no ad accounts, skipping rebuild`);
-            return { branches: branchIds.length, dates: 0 };
-        }
-
-        const accountIds = adAccounts.map(a => a.id);
-
-        // Get all distinct dates from ad_insights_daily for these accounts
-        const dates = await this.prisma.adInsightsDaily.findMany({
-            where: { accountId: { in: accountIds } },
-            select: { date: true },
-            distinct: ['date'],
-            orderBy: { date: 'asc' },
-        });
-
-        if (dates.length === 0) {
-            this.logger.log(`No insights found for user ${userId}, nothing to rebuild`);
-            return { branches: branchIds.length, dates: 0 };
-        }
-
+        const duration = (Date.now() - startTime) / 1000;
         this.logger.log(
-            `Rebuilding branch stats for user ${userId}: ${branchIds.length} branches, ${dates.length} dates`,
+            `Rebuild completed for user ${userId}. Rows affected: ${result}. Duration: ${duration.toFixed(2)}s`,
         );
 
-        for (const d of dates) {
-            const dateStr = d.date.toISOString().split('T')[0];
-            for (const branchId of branchIds) {
-                await this.aggregateBranchStats(branchId, dateStr);
-            }
-        }
+        // For the response, we still need to know how many branches were affected
+        const branchCount = await this.prisma.branch.count({ where: { userId } });
+        const dateCount = await this.prisma.branchDailyStats.count({
+            where: { branch: { userId } },
+        });
 
-        return { branches: branchIds.length, dates: dates.length };
+        return { branches: branchCount, dates: dateCount, affectedRows: result };
     }
 
     /**

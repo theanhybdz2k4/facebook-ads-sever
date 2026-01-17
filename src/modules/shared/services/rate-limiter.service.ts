@@ -37,15 +37,15 @@ export class RateLimiterService {
             this.state.set(accountId, {
                 throttleInfo,
                 lastUpdated: new Date(),
-                isPaused: throttleInfo.accIdUtilPct > this.THRESHOLD,
-                pauseUntil: throttleInfo.accIdUtilPct > this.THRESHOLD
+                isPaused: throttleInfo.accIdUtilPct >= this.THRESHOLD,
+                pauseUntil: throttleInfo.accIdUtilPct >= this.THRESHOLD
                     ? new Date(Date.now() + this.PAUSE_DURATION_MS)
                     : null,
             });
 
-            if (throttleInfo.accIdUtilPct > this.THRESHOLD) {
+            if (throttleInfo.accIdUtilPct >= this.THRESHOLD) {
                 this.logger.warn(
-                    `Rate limit warning for ${accountId}: ${throttleInfo.accIdUtilPct}% used`,
+                    `Rate limit threshold reached for ${accountId}: ${throttleInfo.accIdUtilPct}% used. Pausing for ${this.PAUSE_DURATION_MS / 1000}s.`,
                 );
             }
         } catch (e) {

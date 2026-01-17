@@ -10,7 +10,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RateLimiterService } from '../shared/services/rate-limiter.service';
 import { CrawlSchedulerService } from '../cron/services/cron-scheduler.service';
-import { InsightsSyncService } from './services/insights-sync.service';
+import { InsightsSyncService } from '../insights/services/insights-sync.service';
 import { SyncEntitiesDto, SyncInsightsDto } from './dtos';
 import { getVietnamDateString } from '@n-utils';
 import { PrismaService } from '@n-database/prisma/prisma.service';

@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PgBossService } from '../../../pgboss/pgboss.service';
-import { InsightsSyncService } from '../services/insights-sync.service';
+import { InsightsSyncService } from '../../insights/services/insights-sync.service';
 import { RateLimiterService } from '../../shared/services/rate-limiter.service';
 
 export interface InsightsSyncJobData {
@@ -50,7 +50,7 @@ export class InsightsProcessor implements OnModuleInit {
         if (adId) {
             this.logger.log(`Processing insights sync job for ad: ${adId}`);
             try {
-                return await this.insightsSyncService.syncInsightsForAd(adId, dateStart, dateEnd, breakdown);
+                return await this.insightsSyncService.syncInsightsForAd(adId, undefined, dateStart, dateEnd, breakdown);
             } catch (error) {
                 return this.handleError(error, data, retryCount);
             }
@@ -62,25 +62,25 @@ export class InsightsProcessor implements OnModuleInit {
         try {
             switch (breakdown) {
                 case 'daily':
-                    return await this.insightsSyncService.syncDailyInsights(accountId!, dateStart, dateEnd);
+                    return await this.insightsSyncService.syncDailyInsights(accountId!, undefined, dateStart, dateEnd);
 
                 case 'device':
-                    return await this.insightsSyncService.syncDeviceInsights(accountId!, dateStart, dateEnd);
+                    return await this.insightsSyncService.syncDeviceInsights(accountId!, undefined, dateStart, dateEnd);
 
                 case 'placement':
-                    return await this.insightsSyncService.syncPlacementInsights(accountId!, dateStart, dateEnd);
+                    return await this.insightsSyncService.syncPlacementInsights(accountId!, undefined, dateStart, dateEnd);
 
                 case 'age_gender':
-                    return await this.insightsSyncService.syncAgeGenderInsights(accountId!, dateStart, dateEnd);
+                    return await this.insightsSyncService.syncAgeGenderInsights(accountId!, undefined, dateStart, dateEnd);
 
                 case 'region':
-                    return await this.insightsSyncService.syncRegionInsights(accountId!, dateStart, dateEnd);
+                    return await this.insightsSyncService.syncRegionInsights(accountId!, undefined, dateStart, dateEnd);
 
                 case 'hourly':
-                    return await this.insightsSyncService.syncHourlyInsights(accountId!, dateStart, dateEnd);
+                    return await this.insightsSyncService.syncHourlyInsights(accountId!, undefined, dateStart, dateEnd);
 
                 case 'all':
-                    return await this.insightsSyncService.syncAllInsights(accountId!, dateStart, dateEnd);
+                    return await this.insightsSyncService.syncAllInsights(accountId!, undefined, dateStart, dateEnd);
 
                 default:
                     throw new Error(`Unknown breakdown type: ${breakdown}`);

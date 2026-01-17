@@ -5,12 +5,13 @@ import { SharedModule } from '../shared/shared.module';
 import { JobsModule } from '../jobs/jobs.module';
 import { CronModule } from '../cron/cron.module';
 import { InsightsModule } from '../insights/insights.module';
+import { TokensModule } from '../tokens/tokens.module';
+import { BranchesModule } from '../branches/branches.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { FacebookAdsController } from './facebook-ads.controller';
 import { InternalN8nController } from './internal-n8n.controller';
 import { EntitySyncService } from './services/entity-sync.service';
-import { InsightsSyncService } from './services/insights-sync.service';
-import { TokensModule } from '../tokens/tokens.module';
+import { InsightsSyncService } from '../insights/services/insights-sync.service';
 import { EntityProcessor } from './processors/entity.processor';
 import { InsightsProcessor } from './processors/insights.processor';
 import { PrismaModule } from '@n-database/prisma/prisma.module';
@@ -28,6 +29,7 @@ export const INSIGHTS_QUEUE = 'fb-insights-sync';
     InsightsModule,
     TokensModule,
     TelegramModule,
+    BranchesModule,
     PrismaModule,
     ConfigModule,
     HttpModule.register({
@@ -38,14 +40,12 @@ export const INSIGHTS_QUEUE = 'fb-insights-sync';
   controllers: [FacebookAdsController, InternalN8nController],
   providers: [
     EntitySyncService,
-    InsightsSyncService,
     EntityProcessor,
     InsightsProcessor,
     InternalApiKeyGuard,
   ],
   exports: [
     EntitySyncService,
-    InsightsSyncService,
   ],
 })
 export class FacebookAdsModule { }

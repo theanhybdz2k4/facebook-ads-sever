@@ -32,14 +32,17 @@ export class FacebookApiService {
     ) { }
 
     /**
-     * Make a GET request to Facebook Graph API
+     * Make a GET request to Facebook Graph API with retry logic
      */
     async get<T>(
         endpoint: string,
         accessToken: string,
         params: Record<string, string> = {},
         accountId?: string,
+        retryCount = 0,
     ): Promise<{ data: T; headers: Record<string, string> }> {
+        const MAX_RETRIES = 3;
+
         // Wait if rate limited
         if (accountId) {
             await this.rateLimiter.waitIfNeeded(accountId);
@@ -64,6 +67,18 @@ export class FacebookApiService {
                 headers: response.headers as Record<string, string>,
             };
         } catch (error) {
+            const fbError = error.response?.data?.error;
+            
+            // Code 17: User request limit reached
+            if (fbError?.code === 17 && retryCount < MAX_RETRIES) {
+                const waitTime = Math.pow(2, retryCount) * 30000; // 30s, 60s, 120s
+                this.logger.warn(
+                    `Rate limit hit for ${accountId || endpoint}. Retrying in ${waitTime / 1000}s... (Attempt ${retryCount + 1}/${MAX_RETRIES})`,
+                );
+                await this.delay(waitTime);
+                return this.get(endpoint, accessToken, params, accountId, retryCount + 1);
+            }
+
             // Log the actual Facebook API error for debugging
             if (error.response?.data) {
                 this.logger.error(`Facebook API Error: ${JSON.stringify(error.response.data)}`);
