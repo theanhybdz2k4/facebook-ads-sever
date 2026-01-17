@@ -87,6 +87,7 @@ export class EntitySyncService {
                         'recommendations',
                     ],
                     ['start_time', 'stop_time', 'created_time', 'updated_time', 'synced_at'],
+                    ['daily_budget', 'lifetime_budget', 'budget_remaining', 'spend_cap'],
                 );
             }
 
@@ -143,6 +144,7 @@ export class EntitySyncService {
                         'recommendations',
                     ],
                     ['start_time', 'end_time', 'created_time', 'updated_time', 'synced_at'],
+                    ['daily_budget', 'lifetime_budget', 'budget_remaining', 'bid_amount'],
                 );
             }
 
@@ -421,6 +423,7 @@ export class EntitySyncService {
                         'recommendations',
                     ],
                     ['start_time', 'stop_time', 'created_time', 'updated_time', 'synced_at'],
+                    ['daily_budget', 'lifetime_budget', 'budget_remaining', 'spend_cap'],
                 );
             }
             
@@ -440,6 +443,7 @@ export class EntitySyncService {
                         'recommendations',
                     ],
                     ['start_time', 'end_time', 'created_time', 'updated_time', 'synced_at'],
+                    ['daily_budget', 'lifetime_budget', 'budget_remaining', 'bid_amount'],
                 );
             }
 
