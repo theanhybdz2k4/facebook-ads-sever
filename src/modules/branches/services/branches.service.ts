@@ -15,77 +15,54 @@ export interface UpdateBranchDto {
 export class BranchesService {
     constructor(private readonly prisma: PrismaService) { }
 
-    /**
-     * Get all branches for a user
-     */
     async getBranches(userId: number) {
         return this.prisma.branch.findMany({
             where: { userId },
             include: {
-                adAccounts: {
-                    select: { id: true, name: true, accountStatus: true },
+                accounts: {
+                    select: { id: true, name: true, accountStatus: true, platform: { select: { name: true } } },
                 },
                 _count: {
-                    select: { adAccounts: true },
+                    select: { accounts: true },
                 },
             },
             orderBy: { name: 'asc' },
         });
     }
 
-    /**
-     * Get a specific branch with its ad accounts
-     */
     async getBranch(branchId: number, userId: number) {
         const branch = await this.prisma.branch.findFirst({
             where: { id: branchId, userId },
             include: {
-                adAccounts: {
+                accounts: {
                     select: {
                         id: true,
                         name: true,
                         accountStatus: true,
                         currency: true,
-                        amountSpent: true,
+                        platform: { select: { name: true } }
                     },
                 },
             },
         });
 
-        if (!branch) {
-            throw new NotFoundException(`Branch not found`);
-        }
-
+        if (!branch) throw new NotFoundException('Branch not found');
         return branch;
     }
 
-    /**
-     * Get branch by code for a specific user
-     */
     async getBranchByCode(code: string, userId: number) {
         const branch = await this.prisma.branch.findFirst({
             where: { code, userId },
         });
-
-        if (!branch) {
-            throw new NotFoundException(`Branch with code "${code}" not found`);
-        }
-
+        if (!branch) throw new NotFoundException(`Branch "${code}" not found`);
         return branch;
     }
 
-    /**
-     * Create a new branch
-     */
     async createBranch(userId: number, dto: CreateBranchDto) {
-        // Check if name already exists for this user
         const existing = await this.prisma.branch.findFirst({
             where: { userId, name: dto.name },
         });
-
-        if (existing) {
-            throw new BadRequestException(`Branch "${dto.name}" already exists`);
-        }
+        if (existing) throw new BadRequestException(`Branch "${dto.name}" already exists`);
 
         return this.prisma.branch.create({
             data: {
@@ -96,27 +73,14 @@ export class BranchesService {
         });
     }
 
-    /**
-     * Update a branch
-     */
     async updateBranch(branchId: number, userId: number, dto: UpdateBranchDto) {
-        const branch = await this.prisma.branch.findFirst({
-            where: { id: branchId, userId },
-        });
+        const branch = await this.getBranch(branchId, userId);
 
-        if (!branch) {
-            throw new NotFoundException(`Branch not found`);
-        }
-
-        // Check for name conflict if updating name
         if (dto.name && dto.name !== branch.name) {
             const existing = await this.prisma.branch.findFirst({
                 where: { userId, name: dto.name, id: { not: branchId } },
             });
-
-            if (existing) {
-                throw new BadRequestException(`Branch "${dto.name}" already exists`);
-            }
+            if (existing) throw new BadRequestException(`Branch "${dto.name}" already exists`);
         }
 
         return this.prisma.branch.update({
@@ -128,20 +92,11 @@ export class BranchesService {
         });
     }
 
-    /**
-     * Delete a branch
-     */
     async deleteBranch(branchId: number, userId: number) {
-        const branch = await this.prisma.branch.findFirst({
-            where: { id: branchId, userId },
-        });
+        await this.getBranch(branchId, userId);
 
-        if (!branch) {
-            throw new NotFoundException(`Branch not found`);
-        }
-
-        // Unassign all ad accounts first
-        await this.prisma.adAccount.updateMany({
+        // Unassign accounts
+        await this.prisma.platformAccount.updateMany({
             where: { branchId },
             data: { branchId: null },
         });
@@ -151,39 +106,24 @@ export class BranchesService {
         });
     }
 
-    /**
-     * Assign an ad account to a branch
-     */
-    async assignAdAccountToBranch(adAccountId: string, branchId: number | null, userId: number) {
-        // Verify branch belongs to user (if branchId is provided)
+    async assignAccountToBranch(accountId: number, branchId: number | null, userId: number) {
         if (branchId !== null) {
-            const branch = await this.prisma.branch.findFirst({
-                where: { id: branchId, userId },
-            });
-
-            if (!branch) {
-                throw new NotFoundException(`Branch not found`);
-            }
+            await this.getBranch(branchId, userId);
         }
 
-        // Verify ad account belongs to user
-        const adAccount = await this.prisma.adAccount.findFirst({
+        const account = await this.prisma.platformAccount.findFirst({
             where: {
-                id: adAccountId,
-                fbAccount: { userId },
+                id: accountId,
+                identity: { userId },
             },
         });
 
-        if (!adAccount) {
-            throw new NotFoundException(`Ad account not found`);
-        }
+        if (!account) throw new NotFoundException('Account not found');
 
-        return this.prisma.adAccount.update({
-            where: { id: adAccountId },
+        return this.prisma.platformAccount.update({
+            where: { id: accountId },
             data: { branchId },
-            include: {
-                branch: true,
-            },
+            include: { branch: true },
         });
     }
 }

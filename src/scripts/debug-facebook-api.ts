@@ -3,21 +3,21 @@ import axios from 'axios';
 
 const prisma = new PrismaClient();
 
-const ACCOUNT_ID = 'act_461903055427781';
+const ACCOUNT_EXTERNAL_ID = 'act_461903055427781';
 const FB_GRAPH_API_URL = 'https://graph.facebook.com/v24.0';
 const INSIGHTS_BREAKDOWN_FIELDS = 'impressions,reach,clicks,unique_clicks,spend,actions,action_values,conversions,cost_per_action_type,video_thruplay_watched_actions';
 
 async function main() {
     console.log('Connecting to database...');
 
-    // 1. Get access token
-    const adAccount = await prisma.adAccount.findUnique({
-        where: { id: ACCOUNT_ID },
+    // 1. Get access token through unified platform models
+    const account = await prisma.platformAccount.findFirst({
+        where: { externalId: ACCOUNT_EXTERNAL_ID },
         include: {
-            fbAccount: {
+            identity: {
                 include: {
-                    tokens: {
-                        where: { isDefault: true, isValid: true },
+                    credentials: {
+                        where: { credentialType: 'access_token', isActive: true },
                         take: 1
                     }
                 }
@@ -25,20 +25,16 @@ async function main() {
         }
     });
 
-    if (!adAccount || !adAccount.fbAccount || !adAccount.fbAccount.tokens.length) {
-        console.error('No valid token found for account', ACCOUNT_ID);
+    if (!account || !account.identity || !account.identity.credentials.length) {
+        console.error('No valid token found for account', ACCOUNT_EXTERNAL_ID);
         return;
     }
 
-    const accessToken = adAccount.fbAccount.tokens[0].accessToken;
+    const accessToken = account.identity.credentials[0].credentialValue;
     console.log('Found access token:', accessToken.substring(0, 10) + '...');
 
     // 2. Prepare params
-    // Manually construct VN date string to match getVietnamDateString
-    const now = new Date();
-    const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-    const vnTime = new Date(utc + (3600000 * 7));
-    const vnDateStr = vnTime.toISOString().split('T')[0];
+    const vnDateStr = new Date(new Date().getTime() + (3600000 * 7)).toISOString().split('T')[0];
 
     console.log('Using date:', vnDateStr);
 
@@ -52,10 +48,9 @@ async function main() {
         limit: '500',
     };
 
-    const url = `${FB_GRAPH_API_URL}/${ACCOUNT_ID}/insights`;
+    const url = `${FB_GRAPH_API_URL}/${ACCOUNT_EXTERNAL_ID}/insights`;
 
     console.log('Calling Facebook API:', url);
-    // hide token in logs
     const logParams = { ...params, access_token: '***' };
     console.log('Params:', JSON.stringify(logParams, null, 2));
 

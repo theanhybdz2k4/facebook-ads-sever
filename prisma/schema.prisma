@@ -1,11 +1,10 @@
-// Facebook Ads Crawling Database Schema
-// Prisma schema for storing all Facebook Marketing API data
+// Unified SaaS Ads Engine Schema
+// Senior-level Multi-Platform Architecture
 
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["fullTextSearch"]
   binaryTargets   = ["native", "debian-openssl-1.1.x", "debian-openssl-3.0.x", "linux-arm64-openssl-3.0.x"]
-  output          = "../node_modules/.prisma/client"
 }
 
 datasource db {
@@ -15,40 +14,26 @@ datasource db {
 }
 
 // ============================================================================
-// ENUMS
+// ENUMS & TYPES
 // ============================================================================
 
-enum CrawlJobStatus {
+enum UnifiedStatus {
+  ACTIVE
+  PAUSED
+  ARCHIVED
+  DELETED
+  UNKNOWN
+}
+
+enum SyncJobStatus {
   PENDING
   RUNNING
   COMPLETED
   FAILED
 }
 
-enum CrawlJobType {
-  CAMPAIGNS
-  ADSETS
-  ADS
-  CREATIVES
-  IMAGES
-  VIDEOS
-  INSIGHTS_DAILY
-  INSIGHTS_DEVICE
-  INSIGHTS_PLACEMENT
-  INSIGHTS_AGE_GENDER
-  INSIGHTS_REGION
-  INSIGHTS_HOURLY
-  ALL_ENTITIES
-}
-
-enum TokenType {
-  USER
-  PAGE
-  SYSTEM_USER
-}
-
 // ============================================================================
-// USERS - System users for authentication
+// CORE AUTH & USERS
 // ============================================================================
 
 model User {
@@ -61,83 +46,23 @@ model User {
   updatedAt DateTime? @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
 
-  // Relations
-  fbAccounts           FbAccount[]
-  refreshTokens        RefreshToken[]
-  cronSettings         UserCronSettings[]
-  userAdAccounts       UserAdAccount[]
-  telegramBots         UserTelegramBot[]
-  telegramBotSettings  UserTelegramBotSettings[]
-  branches             Branch[]
+  identities    PlatformIdentity[]
+  refreshTokens RefreshToken[]
+  branches      Branch[]
+  cronSettings  CronSetting[]
+  telegramBots  TelegramBot[]
 
   @@map("users")
 }
 
-// ============================================================================
-// FB ACCOUNTS - Facebook accounts (1 nick FB = 1 token = multiple ad_accounts)
-// ============================================================================
-
-model FbAccount {
-  id           Int       @id @default(autoincrement())
-  userId       Int       @map("user_id")
-  fbUserId     String?   @map("fb_user_id") // Facebook user ID from API
-  name         String?   @map("name") // Nick FB name
-  isValid      Boolean   @default(true) @map("is_valid")
-  errorMessage String?   @map("error_message")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime? @updatedAt @map("updated_at")
-  deletedAt    DateTime? @map("deleted_at")
-
-  // Relations
-  user       User         @relation(fields: [userId], references: [id])
-  adAccounts AdAccount[]
-  tokens     FbApiToken[]
-
-  @@index([userId])
-  @@map("fb_accounts")
-}
-
-// ============================================================================
-// FB API TOKENS - Store access tokens for FB accounts
-// ============================================================================
-
-model FbApiToken {
-  id                  Int       @id @default(autoincrement())
-  fbAccountId         Int       @map("fb_account_id")
-  name                String?   @map("name") // e.g., "Main token", "Insights token"
-  accessToken         String    @map("access_token")
-  tokenType           TokenType @default(USER) @map("token_type")
-  scopes              String[]  @map("scopes")
-  expiresAt           DateTime? @map("expires_at")
-  dataAccessExpiresAt DateTime? @map("data_access_expires_at")
-  isValid             Boolean   @default(true) @map("is_valid")
-  isDefault           Boolean   @default(false) @map("is_default") // Token mặc định cho crawl
-  lastUsedAt          DateTime? @map("last_used_at")
-  errorMessage        String?   @map("error_message")
-  createdAt           DateTime  @default(now()) @map("created_at")
-  updatedAt           DateTime? @updatedAt @map("updated_at")
-  deletedAt           DateTime? @map("deleted_at")
-
-  // Relations
-  fbAccount FbAccount @relation(fields: [fbAccountId], references: [id], onDelete: Cascade)
-
-  @@index([fbAccountId])
-  @@map("fb_api_tokens")
-}
-
-// ============================================================================
-// REFRESH TOKENS - For JWT authentication
-// ============================================================================
-
 model RefreshToken {
-  id        Int      @id @default(autoincrement())
-  userId    Int      @map("user_id")
-  token     String   @unique @map("token")
-  expiresAt DateTime @map("expires_at")
-  createdAt DateTime @default(now()) @map("created_at")
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  token     String    @unique @map("token")
+  expiresAt DateTime  @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
   deletedAt DateTime? @map("deleted_at")
 
-  // Relations
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
@@ -145,677 +70,265 @@ model RefreshToken {
 }
 
 // ============================================================================
-// USER CRON SETTINGS - Per-user sync schedule management
+// PLATFORM ABSTRACTION (LAYER 1)
 // ============================================================================
 
-model UserCronSettings {
-  id           Int      @id @default(autoincrement())
-  userId       Int      @map("user_id")
-  cronType     String   @map("cron_type") // insight, ads, adset, campaign, ad_account
-  allowedHours Int[]    @map("allowed_hours") // [7, 12, 18]
-  enabled      Boolean  @default(true)
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+model Platform {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique // 'facebook', 'tiktok', 'google'
+  name      String
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  identities PlatformIdentity[]
+  accounts   PlatformAccount[]
 
-  @@unique([userId, cronType], name: "userId_cronType")
+  @@map("platforms")
+}
+
+// ============================================================================
+// UNIFIED ACCOUNT STRUCTURE (LAYER 2)
+// ============================================================================
+
+model PlatformIdentity {
+  id           Int       @id @default(autoincrement())
+  userId       Int       @map("user_id")
+  platformId   Int       @map("platform_id")
+  externalId   String    @map("external_id") // ID from Platform (e.g. FB User ID)
+  name         String?   @map("name")
+  isValid      Boolean   @default(true) @map("is_valid")
+  errorMessage String?   @map("error_message")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  deletedAt    DateTime? @map("deleted_at")
+
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  platform    Platform             @relation(fields: [platformId], references: [id], onDelete: Cascade)
+  credentials PlatformCredential[]
+  accounts    PlatformAccount[]
+
+  @@unique([platformId, externalId])
   @@index([userId])
-  @@map("user_cron_settings")
+  @@map("platform_identities")
 }
 
-// ============================================================================
-// USER AD ACCOUNTS - Explicit permission mapping (user <-> ad account)
-// ============================================================================
+model PlatformCredential {
+  id              Int       @id @default(autoincrement())
+  identityId      Int       @map("platform_identity_id")
+  credentialType  String    @map("credential_type") // 'access_token', 'refresh_token', 'api_key'
+  credentialValue String    @map("credential_value") // Encrypted
+  expiresAt       DateTime? @map("expires_at")
+  isActive        Boolean   @default(true) @map("is_active")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  deletedAt       DateTime? @map("deleted_at")
 
-model UserAdAccount {
-  id          Int      @id @default(autoincrement())
-  userId      Int      @map("user_id")
-  adAccountId String   @map("ad_account_id")
-  createdAt   DateTime @default(now()) @map("created_at")
+  identity PlatformIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
 
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  adAccount AdAccount @relation(fields: [adAccountId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, adAccountId])
-  @@index([userId])
-  @@index([adAccountId])
-  @@map("user_ad_accounts")
+  @@index([identityId])
+  @@map("platform_credentials")
 }
 
-// ============================================================================
-// USER TELEGRAM BOTS - Custom Telegram bot per user per ad account
-// ============================================================================
+model PlatformAccount {
+  id            Int       @id @default(autoincrement())
+  identityId    Int       @map("platform_identity_id")
+  platformId    Int       @map("platform_id")
+  externalId    String    @map("external_id") // act_123, ...
+  name          String?   @map("name")
+  accountStatus String    @map("account_status") // Normalized ACTIVE, DISABLED
+  currency      String?   @map("currency")
+  timezone      String?   @map("timezone")
+  platformData  Json?     @map("platform_data")
+  branchId      Int?      @map("branch_id")
+  syncedAt      DateTime? @map("synced_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  deletedAt     DateTime? @map("deleted_at")
 
-model UserTelegramBot {
-  id          Int      @id @default(autoincrement())
-  userId      Int      @map("user_id")
-  adAccountId String?  @map("ad_account_id") // null = default bot for all accounts
-  botToken    String   @map("bot_token")
-  botName     String?  @map("bot_name") // Display name for the bot
-  botUsername String?  @map("bot_username") // @username for t.me link
-  isActive    Boolean  @default(true) @map("is_active")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  identity       PlatformIdentity       @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  platform       Platform               @relation(fields: [platformId], references: [id], onDelete: Cascade)
+  branch         Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  campaigns      UnifiedCampaign[]
+  adGroups       UnifiedAdGroup[]
+  ads            UnifiedAd[]
+  insights       UnifiedInsight[]
+  hourlyInsights UnifiedHourlyInsight[]
+  syncJobs       SyncJob[]
+  telegramBots   TelegramBot[]
 
-  user        User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  adAccount   AdAccount?               @relation(fields: [adAccountId], references: [id], onDelete: Cascade)
-  subscribers TelegramBotSubscriber[]
-  settings    UserTelegramBotSettings[]
-
-  @@unique([userId, adAccountId])
-  @@index([userId])
-  @@index([adAccountId])
-  @@map("user_telegram_bots")
-}
-
-// ============================================================================
-// TELEGRAM BOT SUBSCRIBERS - People who subscribe to a user's bot
-// ============================================================================
-
-model TelegramBotSubscriber {
-  id                   Int      @id @default(autoincrement())
-  botId                Int      @map("bot_id")
-  chatId               String   @map("chat_id")
-  name                 String?  @map("name")
-  receiveNotifications Boolean  @default(true) @map("receive_notifications")
-  isActive             Boolean  @default(true) @map("is_active")
-  createdAt            DateTime @default(now()) @map("created_at")
-  updatedAt            DateTime @updatedAt @map("updated_at")
-
-  bot UserTelegramBot @relation(fields: [botId], references: [id], onDelete: Cascade)
-
-  @@unique([botId, chatId], name: "botId_chatId")
-  @@index([botId])
-  @@map("telegram_bot_subscribers")
-}
-
-// ============================================================================
-// USER TELEGRAM BOT SETTINGS - Per-user telegram bot notification schedule
-// ============================================================================
-
-model UserTelegramBotSettings {
-  id           Int      @id @default(autoincrement())
-  userId       Int      @map("user_id")
-  botId        Int      @map("bot_id")
-  allowedHours Int[]    @map("allowed_hours") // [7, 12, 18] - giờ được phép gửi notification
-  enabled      Boolean  @default(true)
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
-
-  user User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  bot  UserTelegramBot @relation(fields: [botId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, botId], name: "userId_botId")
-  @@index([userId])
-  @@index([botId])
-  @@map("user_telegram_bot_settings")
-}
-
-// ============================================================================
-// AD ACCOUNTS
-// ============================================================================
-
-model AdAccount {
-  id                       String    @id @map("id") // Facebook Account ID
-  fbAccountId              Int?      @map("fb_account_id")
-  name                     String?   @map("name")
-  accountStatus            Int       @map("account_status") // 1=ACTIVE, 2=DISABLED, etc.
-  age                      Float?    @map("age")
-  amountSpent              Decimal?  @map("amount_spent") @db.Decimal(20, 4)
-  balance                  Decimal?  @map("balance") @db.Decimal(20, 4)
-  businessId               String?   @map("business_id")
-  businessName             String?   @map("business_name")
-  currency                 String    @map("currency")
-  timezoneName             String?   @map("timezone_name")
-  timezoneOffsetHoursUtc   Int?      @map("timezone_offset_hours_utc")
-  disableReason            Int?      @map("disable_reason")
-  fundingSource            String?   @map("funding_source")
-  minCampaignGroupSpendCap Decimal?  @map("min_campaign_group_spend_cap") @db.Decimal(20, 4)
-  minDailyBudget           Decimal?  @map("min_daily_budget") @db.Decimal(20, 4)
-  spendCap                 Decimal?  @map("spend_cap") @db.Decimal(20, 4)
-  owner                    String?   @map("owner")
-  isPrepayAccount          Boolean?  @map("is_prepay_account")
-  createdTime              DateTime? @map("created_time")
-  endAdvertiser            String?   @map("end_advertiser")
-  endAdvertiserName        String?   @map("end_advertiser_name")
-  rawJson                  Json?     @map("raw_json")
-  syncedAt                 DateTime  @map("synced_at")
-  createdAt                DateTime  @default(now()) @map("created_at")
-  deletedAt                DateTime? @map("deleted_at")
-  branchId                 Int?      @map("branch_id")
-
-  // Relations
-  fbAccount         FbAccount?                 @relation(fields: [fbAccountId], references: [id])
-  branch            Branch?                    @relation(fields: [branchId], references: [id])
-  campaigns         Campaign[]
-  adImages          AdImage[]
-  adVideos          AdVideo[]
-  creatives         Creative[]
-  adsets            Adset[]
-  ads               Ad[]
-  insightsDaily     AdInsightsDaily[]
-  insightsDevice    AdInsightsDeviceDaily[]
-  insightsPlacement AdInsightsPlacementDaily[]
-  insightsAgeGender AdInsightsAgeGenderDaily[]
-  insightsRegion    AdInsightsRegionDaily[]
-  insightsHourly    AdInsightsHourly[]
-  crawlJobs         CrawlJob[]
-  userAdAccounts    UserAdAccount[]
-  telegramBots      UserTelegramBot[]
-
-  @@index([fbAccountId])
+  @@unique([platformId, externalId])
+  @@index([identityId])
   @@index([branchId])
-  @@map("ad_accounts")
+  @@map("platform_accounts")
 }
 
 // ============================================================================
-// CAMPAIGNS
+// NORMALIZED ENTITY HIERARCHY (LAYER 3)
 // ============================================================================
 
-model Campaign {
-  id                       String    @id @map("id")
-  accountId                String    @map("account_id")
-  name                     String?   @map("name")
-  objective                String?   @map("objective")
-  status                   String    @map("status")
-  configuredStatus         String?   @map("configured_status")
-  effectiveStatus          String?   @map("effective_status")
-  buyingType               String?   @map("buying_type")
-  specialAdCategories      Json?     @map("special_ad_categories")
-  specialAdCategory        String?   @map("special_ad_category")
-  specialAdCategoryCountry Json?     @map("special_ad_category_country")
-  dailyBudget              Decimal?  @map("daily_budget") @db.Decimal(20, 4)
-  lifetimeBudget           Decimal?  @map("lifetime_budget") @db.Decimal(20, 4)
-  budgetRemaining          Decimal?  @map("budget_remaining") @db.Decimal(20, 4)
-  spendCap                 Decimal?  @map("spend_cap") @db.Decimal(20, 4)
-  bidStrategy              String?   @map("bid_strategy")
-  pacingType               Json?     @map("pacing_type")
-  startTime                DateTime? @map("start_time")
-  stopTime                 DateTime? @map("stop_time")
-  createdTime              DateTime? @map("created_time")
-  updatedTime              DateTime? @map("updated_time")
-  sourceCampaignId         String?   @map("source_campaign_id")
-  boostedObjectId          String?   @map("boosted_object_id")
-  smartPromotionType       String?   @map("smart_promotion_type")
-  isSkadnetworkAttribution Boolean?  @map("is_skadnetwork_attribution")
-  issuesInfo               Json?     @map("issues_info")
-  recommendations          Json?     @map("recommendations")
-  rawJson                  Json?     @map("raw_json")
-  syncedAt                 DateTime  @map("synced_at")
-  createdAt                DateTime  @default(now()) @map("created_at")
-  deletedAt                DateTime? @map("deleted_at")
+model UnifiedCampaign {
+  id              String        @id @default(cuid())
+  accountId       Int           @map("platform_account_id")
+  externalId      String        @map("external_id")
+  name            String?       @map("name")
+  status          UnifiedStatus @default(ACTIVE)
+  objective       String?       @map("objective")
+  dailyBudget     Decimal?      @map("daily_budget") @db.Decimal(20, 4)
+  lifetimeBudget  Decimal?      @map("lifetime_budget") @db.Decimal(20, 4)
+  startTime       DateTime?     @map("start_time")
+  endTime         DateTime?     @map("end_time")
+  effectiveStatus String?       @map("effective_status")
+  platformData    Json?         @map("platform_data")
+  syncedAt        DateTime      @map("synced_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  deletedAt       DateTime?     @map("deleted_at")
 
-  // Relations
-  account AdAccount @relation(fields: [accountId], references: [id])
-  adsets  Adset[]
-  ads     Ad[]
+  account        PlatformAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  adGroups       UnifiedAdGroup[]
+  insights       UnifiedInsight[]
+  hourlyInsights UnifiedHourlyInsight[]
 
+  @@unique([accountId, externalId])
   @@index([accountId])
-  @@index([status, effectiveStatus])
-  @@map("campaigns")
+  @@map("unified_campaigns")
 }
 
-// ============================================================================
-// ADSETS
-// ============================================================================
+model UnifiedAdGroup {
+  id               String        @id @default(cuid())
+  campaignId       String        @map("unified_campaign_id")
+  accountId        Int           @map("platform_account_id")
+  externalId       String        @map("external_id")
+  name             String?       @map("name")
+  status           UnifiedStatus @default(ACTIVE)
+  dailyBudget      Decimal?      @map("daily_budget") @db.Decimal(20, 4)
+  optimizationGoal String?       @map("optimization_goal")
+  effectiveStatus  String?       @map("effective_status")
+  platformData     Json?         @map("platform_data")
+  syncedAt         DateTime      @map("synced_at")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  deletedAt        DateTime?     @map("deleted_at")
 
-model Adset {
-  id                          String    @id @map("id")
-  campaignId                  String    @map("campaign_id")
-  accountId                   String    @map("account_id")
-  name                        String?   @map("name")
-  status                      String    @map("status")
-  configuredStatus            String?   @map("configured_status")
-  effectiveStatus             String?   @map("effective_status")
-  dailyBudget                 Decimal?  @map("daily_budget") @db.Decimal(20, 4)
-  lifetimeBudget              Decimal?  @map("lifetime_budget") @db.Decimal(20, 4)
-  budgetRemaining             Decimal?  @map("budget_remaining") @db.Decimal(20, 4)
-  bidAmount                   Decimal?  @map("bid_amount") @db.Decimal(20, 4)
-  bidStrategy                 String?   @map("bid_strategy")
-  billingEvent                String?   @map("billing_event")
-  optimizationGoal            String?   @map("optimization_goal")
-  optimizationSubEvent        String?   @map("optimization_sub_event")
-  pacingType                  Json?     @map("pacing_type")
-  targeting                   Json      @map("targeting")
-  promotedObject              Json?     @map("promoted_object")
-  destinationType             String?   @map("destination_type")
-  attributionSpec             Json?     @map("attribution_spec")
-  startTime                   DateTime? @map("start_time")
-  endTime                     DateTime? @map("end_time")
-  createdTime                 DateTime? @map("created_time")
-  updatedTime                 DateTime? @map("updated_time")
-  learningStageInfo           Json?     @map("learning_stage_info")
-  isDynamicCreative           Boolean?  @map("is_dynamic_creative")
-  useNewAppClick              Boolean?  @map("use_new_app_click")
-  multiOptimizationGoalWeight String?   @map("multi_optimization_goal_weight")
-  rfPredictionId              String?   @map("rf_prediction_id")
-  recurringBudgetSemantics    String?   @map("recurring_budget_semantics")
-  reviewFeedback              String?   @map("review_feedback")
-  sourceAdsetId               String?   @map("source_adset_id")
-  issuesInfo                  Json?     @map("issues_info")
-  recommendations             Json?     @map("recommendations")
-  rawJson                     Json?     @map("raw_json")
-  syncedAt                    DateTime  @map("synced_at")
-  createdAt                   DateTime  @default(now()) @map("created_at")
-  deletedAt                   DateTime? @map("deleted_at")
+  campaign       UnifiedCampaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  account        PlatformAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  ads            UnifiedAd[]
+  insights       UnifiedInsight[]
+  hourlyInsights UnifiedHourlyInsight[]
 
-  // Relations
-  account  AdAccount @relation(fields: [accountId], references: [id])
-  campaign Campaign  @relation(fields: [campaignId], references: [id])
-  ads      Ad[]
-
+  @@unique([accountId, externalId])
   @@index([campaignId])
-  @@index([accountId])
-  @@index([status, effectiveStatus])
-  @@map("adsets")
+  @@map("unified_ad_groups")
+}
+
+model UnifiedAd {
+  id              String        @id @default(cuid())
+  adGroupId       String        @map("unified_ad_group_id")
+  accountId       Int           @map("platform_account_id")
+  externalId      String        @map("external_id")
+  name            String?       @map("name")
+  status          UnifiedStatus @default(ACTIVE)
+  creativeData    Json?         @map("creative_data")
+  thumbnailUrl    String?       @map("thumbnail_url")
+  effectiveStatus String?       @map("effective_status")
+  platformData    Json?         @map("platform_data")
+  syncedAt        DateTime      @map("synced_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  deletedAt       DateTime?     @map("deleted_at")
+
+  adGroup        UnifiedAdGroup         @relation(fields: [adGroupId], references: [id], onDelete: Cascade)
+  account        PlatformAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  insights       UnifiedInsight[]
+  hourlyInsights UnifiedHourlyInsight[]
+
+  @@unique([accountId, externalId])
+  @@index([adGroupId])
+  @@map("unified_ads")
 }
 
 // ============================================================================
-// ADS
+// UNIFIED METRICS (LAYER 4)
 // ============================================================================
 
-model Ad {
-  id                   String    @id @map("id")
-  adsetId              String    @map("adset_id")
-  campaignId           String    @map("campaign_id")
-  accountId            String    @map("account_id")
-  creativeId           String?   @map("creative_id")
-  name                 String?   @map("name")
-  status               String    @map("status")
-  configuredStatus     String?   @map("configured_status")
-  effectiveStatus      String?   @map("effective_status")
-  creative             Json?     @map("creative")
-  trackingSpecs        Json?     @map("tracking_specs")
-  conversionSpecs      Json?     @map("conversion_specs")
-  adReviewFeedback     Json?     @map("ad_review_feedback")
-  previewShareableLink String?   @map("preview_shareable_link")
-  sourceAdId           String?   @map("source_ad_id")
-  createdTime          DateTime? @map("created_time")
-  updatedTime          DateTime? @map("updated_time")
-  demolinkHash         String?   @map("demolink_hash")
-  engagementAudience   Boolean?  @map("engagement_audience")
-  issuesInfo           Json?     @map("issues_info")
-  recommendations      Json?     @map("recommendations")
-  rawJson              Json?     @map("raw_json")
-  syncedAt             DateTime  @map("synced_at")
-  createdAt            DateTime  @default(now()) @map("created_at")
-  deletedAt            DateTime? @map("deleted_at")
-
-  // Relations
-  account           AdAccount                  @relation(fields: [accountId], references: [id])
-  campaign          Campaign                   @relation(fields: [campaignId], references: [id])
-  adset             Adset                      @relation(fields: [adsetId], references: [id])
-  creativeRef       Creative?                  @relation(fields: [creativeId], references: [id])
-  insightsDaily     AdInsightsDaily[]
-  insightsDevice    AdInsightsDeviceDaily[]
-  insightsPlacement AdInsightsPlacementDaily[]
-  insightsAgeGender AdInsightsAgeGenderDaily[]
-  insightsRegion    AdInsightsRegionDaily[]
-  insightsHourly    AdInsightsHourly[]
-
-  @@index([adsetId])
-  @@index([campaignId])
-  @@index([accountId])
-  @@index([creativeId])
-  @@index([status, effectiveStatus])
-  @@map("ads")
-}
-
-// ============================================================================
-// CREATIVES
-// ============================================================================
-
-model Creative {
-  id                        String    @id @map("id")
-  accountId                 String    @map("account_id")
-  name                      String?   @map("name")
-  title                     String?   @map("title")
-  body                      String?   @map("body")
-  description               String?   @map("description")
-  linkUrl                   String?   @map("link_url")
-  linkDestinationDisplayUrl String?   @map("link_destination_display_url")
-  callToActionType          String?   @map("call_to_action_type")
-  imageHash                 String?   @map("image_hash")
-  imageUrl                  String?   @map("image_url")
-  videoId                   String?   @map("video_id")
-  thumbnailUrl              String?   @map("thumbnail_url")
-  objectStorySpec           Json?     @map("object_story_spec")
-  objectStoryId             String?   @map("object_story_id")
-  effectiveObjectStoryId    String?   @map("effective_object_story_id")
-  objectId                  String?   @map("object_id")
-  objectType                String?   @map("object_type")
-  instagramActorId          String?   @map("instagram_actor_id")
-  instagramPermalinkUrl     String?   @map("instagram_permalink_url")
-  productSetId              String?   @map("product_set_id")
-  assetFeedSpec             Json?     @map("asset_feed_spec")
-  degreesOfFreedomSpec      Json?     @map("degrees_of_freedom_spec")
-  contextualMultiAds        Json?     @map("contextual_multi_ads")
-  urlTags                   String?   @map("url_tags")
-  templateUrl               String?   @map("template_url")
-  templateUrlSpec           Json?     @map("template_url_spec")
-  usePageActorOverride      Boolean?  @map("use_page_actor_override")
-  authorizationCategory     String?   @map("authorization_category")
-  runStatus                 String?   @map("run_status")
-  status                    String?   @map("status")
-  createdTime               DateTime? @map("created_time")
-  rawJson                   Json?     @map("raw_json")
-  syncedAt                  DateTime  @map("synced_at")
-  createdAt                 DateTime  @default(now()) @map("created_at")
-  deletedAt                 DateTime? @map("deleted_at")
-
-  // Relations
-  account  AdAccount @relation(fields: [accountId], references: [id])
-  imageRef AdImage?  @relation(fields: [imageHash], references: [hash])
-  videoRef AdVideo?  @relation(fields: [videoId], references: [id])
-  ads      Ad[]
-
-  @@index([accountId])
-  @@index([imageHash])
-  @@index([videoId])
-  @@map("creatives")
-}
-
-// ============================================================================
-// AD IMAGES
-// ============================================================================
-
-model AdImage {
-  hash           String    @id @map("hash")
-  accountId      String    @map("account_id")
-  id             String?   @map("id")
-  name           String?   @map("name")
-  url            String?   @map("url")
-  url128         String?   @map("url_128")
-  permalinkUrl   String?   @map("permalink_url")
-  originalWidth  Int?      @map("original_width")
-  originalHeight Int?      @map("original_height")
-  width          Int?      @map("width")
-  height         Int?      @map("height")
-  status         String?   @map("status")
-  createdTime    DateTime? @map("created_time")
-  updatedTime    DateTime? @map("updated_time")
-  rawJson        Json?     @map("raw_json")
-  syncedAt       DateTime  @map("synced_at")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  deletedAt      DateTime? @map("deleted_at")
-
-  // Relations
-  account   AdAccount  @relation(fields: [accountId], references: [id])
-  creatives Creative[]
-
-  @@index([accountId])
-  @@map("ad_images")
-}
-
-// ============================================================================
-// AD VIDEOS
-// ============================================================================
-
-model AdVideo {
-  id                     String    @id @map("id")
-  accountId              String    @map("account_id")
-  title                  String?   @map("title")
-  description            String?   @map("description")
-  source                 String?   @map("source")
-  picture                String?   @map("picture")
-  embedHtml              String?   @map("embed_html")
-  length                 Float?    @map("length")
-  format                 Json?     @map("format")
-  status                 Json?     @map("status")
-  adBreaks               Json?     @map("ad_breaks")
-  contentCategory        String?   @map("content_category")
-  universalVideoId       String?   @map("universal_video_id")
-  isCrosspostingEligible Boolean?  @map("is_crossposting_eligible")
-  isInstagramEligible    Boolean?  @map("is_instagram_eligible")
-  createdTime            DateTime? @map("created_time")
-  updatedTime            DateTime? @map("updated_time")
-  rawJson                Json?     @map("raw_json")
-  syncedAt               DateTime  @map("synced_at")
-  createdAt              DateTime  @default(now()) @map("created_at")
-  deletedAt              DateTime? @map("deleted_at")
-
-  // Relations
-  account   AdAccount  @relation(fields: [accountId], references: [id])
-  creatives Creative[]
-
-  @@index([accountId])
-  @@map("ad_videos")
-}
-
-// ============================================================================
-// AD INSIGHTS - DAILY (Optimized - Essential metrics only)
-// ============================================================================
-
-model AdInsightsDaily {
-  id         Int      @id @default(autoincrement())
+model UnifiedInsight {
+  id         String   @id @default(cuid())
+  accountId  Int      @map("platform_account_id")
+  campaignId String?  @map("unified_campaign_id")
+  adGroupId  String?  @map("unified_ad_group_id")
+  adId       String?  @map("unified_ad_id")
   date       DateTime @map("date") @db.Date
-  adId       String   @map("ad_id")
-  adsetId    String?  @map("adset_id")
-  campaignId String?  @map("campaign_id")
-  accountId  String   @map("account_id")
 
-  // Core Metrics
-  impressions BigInt?  @map("impressions")
-  reach       BigInt?  @map("reach")
-  clicks      BigInt?  @map("clicks")
-  ctr         Decimal? @map("ctr") @db.Decimal(10, 4)
+  // Core Metrics (Normalized)
   spend       Decimal? @map("spend") @db.Decimal(20, 4)
-  cpc         Decimal? @map("cpc") @db.Decimal(20, 4)
-  cpm         Decimal? @map("cpm") @db.Decimal(20, 4)
-
-  // Messaging & Results
-  messagingStarted BigInt?  @map("messaging_started")
-  costPerMessaging Decimal? @map("cost_per_messaging") @db.Decimal(20, 4)
-  results          BigInt?  @map("results")
-  costPerResult    Decimal? @map("cost_per_result") @db.Decimal(20, 4)
-
-  // Metadata
-  syncedAt  DateTime @map("synced_at")
-  createdAt DateTime @default(now()) @map("created_at")
-
-  // Relations
-  account AdAccount @relation(fields: [accountId], references: [id])
-  ad      Ad        @relation(fields: [adId], references: [id])
-
-  @@unique([date, adId])
-  @@index([adId, date])
-  @@index([date])
-  @@index([accountId, date])
-  @@map("ad_insights_daily")
-}
-
-// ============================================================================
-// AD INSIGHTS - DEVICE BREAKDOWN
-// ============================================================================
-
-model AdInsightsDeviceDaily {
-  id                          Int      @id @default(autoincrement())
-  date                        DateTime @map("date") @db.Date
-  adId                        String   @map("ad_id")
-  accountId                   String   @map("account_id")
-  devicePlatform              String   @map("device_platform") // mobile, desktop, tablet
-  impressions                 BigInt?  @map("impressions")
-  reach                       BigInt?  @map("reach")
-  clicks                      BigInt?  @map("clicks")
-  uniqueClicks                BigInt?  @map("unique_clicks")
-  spend                       Decimal? @map("spend") @db.Decimal(20, 4)
-  actions                     Json?    @map("actions")
-  actionValues                Json?    @map("action_values")
-  conversions                 Json?    @map("conversions")
-  costPerActionType           Json?    @map("cost_per_action_type")
-  videoThruplayWatchedActions Json?    @map("video_thruplay_watched_actions")
-  syncedAt                    DateTime @map("synced_at")
-  createdAt                   DateTime @default(now()) @map("created_at")
-
-  // Relations
-  account AdAccount @relation(fields: [accountId], references: [id])
-  ad      Ad        @relation(fields: [adId], references: [id])
-
-  @@unique([date, adId, devicePlatform])
-  @@index([adId, date])
-  @@map("ad_insights_device_daily")
-}
-
-// ============================================================================
-// AD INSIGHTS - PLACEMENT BREAKDOWN
-// ============================================================================
-
-model AdInsightsPlacementDaily {
-  id                          Int      @id @default(autoincrement())
-  date                        DateTime @map("date") @db.Date
-  adId                        String   @map("ad_id")
-  accountId                   String   @map("account_id")
-  publisherPlatform           String   @map("publisher_platform") // facebook, instagram, messenger, audience_network
-  platformPosition            String   @map("platform_position") // feed, story, reels, right_column, etc.
-  impressionDevice            String?  @map("impression_device")
-  impressions                 BigInt?  @map("impressions")
-  reach                       BigInt?  @map("reach")
-  clicks                      BigInt?  @map("clicks")
-  uniqueClicks                BigInt?  @map("unique_clicks")
-  spend                       Decimal? @map("spend") @db.Decimal(20, 4)
-  actions                     Json?    @map("actions")
-  actionValues                Json?    @map("action_values")
-  conversions                 Json?    @map("conversions")
-  costPerActionType           Json?    @map("cost_per_action_type")
-  videoThruplayWatchedActions Json?    @map("video_thruplay_watched_actions")
-  syncedAt                    DateTime @map("synced_at")
-  createdAt                   DateTime @default(now()) @map("created_at")
-
-  // Relations
-  account AdAccount @relation(fields: [accountId], references: [id])
-  ad      Ad        @relation(fields: [adId], references: [id])
-
-  @@unique([date, adId, publisherPlatform, platformPosition])
-  @@index([adId, date])
-  @@map("ad_insights_placement_daily")
-}
-
-// ============================================================================
-// AD INSIGHTS - AGE & GENDER BREAKDOWN
-// ============================================================================
-
-model AdInsightsAgeGenderDaily {
-  id                Int      @id @default(autoincrement())
-  date              DateTime @map("date") @db.Date
-  adId              String   @map("ad_id")
-  accountId         String   @map("account_id")
-  age               String   @map("age") // 13-17, 18-24, 25-34, 35-44, 45-54, 55-64, 65+
-  gender            String   @map("gender") // male, female, unknown
-  impressions       BigInt?  @map("impressions")
-  reach             BigInt?  @map("reach")
-  clicks            BigInt?  @map("clicks")
-  uniqueClicks      BigInt?  @map("unique_clicks")
-  spend             Decimal? @map("spend") @db.Decimal(20, 4)
-  actions           Json?    @map("actions")
-  actionValues      Json?    @map("action_values")
-  conversions       Json?    @map("conversions")
-  costPerActionType Json?    @map("cost_per_action_type")
-  syncedAt          DateTime @map("synced_at")
-  createdAt         DateTime @default(now()) @map("created_at")
-
-  // Relations
-  account AdAccount @relation(fields: [accountId], references: [id])
-  ad      Ad        @relation(fields: [adId], references: [id])
-
-  @@unique([date, adId, age, gender])
-  @@index([adId, date])
-  @@map("ad_insights_age_gender_daily")
-}
-
-// ============================================================================
-// AD INSIGHTS - REGION BREAKDOWN
-// ============================================================================
-
-model AdInsightsRegionDaily {
-  id                Int      @id @default(autoincrement())
-  date              DateTime @map("date") @db.Date
-  adId              String   @map("ad_id")
-  accountId         String   @map("account_id")
-  country           String   @map("country") // Country code (VN, US)
-  region            String?  @map("region") // State/Province
-  impressions       BigInt?  @map("impressions")
-  reach             BigInt?  @map("reach")
-  clicks            BigInt?  @map("clicks")
-  uniqueClicks      BigInt?  @map("unique_clicks")
-  spend             Decimal? @map("spend") @db.Decimal(20, 4)
-  actions           Json?    @map("actions")
-  actionValues      Json?    @map("action_values")
-  conversions       Json?    @map("conversions")
-  costPerActionType Json?    @map("cost_per_action_type")
-  syncedAt          DateTime @map("synced_at")
-  createdAt         DateTime @default(now()) @map("created_at")
-
-  // Relations
-  account AdAccount @relation(fields: [accountId], references: [id])
-  ad      Ad        @relation(fields: [adId], references: [id])
-
-  @@unique([date, adId, country, region])
-  @@index([adId, date])
-  @@map("ad_insights_region_daily")
-}
-
-// ============================================================================
-// AD INSIGHTS - HOURLY BREAKDOWN (Optimized - Essential metrics only)
-// ============================================================================
-
-model AdInsightsHourly {
-  id                                        Int      @id @default(autoincrement())
-  date                                      DateTime @map("date") @db.Date
-  adId                                      String   @map("ad_id")
-  adsetId                                   String?  @map("adset_id")
-  campaignId                                String?  @map("campaign_id")
-  accountId                                 String   @map("account_id")
-  hourlyStatsAggregatedByAdvertiserTimeZone String   @map("hourly_stats_aggregated_by_advertiser_time_zone")
-
-  // Core Metrics
   impressions BigInt?  @map("impressions")
-  reach       BigInt?  @map("reach")
   clicks      BigInt?  @map("clicks")
-  ctr         Decimal? @map("ctr") @db.Decimal(10, 4)
-  spend       Decimal? @map("spend") @db.Decimal(20, 4)
-  cpc         Decimal? @map("cpc") @db.Decimal(20, 4)
-  cpm         Decimal? @map("cpm") @db.Decimal(20, 4)
+  reach       BigInt?  @map("reach")
+  conversions BigInt?  @map("conversions")
+  results     BigInt?  @map("results")
 
-  // Messaging & Results
-  messagingStarted BigInt?  @map("messaging_started")
-  costPerMessaging Decimal? @map("cost_per_messaging") @db.Decimal(20, 4)
-  results          BigInt?  @map("results")
-  costPerResult    Decimal? @map("cost_per_result") @db.Decimal(20, 4)
+  // Optional breakdowns or platform specific metrics
+  platformMetrics Json? @map("platform_metrics")
 
-  // Metadata
-  syncedAt  DateTime @map("synced_at")
-  createdAt DateTime @default(now()) @map("created_at")
+  syncedAt  DateTime  @map("synced_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
 
-  // Relations
-  account AdAccount @relation(fields: [accountId], references: [id])
-  ad      Ad        @relation(fields: [adId], references: [id])
+  account  PlatformAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  campaign UnifiedCampaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  adGroup  UnifiedAdGroup?  @relation(fields: [adGroupId], references: [id], onDelete: Cascade)
+  ad       UnifiedAd?       @relation(fields: [adId], references: [id], onDelete: Cascade)
 
-  @@unique([date, adId, hourlyStatsAggregatedByAdvertiserTimeZone])
-  @@index([adId, date])
+  @@unique([accountId, campaignId, adGroupId, adId, date])
   @@index([accountId, date])
-  @@map("ad_insights_hourly")
+  @@map("unified_insights")
+}
+
+model UnifiedHourlyInsight {
+  id         String   @id @default(cuid())
+  accountId  Int      @map("platform_account_id")
+  campaignId String?  @map("unified_campaign_id")
+  adGroupId  String?  @map("unified_ad_group_id")
+  adId       String?  @map("unified_ad_id")
+  date       DateTime @map("date") @db.Date
+  hour       Int      @map("hour") // 0-23
+
+  // Core Metrics (Normalized)
+  spend       Decimal? @map("spend") @db.Decimal(20, 4)
+  impressions BigInt?  @map("impressions")
+  clicks      BigInt?  @map("clicks")
+  results     BigInt?  @map("results")
+
+  platformMetrics Json? @map("platform_metrics")
+
+  syncedAt  DateTime  @map("synced_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  account  PlatformAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  campaign UnifiedCampaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  adGroup  UnifiedAdGroup?  @relation(fields: [adGroupId], references: [id], onDelete: Cascade)
+  ad       UnifiedAd?       @relation(fields: [adId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, campaignId, adGroupId, adId, date, hour])
+  @@index([accountId, date, hour])
+  @@map("unified_hourly_insights")
 }
 
 // ============================================================================
-// BRANCHES - Facility/Branch management for ad accounts
+// SYSTEMS & TOOLS
 // ============================================================================
 
 model Branch {
-  id        Int      @id @default(autoincrement())
-  userId    Int      @map("user_id")
-  name      String   @map("name")
-  code      String?  @map("code") // e.g., "SG", "HN"
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  name      String    @map("name")
+  code      String?   @map("code")
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
 
-  // Relations
-  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  adAccounts AdAccount[]
-  dailyStats BranchDailyStats[]
+  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accounts PlatformAccount[]
+  stats    BranchDailyStats[]
 
   @@unique([userId, name])
-  @@index([userId])
   @@map("branches")
 }
 
@@ -823,57 +336,91 @@ model BranchDailyStats {
   id               Int      @id @default(autoincrement())
   branchId         Int      @map("branch_id")
   date             DateTime @map("date") @db.Date
+  totalSpend       Decimal  @default(0) @db.Decimal(20, 4)
+  totalImpressions BigInt   @default(0)
+  totalResults     BigInt   @default(0)
+  createdAt        DateTime @default(now())
 
-  // Aggregated metrics
-  totalSpend       Decimal  @default(0) @map("total_spend") @db.Decimal(20, 4)
-  totalImpressions BigInt   @default(0) @map("total_impressions")
-  totalClicks      BigInt   @default(0) @map("total_clicks")
-  totalReach       BigInt   @default(0) @map("total_reach")
-  totalResults     BigInt   @default(0) @map("total_results")
-  totalMessaging   BigInt   @default(0) @map("total_messaging")
-
-  adAccountCount   Int      @default(0) @map("ad_account_count")
-  adsCount         Int      @default(0) @map("ads_count")
-
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
-
-  // Relations
   branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
   @@unique([branchId, date])
-  @@index([branchId, date])
   @@map("branch_daily_stats")
 }
 
-// ============================================================================
-// CRAWL JOBS - Track crawling progress
-// ============================================================================
+model SyncJob {
+  id           Int           @id @default(autoincrement())
+  accountId    Int           @map("platform_account_id")
+  jobType      String        @map("job_type") // CAMPAIGNS, INSIGHTS...
+  status       SyncJobStatus @default(PENDING)
+  errorMessage String?       @map("error_message")
+  startedAt    DateTime?     @map("started_at")
+  completedAt  DateTime?     @map("completed_at")
+  createdAt    DateTime      @default(now())
+  deletedAt    DateTime?     @map("deleted_at")
 
-model CrawlJob {
-  id               Int            @id @default(autoincrement())
-  accountId        String         @map("account_id")
-  jobType          CrawlJobType   @map("job_type")
-  status           CrawlJobStatus @default(PENDING) @map("status")
-  dateStart        DateTime?      @map("date_start") @db.Date
-  dateEnd          DateTime?      @map("date_end") @db.Date
-  breakdown        String?        @map("breakdown")
-  level            String?        @map("level")
-  totalRecords     Int?           @map("total_records")
-  processedRecords Int?           @map("processed_records")
-  errorMessage     String?        @map("error_message")
-  errorCode        String?        @map("error_code")
-  retryCount       Int            @default(0) @map("retry_count")
-  startedAt        DateTime?      @map("started_at")
-  completedAt      DateTime?      @map("completed_at")
-  createdAt        DateTime       @default(now()) @map("created_at")
-  deletedAt        DateTime?      @map("deleted_at")
+  account PlatformAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
-  // Relations
-  account AdAccount @relation(fields: [accountId], references: [id])
-
-  @@index([status, createdAt])
-  @@index([accountId, jobType])
-  @@map("crawl_jobs")
+  @@map("sync_jobs")
 }
 
+model CronSetting {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  cronType     String   @map("cron_type") // 'entities', 'insights_daily', 'insights_hour'
+  allowedHours Int[]    @map("allowed_hours")
+  enabled      Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, cronType])
+  @@map("cron_settings")
+}
+
+model TelegramBot {
+  id          Int       @id @default(autoincrement())
+  userId      Int       @map("user_id")
+  adAccountId Int?      @map("platform_account_id") // Optional link to specific account
+  botToken    String    @map("bot_token")
+  botName     String?   @map("bot_name")
+  botUsername String?   @map("bot_username")
+  isActive    Boolean   @default(true) @map("is_active")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at")
+
+  user                 User                            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  adAccount            PlatformAccount?                @relation(fields: [adAccountId], references: [id], onDelete: SetNull)
+  notificationSettings TelegramBotNotificationSetting?
+  subscribers          TelegramSubscriber[]
+
+  @@map("telegram_bots")
+}
+
+model TelegramBotNotificationSetting {
+  id           Int      @id @default(autoincrement())
+  botId        Int      @unique @map("telegram_bot_id")
+  allowedHours Int[]    @map("allowed_hours")
+  enabled      Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  bot TelegramBot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@map("telegram_bot_notification_settings")
+}
+
+model TelegramSubscriber {
+  id        Int      @id @default(autoincrement())
+  botId     Int      @map("telegram_bot_id")
+  chatId    String   @map("chat_id")
+  name      String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  bot TelegramBot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@unique([botId, chatId])
+  @@map("telegram_subscribers")
+}

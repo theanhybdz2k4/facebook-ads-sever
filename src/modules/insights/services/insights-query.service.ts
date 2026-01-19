@@ -1,315 +1,185 @@
 import { Injectable, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '@n-database/prisma/prisma.service';
-import { getVietnamDateString } from '@n-utils';
 
 @Injectable()
 export class InsightsQueryService {
-    constructor(private readonly prisma: PrismaService) { }
-    private parseVietnamDateToUTC(dateStr: string): Date {
-        return new Date(`${dateStr}T00:00:00.000Z`);
+  constructor(private readonly prisma: PrismaService) {}
+
+  private parseDate(dateStr: string): Date {
+    return new Date(`${dateStr}T00:00:00.000Z`);
+  }
+
+  async getDailyInsights(userId: number, filters?: {
+    accountId?: number;
+    dateStart?: string;
+    dateEnd?: string;
+    branchId?: number;
+  }) {
+    const where: any = {};
+
+    if (filters?.dateStart && filters?.dateEnd) {
+      where.date = {
+        gte: this.parseDate(filters.dateStart),
+        lte: this.parseDate(filters.dateEnd),
+      };
     }
 
-    async getDailyInsights(userId: number, filters?: {
-        accountId?: string;
-        dateStart?: string;
-        dateEnd?: string;
-        branchId?: string;
-    }) {
-        let dateFilter = {};
-        if (filters?.dateStart && filters?.dateEnd) {
-            const startUTC = this.parseVietnamDateToUTC(filters.dateStart);
-            const endUTC = this.parseVietnamDateToUTC(filters.dateEnd);
-            const endUTCInclusive = new Date(endUTC.getTime() + 24 * 60 * 60 * 1000 - 1);
-            dateFilter = { date: { gte: startUTC, lte: endUTCInclusive } };
-        }
-
-        const accountFilter: any = {
-            fbAccount: { userId },
-        };
-
-        if (filters?.branchId && filters.branchId !== 'all') {
-            const parsedBranchId = Number(filters.branchId);
-            if (!Number.isNaN(parsedBranchId)) {
-                accountFilter.branchId = parsedBranchId;
-            }
-        }
-
-        return this.prisma.adInsightsDaily.findMany({
-            where: {
-                ...(filters?.accountId && { accountId: filters.accountId }),
-                ...dateFilter,
-                account: accountFilter,
-            },
-            include: {
-                ad: {
-                    select: {
-                        id: true,
-                        name: true,
-                    },
-                },
-                account: {
-                    select: {
-                        id: true,
-                        name: true,
-                    },
-                },
-            },
-            orderBy: { date: 'desc' },
-        });
+    if (filters?.accountId) {
+      where.accountId = filters.accountId;
     }
 
-    /**
-     * Get ad analytics with insights and breakdowns
-     */
-    async getAdAnalytics(adId: string, userId: number, dateStart?: string, dateEnd?: string) {
-        // Verify access
-        const ad = await this.prisma.ad.findFirst({
-            where: {
-                id: adId,
-                account: { fbAccount: { userId } },
-            },
-        });
-
-        if (!ad) {
-            throw new ForbiddenException('Ad not found or access denied');
-        }
-
-        // Default to last 30 days (using Vietnam timezone UTC+7)
-        // Parse dates to UTC to match DB storage format
-        let endDate: Date;
-        let startDate: Date;
-
-        if (dateEnd) {
-            // Parse Vietnam date to UTC for DB query
-            endDate = this.parseVietnamDateToUTC(dateEnd);
-        } else {
-            // Use today in Vietnam timezone
-            const todayVN = getVietnamDateString();
-            endDate = this.parseVietnamDateToUTC(todayVN);
-        }
-
-        if (dateStart) {
-            // Parse Vietnam date to UTC for DB query
-            startDate = this.parseVietnamDateToUTC(dateStart);
-        } else {
-            // Default to 30 days ago in Vietnam timezone
-            const todayVN = getVietnamDateString();
-            const todayDate = this.parseVietnamDateToUTC(todayVN);
-            startDate = new Date(todayDate.getTime() - 30 * 24 * 60 * 60 * 1000);
-            // Normalize to UTC midnight
-            const startDateStr = startDate.toISOString().split('T')[0];
-            startDate = new Date(`${startDateStr}T00:00:00.000Z`);
-        }
-
-        // Daily insights
-        const dailyInsights = await this.prisma.adInsightsDaily.findMany({
-            where: {
-                adId,
-                date: { gte: startDate, lte: endDate },
-            },
-            orderBy: { date: 'asc' },
-        });
-
-        // Calculate summary
-        const summary = {
-            totalSpend: 0,
-            totalImpressions: 0,
-            totalReach: 0,
-            totalClicks: 0,
-            totalResults: 0,
-            totalMessages: 0,
-            avgCtr: 0,
-            avgCpc: 0,
-            avgCpm: 0,
-            avgCpr: 0,
-            avgCostPerMessage: 0,
-        };
-
-        dailyInsights.forEach((day) => {
-            summary.totalSpend += Number(day.spend) || 0;
-            summary.totalImpressions += Number(day.impressions) || 0;
-            summary.totalReach += Number(day.reach) || 0;
-            summary.totalClicks += Number(day.clicks) || 0;
-            summary.totalResults += Number(day.results) || 0;
-            summary.totalMessages += Number(day.messagingStarted) || 0;
-        });
-
-        if (summary.totalImpressions > 0) {
-            summary.avgCtr = (summary.totalClicks / summary.totalImpressions) * 100;
-            summary.avgCpm = (summary.totalSpend / summary.totalImpressions) * 1000;
-        }
-        if (summary.totalClicks > 0) {
-            summary.avgCpc = summary.totalSpend / summary.totalClicks;
-        }
-        if (summary.totalResults > 0) {
-            summary.avgCpr = summary.totalSpend / summary.totalResults;
-        }
-        if (summary.totalMessages > 0) {
-            summary.avgCostPerMessage = summary.totalSpend / summary.totalMessages;
-        }
-
-        // Calculate growth rates
-        const growth: Record<string, number | null> = {
-            spend: null,
-            impressions: null,
-            reach: null,
-            clicks: null,
-            ctr: null,
-            cpc: null,
-            cpm: null,
-            results: null,
-            cpr: null,
-            messages: null,
-            costPerMessage: null,
-        };
-
-        if (dailyInsights.length >= 2) {
-            const today = dailyInsights[dailyInsights.length - 1];
-            const yesterday = dailyInsights[dailyInsights.length - 2];
-
-            const calcGrowth = (todayVal: number, yesterdayVal: number): number | null => {
-                if (yesterdayVal === 0) return todayVal > 0 ? 100 : null;
-                return ((todayVal - yesterdayVal) / yesterdayVal) * 100;
-            };
-
-            growth.spend = calcGrowth(Number(today.spend) || 0, Number(yesterday.spend) || 0);
-            growth.impressions = calcGrowth(Number(today.impressions) || 0, Number(yesterday.impressions) || 0);
-            growth.reach = calcGrowth(Number(today.reach) || 0, Number(yesterday.reach) || 0);
-            growth.clicks = calcGrowth(Number(today.clicks) || 0, Number(yesterday.clicks) || 0);
-            growth.ctr = calcGrowth(Number(today.ctr) || 0, Number(yesterday.ctr) || 0);
-            growth.cpc = calcGrowth(Number(today.cpc) || 0, Number(yesterday.cpc) || 0);
-            growth.cpm = calcGrowth(Number(today.cpm) || 0, Number(yesterday.cpm) || 0);
-            growth.results = calcGrowth(Number(today.results) || 0, Number(yesterday.results) || 0);
-            growth.cpr = calcGrowth(Number(today.costPerResult) || 0, Number(yesterday.costPerResult) || 0);
-            growth.messages = calcGrowth(Number(today.messagingStarted) || 0, Number(yesterday.messagingStarted) || 0);
-            growth.costPerMessage = calcGrowth(Number(today.costPerMessaging) || 0, Number(yesterday.costPerMessaging) || 0);
-        }
-
-        // Breakdowns
-        const deviceBreakdown = await this.prisma.adInsightsDeviceDaily.groupBy({
-            by: ['devicePlatform'],
-            where: { adId, date: { gte: startDate, lte: endDate } },
-            _sum: {
-                spend: true,
-                impressions: true,
-                clicks: true,
-            },
-        });
-
-        const placementBreakdown = await this.prisma.adInsightsPlacementDaily.groupBy({
-            by: ['publisherPlatform', 'platformPosition'],
-            where: { adId, date: { gte: startDate, lte: endDate } },
-            _sum: {
-                spend: true,
-                impressions: true,
-                clicks: true,
-            },
-        });
-
-        const ageGenderBreakdown = await this.prisma.adInsightsAgeGenderDaily.groupBy({
-            by: ['age', 'gender'],
-            where: { adId, date: { gte: startDate, lte: endDate } },
-            _sum: {
-                spend: true,
-                impressions: true,
-                clicks: true,
-            },
-        });
-
-        return {
-            summary: { ...summary, growth },
-            dailyInsights: dailyInsights.map((d) => ({
-                date: d.date,
-                spend: Number(d.spend) || 0,
-                impressions: Number(d.impressions) || 0,
-                reach: Number(d.reach) || 0,
-                clicks: Number(d.clicks) || 0,
-                ctr: Number(d.ctr) || 0,
-                cpc: Number(d.cpc) || 0,
-                cpm: Number(d.cpm) || 0,
-                results: Number(d.results) || 0,
-                costPerResult: Number(d.costPerResult) || 0,
-                messagingStarted: Number(d.messagingStarted) || 0,
-                costPerMessaging: Number(d.costPerMessaging) || 0,
-            })),
-            deviceBreakdown: deviceBreakdown.map((d) => ({
-                device: d.devicePlatform,
-                spend: Number(d._sum.spend) || 0,
-                impressions: Number(d._sum.impressions) || 0,
-                clicks: Number(d._sum.clicks) || 0,
-            })),
-            placementBreakdown: placementBreakdown.map((p) => ({
-                platform: p.publisherPlatform,
-                position: p.platformPosition,
-                spend: Number(p._sum.spend) || 0,
-                impressions: Number(p._sum.impressions) || 0,
-                clicks: Number(p._sum.clicks) || 0,
-            })),
-            ageGenderBreakdown: ageGenderBreakdown.map((a) => ({
-                age: a.age,
-                gender: a.gender,
-                spend: Number(a._sum.spend) || 0,
-                impressions: Number(a._sum.impressions) || 0,
-                clicks: Number(a._sum.clicks) || 0,
-            })),
-        };
+    if (filters?.branchId) {
+      where.account = { branchId: filters.branchId };
     }
 
-    /**
-     * Get hourly insights for an ad
-     */
-    async getHourlyInsights(adId: string, userId: number, date?: string) {
-        // Verify access
-        const ad = await this.prisma.ad.findFirst({
-            where: {
-                id: adId,
-                account: { fbAccount: { userId } },
-            },
-        });
+    // Verify user access via branch
+    where.account = {
+      ...where.account,
+      branch: { userId },
+    };
 
-        if (!ad) {
-            throw new ForbiddenException('Ad not found or access denied');
-        }
+    return this.prisma.unifiedInsight.findMany({
+      where,
+      include: {
+        account: { select: { id: true, name: true, platform: { select: { name: true } } } },
+        campaign: { select: { name: true } },
+      },
+      orderBy: { date: 'desc' },
+    });
+  }
 
-        let targetDate: Date;
-        if (date) {
-            // Parse Vietnam date to UTC for DB query
-            targetDate = this.parseVietnamDateToUTC(date);
-        } else {
-            // Use today in Vietnam timezone
-            const todayVN = getVietnamDateString();
-            targetDate = this.parseVietnamDateToUTC(todayVN);
-        }
+  async getBranchAggregatedStats(userId: number, dateStart: string, dateEnd: string) {
+    const start = this.parseDate(dateStart);
+    const end = this.parseDate(dateEnd);
 
-        const hourlyInsights = await this.prisma.adInsightsHourly.findMany({
-            where: {
-                adId,
-                date: targetDate,
-            },
-            orderBy: { hourlyStatsAggregatedByAdvertiserTimeZone: 'asc' },
-        });
+    const stats = await this.prisma.branchDailyStats.findMany({
+      where: {
+        branch: { userId },
+        date: { gte: start, lte: end },
+      },
+      include: { branch: true },
+      orderBy: { date: 'asc' },
+    });
 
-        return hourlyInsights.map((h) => {
-            const hourString = h.hourlyStatsAggregatedByAdvertiserTimeZone;
-            const hour = parseInt(hourString.split(':')[0], 10);
+    return stats.map(s => ({
+      ...s,
+      totalSpend: Number(s.totalSpend),
+      totalImpressions: Number(s.totalImpressions),
+      totalResults: Number(s.totalResults),
+    }));
+  }
+  async getAdAnalytics(userId: number, adId: string, dateStart?: string, dateEnd?: string) {
+    // Verify user access
+    const ad = await this.prisma.unifiedAd.findFirst({
+      where: {
+        id: adId,
+        account: { branch: { userId } }
+      }
+    });
+    if (!ad) throw new ForbiddenException('Access denied or ad not found');
 
-            return {
-                hour,
-                hourLabel: hourString,
-                date: h.date,
-                spend: Number(h.spend) || 0,
-                impressions: Number(h.impressions) || 0,
-                reach: Number(h.reach) || 0,
-                clicks: Number(h.clicks) || 0,
-                ctr: Number(h.ctr) || 0,
-                cpc: Number(h.cpc) || 0,
-                cpm: Number(h.cpm) || 0,
-                results: Number(h.results) || 0,
-                costPerResult: Number(h.costPerResult) || 0,
-                messagingStarted: Number(h.messagingStarted) || 0,
-                costPerMessaging: Number(h.costPerMessaging) || 0,
-            };
-        });
-    }
+    const end = dateEnd ? this.parseDate(dateEnd) : new Date();
+    const start = dateStart ? this.parseDate(dateStart) : new Date(end.getTime() - 6 * 24 * 60 * 60 * 1000); // Default 7 days
+
+    const dailyInsights = await this.prisma.unifiedInsight.findMany({
+      where: { adId, date: { gte: start, lte: end } },
+      orderBy: { date: 'asc' },
+    });
+
+    const mappedInsights = dailyInsights.map(i => {
+      const spend = Number(i.spend || 0);
+      const impressions = Number(i.impressions || 0);
+      const clicks = Number(i.clicks || 0);
+      const results = Number(i.results || 0);
+      const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
+      const cpc = clicks > 0 ? spend / clicks : 0;
+      const cpm = impressions > 0 ? (spend / impressions) * 1000 : 0;
+      const costPerResult = results > 0 ? spend / results : 0;
+
+      return {
+        date: i.date.toISOString().split('T')[0],
+        spend,
+        impressions,
+        reach: Number(i.reach || 0),
+        clicks,
+        results,
+        conversions: Number(i.conversions || 0),
+        ctr,
+        cpc,
+        cpm,
+        costPerResult,
+      };
+    });
+
+    // Summary calculation
+    const totalSpend = mappedInsights.reduce((sum, i) => sum + i.spend, 0);
+    const totalImpressions = mappedInsights.reduce((sum, i) => sum + i.impressions, 0);
+    const totalClicks = mappedInsights.reduce((sum, i) => sum + i.clicks, 0);
+    const totalResults = mappedInsights.reduce((sum, i) => sum + i.results, 0);
+    const totalReach = mappedInsights.reduce((sum, i) => sum + i.reach, 0);
+    
+    // We don't have messages count explicitly in schema, using results for now or platformMetrics
+    const totalMessages = totalResults; 
+
+    const summary = {
+      totalSpend,
+      totalImpressions,
+      totalReach,
+      totalClicks,
+      totalResults,
+      totalMessages,
+      avgCtr: totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0,
+      avgCpc: totalClicks > 0 ? totalSpend / totalClicks : 0,
+      avgCpm: totalImpressions > 0 ? (totalSpend / totalImpressions) * 1000 : 0,
+      avgCpr: totalResults > 0 ? totalSpend / totalResults : 0,
+      avgCostPerMessage: totalMessages > 0 ? totalSpend / totalMessages : 0,
+    };
+
+    return {
+      summary,
+      dailyInsights: mappedInsights,
+      deviceBreakdown: [], // TODO: Implement if needed
+      placementBreakdown: [], // TODO: Implement if needed
+      ageGenderBreakdown: [], // TODO: Implement if needed
+    };
+  }
+
+  async getAdHourly(userId: number, adId: string, date?: string) {
+    // Verify user access
+    const ad = await this.prisma.unifiedAd.findFirst({
+      where: {
+        id: adId,
+        account: { branch: { userId } }
+      }
+    });
+    if (!ad) throw new ForbiddenException('Access denied or ad not found');
+
+    const targetDate = date ? this.parseDate(date) : new Date();
+    targetDate.setUTCHours(0, 0, 0, 0);
+
+    const hourlyInsights = await this.prisma.unifiedHourlyInsight.findMany({
+      where: { adId, date: targetDate },
+      orderBy: { hour: 'asc' },
+    });
+
+    return hourlyInsights.map(i => {
+      const spend = Number(i.spend || 0);
+      const impressions = Number(i.impressions || 0);
+      const clicks = Number(i.clicks || 0);
+      const results = Number(i.results || 0);
+
+      return {
+        hour: i.hour,
+        dateStart: i.date.toISOString().split('T')[0],
+        spend,
+        impressions,
+        clicks,
+        results,
+        ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
+        cpc: clicks > 0 ? spend / clicks : 0,
+        cpm: impressions > 0 ? (spend / impressions) * 1000 : 0,
+        costPerResult: results > 0 ? spend / results : 0,
+      };
+    });
+  }
 }
-

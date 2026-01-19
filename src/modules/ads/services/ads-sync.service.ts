@@ -1,211 +1,304 @@
-import { Injectable, Logger, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '@n-database/prisma/prisma.service';
-import { FacebookApiService } from '../../shared/services/facebook-api.service';
-import { TokensService } from '../../tokens/services/tokens.service';
-import { CrawlJobService } from '../../jobs/services/crawl-job.service';
-import { CrawlJobType } from '@prisma/client';
+import { PlatformsService } from '../../platforms/platforms.service';
+import { FacebookAdGroupAdapter } from '../../platforms/implementations/facebook/facebook-ad-group.adapter';
+import { FacebookAdAdapter } from '../../platforms/implementations/facebook/facebook-ad.adapter';
+import { CampaignsService } from '../../campaigns/campaigns.service';
+import { AdGroupsService } from '../../ad-groups/services/ad-groups.service';
+import { BulkUpsertService } from '../../shared/services/bulk-upsert.service';
 
 @Injectable()
 export class AdsSyncService {
-    private readonly logger = new Logger(AdsSyncService.name);
+  private readonly logger = new Logger(AdsSyncService.name);
 
-    constructor(
-        private readonly prisma: PrismaService,
-        private readonly facebookApi: FacebookApiService,
-        private readonly tokensService: TokensService,
-        private readonly crawlJobService: CrawlJobService,
-    ) { }
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly platformsService: PlatformsService,
+    private readonly campaignsService: CampaignsService,
+    private readonly adGroupsService: AdGroupsService,
+    private readonly fbAdGroupAdapter: FacebookAdGroupAdapter,
+    private readonly fbAdAdapter: FacebookAdAdapter,
+    private readonly bulkUpsert: BulkUpsertService,
+  ) { }
 
-    async syncAds(accountId: string, userId: number): Promise<number> {
-        const hasAccess = await this.verifyAccountAccess(userId, accountId);
-        if (!hasAccess) {
-            throw new ForbiddenException('Ad account not found or access denied');
+  async syncByAccount(accountId: number, forceFullSync = false) {
+    this.logger.debug(`Starting ad/adgroup sync for account ID: ${accountId} (Full sync: ${forceFullSync})`);
+
+    const account = await this.prisma.platformAccount.findUnique({
+      where: { id: accountId },
+      include: {
+        platform: true,
+        identity: {
+          include: {
+            credentials: {
+              where: { credentialType: 'access_token', isActive: true }
+            }
+          }
         }
+      },
+    });
 
-        const accessToken = await this.tokensService.getTokenForAdAccount(accountId, userId);
-        if (!accessToken) {
-            throw new BadRequestException(`No valid token for account ${accountId}`);
-        }
+    if (!account) throw new NotFoundException('Account not found');
+    const credential = account.identity.credentials[0];
+    if (!credential) throw new Error('No active credential found for platform account');
 
-        const job = await this.crawlJobService.createJob({
-            accountId,
-            jobType: CrawlJobType.ADS,
-        });
+    const adapter = this.platformsService.getAdapter(account.platform.code);
 
+    let since: number | undefined;
+
+    // Check if we have any ad groups or ads. If missing either, force full sync once.
+    const adGroupCount = await this.prisma.unifiedAdGroup.count({ where: { accountId: account.id } });
+    const adCount = await this.prisma.unifiedAd.count({ where: { accountId: account.id } });
+    const effectiveForceFullSync = forceFullSync || adGroupCount === 0 || adCount === 0;
+
+    if (!effectiveForceFullSync && account.syncedAt) {
+      since = Math.floor(account.syncedAt.getTime() / 1000) - 3600;
+    }
+
+    try {
+      // 1. Sync Ad Groups (AdSets in FB)
+      // Standardized: Fetch ALL AdSets for the account to ensure we don't accidentally delete paused ones.
+      this.logger.debug(`Fetching AdSets for account ${account.externalId}`);
+
+      const rawAdGroups = await adapter.fetchAdGroups(account.externalId, credential.credentialValue, since);
+      const adGroupMapper = account.platform.code === 'facebook' ? this.fbAdGroupAdapter : null;
+      if (!adGroupMapper) throw new Error(`No AdGroup mapper for platform ${account.platform.code}`);
+
+      const matchedAdGroups = [];
+      const syncedAdGroupExternalIds = [];
+
+      // Need to map campaign external ID to internal ID for ALL campaigns in this account
+      const allCampaigns = await this.prisma.unifiedCampaign.findMany({
+        where: { accountId: account.id },
+        select: { id: true, externalId: true }
+      });
+      const campaignIdMap = new Map(allCampaigns.map(c => [c.externalId, c.id]));
+
+      for (const raw of rawAdGroups) {
         try {
-            await this.crawlJobService.startJob(job.id);
-            const now = new Date();
+          const mapped = adGroupMapper.mapToUnified(raw);
+          syncedAdGroupExternalIds.push(mapped.externalId);
+          const internalCampaignId = campaignIdMap.get(raw.campaign_id);
 
-            // Only sync ads from ACTIVE adsets
-            const activeAdsets = await this.prisma.adset.findMany({
-                where: { accountId, effectiveStatus: 'ACTIVE' },
-                select: { id: true },
+          if (internalCampaignId) {
+            matchedAdGroups.push({
+              id: (mapped as any).id || ('ag' + Math.random().toString(36).substring(2, 25)),
+              unified_campaign_id: internalCampaignId,
+              platform_account_id: account.id,
+              external_id: mapped.externalId,
+              name: mapped.name,
+              status: mapped.status,
+              daily_budget: mapped.dailyBudget,
+              optimization_goal: (mapped as any).optimizationGoal,
+              effective_status: mapped.effectiveStatus,
+              platform_data: mapped.platformData,
+              synced_at: mapped.syncedAt,
+              deleted_at: null
             });
-
-            if (activeAdsets.length === 0) {
-                this.logger.log(`No active adsets for ${accountId}, skipping ads sync`);
-                await this.crawlJobService.completeJob(job.id, 0);
-                return 0;
-            }
-
-            // Fetch ads for all active adsets
-            const allAds: any[] = [];
-            for (const adset of activeAdsets) {
-                const ads = await this.facebookApi.getAdsByAdset(adset.id, accessToken, accountId);
-                allAds.push(...ads);
-            }
-
-            // Get all currently ACTIVE ads in DB for active adsets only
-            const activeAdsetIds = activeAdsets.map(a => a.id);
-            const existingActiveAds = await this.prisma.ad.findMany({
-                where: {
-                    accountId,
-                    effectiveStatus: 'ACTIVE',
-                    adsetId: { in: activeAdsetIds },
-                },
-                select: { id: true },
-            });
-            const fetchedIds = new Set(allAds.map(a => a.id));
-
-            // Mark ads no longer returned as ACTIVE -> INACTIVE
-            const missingIds = existingActiveAds
-                .filter(a => !fetchedIds.has(a.id))
-                .map(a => a.id);
-
-            if (missingIds.length > 0) {
-                await this.prisma.ad.updateMany({
-                    where: { id: { in: missingIds } },
-                    data: { effectiveStatus: 'INACTIVE', syncedAt: now },
-                });
-                this.logger.log(`Marked ${missingIds.length} ads as INACTIVE for ${accountId}`);
-            }
-
-            if (allAds.length > 0) {
-                await this.prisma.$transaction(
-                    allAds.map((ad) =>
-                        this.prisma.ad.upsert({
-                            where: { id: ad.id },
-                            create: this.mapAd(ad, accountId, now),
-                            update: this.mapAd(ad, accountId, now),
-                        })
-                    )
-                );
-            }
-
-            await this.crawlJobService.completeJob(job.id, allAds.length);
-            this.logger.log(`Synced ${allAds.length} ads from ${activeAdsets.length} active adsets for ${accountId}`);
-            return allAds.length;
-        } catch (error) {
-            await this.crawlJobService.failJob(job.id, error.message);
-            throw error;
+          }
+        } catch (e) {
+          this.logger.debug(`Failed to map ad group ${raw.id}: ${e.message}`);
         }
-    }
+      }
 
-    async syncAdsByAdset(adsetId: string, userId: number): Promise<number> {
-        const adset = await this.prisma.adset.findFirst({
-            where: {
-                id: adsetId,
-                account: { fbAccount: { userId } },
-            },
+      if (matchedAdGroups.length > 0) {
+        await this.bulkUpsert.execute(
+          'unified_ad_groups',
+          matchedAdGroups,
+          ['platform_account_id', 'external_id'],
+          ['name', 'status', 'daily_budget', 'optimization_goal', 'effective_status', 'platform_data', 'synced_at', 'deleted_at', 'unified_campaign_id']
+        );
+      }
+
+      let deletedGroupsCount = 0;
+      if (effectiveForceFullSync) {
+        const deleteAdGroupResult = await this.prisma.unifiedAdGroup.updateMany({
+          where: { accountId: account.id, externalId: { notIn: syncedAdGroupExternalIds }, deletedAt: null },
+          data: { deletedAt: new Date(), status: 'DELETED' }
         });
+        deletedGroupsCount = deleteAdGroupResult.count;
+      }
 
-        if (!adset) {
-            throw new ForbiddenException('Adset not found or access denied');
-        }
+      // 2. Sync Ads
+      // Standardized: Fetch ALL Ads for the account to ensure data integrity
+      this.logger.debug(`Fetching Ads for account ${account.externalId}`);
+      const adMapper = account.platform.code === 'facebook' ? this.fbAdAdapter : null;
+      if (!adMapper) throw new Error(`No Ad mapper for platform ${account.platform.code}`);
 
-        const accountId = adset.accountId;
-        const accessToken = await this.tokensService.getTokenForAdAccount(accountId, userId);
-        if (!accessToken) {
-            throw new BadRequestException(`No valid token for account ${accountId}`);
-        }
+      const rawAds = await adapter.fetchAds(account.externalId, credential.credentialValue, since);
+      const totalRawAds = rawAds.length;
 
-        const job = await this.crawlJobService.createJob({
-            accountId,
-            jobType: CrawlJobType.ADS,
-        });
+      const adEntities = [];
+      const syncedAdExternalIds = [];
 
+      // Map ad group external ID to internal ID for ALL ad groups in this account
+      const allAdGroups = await this.prisma.unifiedAdGroup.findMany({
+        where: { accountId: account.id },
+        select: { id: true, externalId: true }
+      });
+      const adGroupIdMap = new Map(allAdGroups.map(ag => [ag.externalId, ag.id]));
+
+      for (const raw of rawAds) {
         try {
-            await this.crawlJobService.startJob(job.id);
-            // Fetch ALL ads under this adset
-            const ads = await this.facebookApi.getAdsByAdset(adsetId, accessToken, accountId, false);
-            const now = new Date();
+          const mapped = adMapper.mapToUnified(raw);
+          syncedAdExternalIds.push(mapped.externalId);
+          const internalAdGroupId = adGroupIdMap.get(raw.adset_id);
 
-            // Get all currently ACTIVE ads in DB for this adset
-            const existingActiveAds = await this.prisma.ad.findMany({
-                where: { adsetId, effectiveStatus: 'ACTIVE' },
-                select: { id: true },
+          if (internalAdGroupId) {
+            adEntities.push({
+              id: (mapped as any).id || ('ad' + Math.random().toString(36).substring(2, 25)),
+              unified_ad_group_id: internalAdGroupId,
+              platform_account_id: account.id,
+              external_id: mapped.externalId,
+              name: mapped.name,
+              status: mapped.status,
+              creative_data: (mapped as any).creativeData,
+              effective_status: mapped.effectiveStatus,
+              platform_data: mapped.platformData,
+              synced_at: mapped.syncedAt,
+              deleted_at: null
             });
-            const fetchedIds = new Set(ads.map(a => a.id));
-
-            // Mark ads no longer returned as ACTIVE -> INACTIVE
-            const missingIds = existingActiveAds
-                .filter(a => !fetchedIds.has(a.id))
-                .map(a => a.id);
-
-            if (missingIds.length > 0) {
-                await this.prisma.ad.updateMany({
-                    where: { id: { in: missingIds } },
-                    data: { effectiveStatus: 'INACTIVE', syncedAt: now },
-                });
-                this.logger.log(`Marked ${missingIds.length} ads as INACTIVE for adset ${adsetId}`);
-            }
-
-            if (ads.length > 0) {
-                await this.prisma.$transaction(
-                    ads.map((ad) =>
-                        this.prisma.ad.upsert({
-                            where: { id: ad.id },
-                            create: this.mapAd(ad, accountId, now),
-                            update: this.mapAd(ad, accountId, now),
-                        })
-                    )
-                );
-            }
-
-            await this.crawlJobService.completeJob(job.id, ads.length);
-            this.logger.log(`Synced ${ads.length} ads for adset ${adsetId}`);
-            return ads.length;
-        } catch (error) {
-            await this.crawlJobService.failJob(job.id, error.message);
-            throw error;
+          }
+        } catch (e) {
+          this.logger.debug(`Failed to map ad ${raw.id}: ${e.message}`);
         }
-    }
+      }
 
-    private mapAd(data: any, accountId: string, syncedAt: Date) {
-        return {
-            id: data.id,
-            adsetId: data.adset_id,
-            campaignId: data.campaign_id,
-            accountId: accountId,
-            creativeId: null,
-            name: data.name,
-            status: data.status || 'UNKNOWN',
-            configuredStatus: data.configured_status,
-            effectiveStatus: data.effective_status,
-            creative: data.creative,
-            trackingSpecs: data.tracking_specs,
-            conversionSpecs: data.conversion_specs,
-            adReviewFeedback: data.ad_review_feedback,
-            previewShareableLink: data.preview_shareable_link,
-            sourceAdId: data.source_ad_id,
-            createdTime: data.created_time ? new Date(data.created_time) : null,
-            updatedTime: data.updated_time ? new Date(data.updated_time) : null,
-            demolinkHash: data.demolink_hash,
-            engagementAudience: data.engagement_audience,
-            issuesInfo: data.issues_info,
-            recommendations: data.recommendations,
-            syncedAt,
-        };
-    }
+      if (adEntities.length > 0) {
+        await this.bulkUpsert.execute(
+          'unified_ads',
+          adEntities,
+          ['platform_account_id', 'external_id'],
+          ['name', 'status', 'creative_data', 'effective_status', 'platform_data', 'synced_at', 'deleted_at', 'unified_ad_group_id']
+        );
+      }
 
-    private async verifyAccountAccess(userId: number, accountId: string): Promise<boolean> {
-        const account = await this.prisma.adAccount.findFirst({
-            where: {
-                id: accountId,
-                fbAccount: { userId },
-            },
+      let deletedAdsCount = 0;
+      if (effectiveForceFullSync) {
+        const deleteAdResult = await this.prisma.unifiedAd.updateMany({
+          where: { accountId: account.id, externalId: { notIn: syncedAdExternalIds }, deletedAt: null },
+          data: { deletedAt: new Date(), status: 'DELETED' }
         });
-        return !!account;
+        deletedAdsCount = deleteAdResult.count;
+      }
+
+      // Cleanup: Mark entities as PAUSED/INACTIVE if their parents are effectively inactive.
+      // This is crucial because our optimized sync skips inactive parents, so children would otherwise remain ACTIVE forever.
+      this.logger.debug('Cleaning up stale ACTIVE entities belonging to inactive parents...');
+
+      // 1. Stale Ad Groups (Active AGs in Inactive/Paused Campaigns)
+      const staleAdGroups = await this.prisma.unifiedAdGroup.updateMany({
+        where: {
+          accountId: account.id,
+          status: 'ACTIVE',
+          campaign: {
+            OR: [
+              { status: { not: 'ACTIVE' } },
+              { effectiveStatus: { not: 'ACTIVE' } },
+              { endTime: { lte: new Date() } } // Expired campaigns
+            ]
+          }
+        },
+        data: { status: 'PAUSED', effectiveStatus: 'CAMPAIGN_PAUSED', syncedAt: new Date() }
+      });
+
+      // 2. Stale Ads (Active Ads in Inactive/Paused Ad Groups)
+      const staleAds = await this.prisma.unifiedAd.updateMany({
+        where: {
+          accountId: account.id,
+          status: 'ACTIVE',
+          adGroup: {
+            OR: [
+              { status: { not: 'ACTIVE' } },
+              { effectiveStatus: { not: 'ACTIVE' } }
+            ]
+          }
+        },
+        data: { status: 'PAUSED', effectiveStatus: 'ADSET_PAUSED', syncedAt: new Date() }
+      });
+
+      this.logger.debug(`Cleanup summary for ${account.externalId}: ${staleAdGroups.count} stale AdGroups, ${staleAds.count} stale Ads marked as paused.`);
+
+      this.logger.log(`Sync Summary for ${account.name} (Ads/AdGroups): AdGroups Updated ${matchedAdGroups.length}, Ads Fetched ${totalRawAds}, Updated ${adEntities.length}, Deleted ${deletedAdsCount}`);
+
+      // 3. Sync Ad Creatives for ACTIVE ads
+      // Fetch all active ads for this account from DB to ensure we cover ones that weren't just updated but might be missing thumbnails
+      const dbActiveAds = await this.prisma.unifiedAd.findMany({
+        where: {
+          accountId: account.id,
+          effectiveStatus: 'ACTIVE',
+          OR: [
+            { thumbnailUrl: null },
+            { syncedAt: { lte: new Date(Date.now() - 24 * 3600 * 1000) } } // Or old ones
+          ]
+        }
+      });
+
+      this.logger.log(`Active ads needing creative sync in account ${account.id}: ${dbActiveAds.length}`);
+
+      if (dbActiveAds.length > 0) {
+        try {
+          const adExternalIds = dbActiveAds.map(ad => ad.externalId);
+          
+          const chunkSize = 50;
+          let allFetchedAds = [];
+          for (let i = 0; i < adExternalIds.length; i += chunkSize) {
+            const chunk = adExternalIds.slice(i, i + chunkSize);
+            const chunkResult = await adapter.fetchAdCreatives(account.externalId, credential.credentialValue, chunk);
+            allFetchedAds = allFetchedAds.concat(chunkResult);
+          }
+
+          this.logger.log(`Successfully fetched total ${allFetchedAds.length} ads with creative data`);
+
+          const adToCreativeMap = new Map(allFetchedAds.map(a => [a.id, a.creative]));
+          const adsWithUpdatedCreatives = [];
+          
+          for (const ad of dbActiveAds) {
+            const creative = adToCreativeMap.get(ad.externalId);
+            
+            if (creative) {
+              const spec = (creative as any).object_story_spec || {};
+              
+              const thumbnailUrl = creative.thumbnail_url || 
+                                 creative.image_url || 
+                                 spec.link_data?.picture || 
+                                 spec.video_data?.image_url ||
+                                 null;
+              
+              if (thumbnailUrl) {
+                this.logger.log(`Ad ${ad.externalId} -> Creative ${creative.id}. Thumbnail: ${thumbnailUrl.substring(0, 60)}...`);
+                adsWithUpdatedCreatives.push({
+                  platform_account_id: ad.accountId,
+                  external_id: ad.externalId,
+                  creative_data: creative,
+                  thumbnail_url: thumbnailUrl,
+                  synced_at: new Date()
+                });
+              } else {
+                this.logger.debug(`No valid thumbnail found for Ad ${ad.externalId} in creative data.`);
+              }
+            }
+          }
+
+          if (adsWithUpdatedCreatives.length > 0) {
+            this.logger.log(`Updating ${adsWithUpdatedCreatives.length} ad thumbnails in database...`);
+            await this.bulkUpsert.execute(
+              'unified_ads',
+              adsWithUpdatedCreatives,
+              ['platform_account_id', 'external_id'],
+              ['creative_data', 'thumbnail_url', 'synced_at']
+            );
+            this.logger.log(`Update complete for ${adsWithUpdatedCreatives.length} ads.`);
+          }
+        } catch (error) {
+          this.logger.error(`Failed to sync ad creatives: ${error.message}`);
+        }
+      }
+
+      return { adGroups: matchedAdGroups.length, ads: adEntities.length };
+    } catch (error) {
+      this.logger.error(`Ad synchronization failed for account ${account.id}: ${error.message}`, error.stack);
+      throw error;
     }
+  }
 }
-

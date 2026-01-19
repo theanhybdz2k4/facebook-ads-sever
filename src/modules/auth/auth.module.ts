@@ -6,7 +6,7 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { PrismaModule } from '@n-database/prisma/prisma.module';
 import { AuthController } from './auth.controller';
-import { JwtAuthGuard, InternalApiKeyGuard, AdAccountPermissionGuard } from './guards';
+import { JwtAuthGuard, InternalApiKeyGuard, PlatformAccountPermissionGuard } from './guards';
 import { RateLimitGuard } from '../shared/guards/rate-limit.guard';
 
 @Module({
@@ -30,8 +30,8 @@ import { RateLimitGuard } from '../shared/guards/rate-limit.guard';
         }),
     ],
     controllers: [AuthController],
-    providers: [AuthService, JwtStrategy, JwtAuthGuard, InternalApiKeyGuard, AdAccountPermissionGuard, RateLimitGuard],
-    exports: [AuthService, JwtModule, JwtAuthGuard, InternalApiKeyGuard, AdAccountPermissionGuard],
+    providers: [AuthService, JwtStrategy, JwtAuthGuard, InternalApiKeyGuard, PlatformAccountPermissionGuard, RateLimitGuard],
+    exports: [AuthService, JwtModule, JwtAuthGuard, InternalApiKeyGuard, PlatformAccountPermissionGuard],
 })
 export class AuthModule { }
 

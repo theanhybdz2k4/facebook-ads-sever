@@ -3,7 +3,7 @@ import { HttpModule } from '@nestjs/axios';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '@n-database/prisma/prisma.module';
 import { RateLimiterService } from './services/rate-limiter.service';
-import { FacebookApiService } from './services/facebook-api.service';
+import { BulkUpsertService } from './services/bulk-upsert.service';
 import { RateLimitGuard } from './guards/rate-limit.guard';
 import { HealthController } from './health/health.controller';
 
@@ -18,8 +18,7 @@ import { HealthController } from './health/health.controller';
     }),
   ],
   controllers: [HealthController],
-  providers: [RateLimiterService, FacebookApiService, RateLimitGuard],
-  exports: [RateLimiterService, FacebookApiService, RateLimitGuard],
+  providers: [RateLimiterService, RateLimitGuard, BulkUpsertService],
+  exports: [RateLimiterService, RateLimitGuard, PrismaModule, HttpModule, BulkUpsertService],
 })
-export class SharedModule {}
-
+export class SharedModule { }

@@ -70,7 +70,7 @@ export class PrismaService
     });
     (this as any).$on('query' as any, ({ query, params }: { query: string; params: any }) => {
       const transformedQuery = this.simplifyQuery(query, params);
-      this.loggerTerminal.log(blue(transformedQuery));
+      this.loggerTerminal.debug(blue(transformedQuery));
     });
   }
 
@@ -137,8 +137,9 @@ export class PrismaService
 
   // Models that have deletedAt field - used by findMiddleware
   private readonly modelsWithDeletedAt = new Set([
-    'User', 'FbAccount', 'FbApiToken', 'RefreshToken', 'AdAccount',
-    'Campaign', 'Adset', 'Ad', 'Creative', 'AdImage', 'AdVideo', 'CrawlJob',
+    'User', 'RefreshToken', 'PlatformIdentity', 'PlatformCredential',
+    'PlatformAccount', 'UnifiedCampaign', 'UnifiedAdGroup', 'UnifiedAd',
+    'UnifiedInsight', 'UnifiedHourlyInsight', 'Branch', 'SyncJob',
   ]);
 
   findMiddleware: Prisma.Middleware = async (params, next) => {

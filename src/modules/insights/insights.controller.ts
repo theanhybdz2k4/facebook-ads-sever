@@ -1,80 +1,87 @@
-import { Controller, Get, Post, Param, Query, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Param, Query, Body, UseGuards, ParseIntPipe } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { InsightsService } from './services/insights.service';
-import { CurrentUser } from '../shared/decorators/current-user.decorator';
+import { JwtAuthGuard } from '@n-modules/auth/guards/jwt-auth.guard';
+import { CurrentUser } from '@n-modules/shared/decorators/current-user.decorator';
+import { InsightsQueryService } from './services/insights-query.service';
+import { InsightsSyncService } from './services/insights-sync.service';
 
-@ApiTags('Insights')
+@ApiTags('Insights (Unified)')
 @Controller('insights')
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 export class InsightsController {
-    constructor(private readonly insightsService: InsightsService) { }
+  constructor(
+    private readonly insightsQuery: InsightsQueryService,
+    private readonly insightsSync: InsightsSyncService,
+  ) { }
 
-    @Get()
-    @ApiOperation({ summary: 'Query daily insights' })
-    async getInsights(
-        @CurrentUser() user: any,
-        @Query('accountId') accountId?: string,
-        @Query('dateStart') dateStart?: string,
-        @Query('dateEnd') dateEnd?: string,
-        @Query('branchId') branchId?: string,
-    ) {
-        return this.insightsService.getDailyInsights(user.id, {
-            accountId,
-            dateStart,
-            dateEnd,
-            branchId,
-        });
+  @Get()
+  @ApiOperation({ summary: 'Query daily insights' })
+  async getInsights(
+    @CurrentUser() user: any,
+    @Query('accountId') accountId?: string,
+    @Query('dateStart') dateStart?: string,
+    @Query('dateEnd') dateEnd?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.insightsQuery.getDailyInsights(user.id, {
+      accountId: accountId ? Number(accountId) : undefined,
+      dateStart,
+      dateEnd,
+      branchId: branchId ? Number(branchId) : undefined,
+    });
+  }
+
+  @Post('sync/account/:id')
+  @ApiOperation({ summary: 'Sync insights for a platform account' })
+  async syncAccount(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: { dateStart: string; dateEnd: string; granularity?: 'DAILY' | 'HOURLY' },
+    @Query('force') force?: string,
+  ) {
+    const forceFullSync = force === 'true';
+    if (dto.granularity === 'HOURLY') {
+      return this.insightsSync.syncAccountHourlyInsights(id, dto.dateStart, dto.dateEnd, forceFullSync);
     }
+    return this.insightsSync.syncAccountInsights(id, dto.dateStart, dto.dateEnd, forceFullSync);
+  }
 
-    @Get('ads/:id/analytics')
-    @ApiOperation({ summary: 'Get ad analytics with insights and breakdowns' })
-    async getAdAnalytics(
-        @Param('id') adId: string,
-        @CurrentUser() user: any,
-        @Query('dateStart') dateStart?: string,
-        @Query('dateEnd') dateEnd?: string,
-    ) {
-        return this.insightsService.getAdAnalytics(adId, user.id, dateStart, dateEnd);
-    }
+  @Post('sync/branch/:id')
+  @ApiOperation({ summary: 'Sync all data for a branch (Campaigns, Ads, Insights)' })
+  async syncBranch(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: { dateStart: string; dateEnd: string; granularity?: 'DAILY' | 'HOURLY' },
+    @Query('force') force?: string,
+  ) {
+    const forceFullSync = force === 'true';
+    return this.insightsSync.syncBranch(id, dto.dateStart, dto.dateEnd, dto.granularity || 'DAILY', forceFullSync);
+  }
+  @Get('ads/:adId/analytics')
+  @ApiOperation({ summary: 'Get aggregated analytics for an ad' })
+  async getAdAnalytics(
+    @CurrentUser('id') userId: number,
+    @Param('adId') adId: string,
+    @Query('dateStart') dateStart?: string,
+    @Query('dateEnd') dateEnd?: string,
+  ) {
+    return this.insightsQuery.getAdAnalytics(userId, adId, dateStart, dateEnd);
+  }
 
-    @Get('ads/:id/hourly')
-    @ApiOperation({ summary: 'Get hourly insights for an ad' })
-    async getAdHourlyInsights(
-        @Param('id') adId: string,
-        @CurrentUser() user: any,
-        @Query('date') date?: string,
-    ) {
-        return this.insightsService.getHourlyInsights(adId, user.id, date);
-    }
+  @Get('ads/:adId/hourly')
+  @ApiOperation({ summary: 'Get hourly insights for an ad' })
+  async getAdHourly(
+    @CurrentUser('id') userId: number,
+    @Param('adId') adId: string,
+    @Query('date') date?: string,
+  ) {
+    return this.insightsQuery.getAdHourly(userId, adId, date);
+  }
 
-    @Post('sync')
-    @ApiOperation({ summary: 'Sync insights for date range' })
-    async syncInsights(
-        @CurrentUser() user: any,
-        @Body() dto: { accountId?: string; adId?: string; dateStart: string; dateEnd: string; breakdown?: string },
-    ) {
-        if (dto.adId) {
-            return this.insightsService.syncInsightsForAd(
-                dto.adId,
-                user.id,
-                dto.dateStart,
-                dto.dateEnd,
-                dto.breakdown || 'all',
-            );
-        }
-
-        if (!dto.accountId) {
-            throw new Error('Either accountId or adId is required');
-        }
-
-        return this.insightsService.syncDailyInsights(
-            dto.accountId,
-            user.id,
-            dto.dateStart,
-            dto.dateEnd,
-        );
-    }
+  @Post('sync')
+  @ApiOperation({ summary: 'Sync insights for a specific ad' })
+  async syncAd(
+    @Body() dto: { adId: string; dateStart: string; dateEnd: string; breakdown?: string },
+  ) {
+    return this.insightsSync.syncAdInsights(dto.adId, dto.dateStart, dto.dateEnd, dto.breakdown);
+  }
 }
-

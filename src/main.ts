@@ -17,12 +17,11 @@ import { BaseException } from '@n-exceptions';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  // Configure log level for production to avoid Railway rate limit
   const logLevels = process.env.LOG_LEVEL
     ? [process.env.LOG_LEVEL as any]
     : process.env.APP_ENV === 'production'
-      ? ['error', 'warn']  // Only errors and warnings in production
-      : ['error', 'warn', 'log', 'debug', 'verbose'];  // All levels in development
+      ? ['error', 'warn']  
+      : ['error', 'warn', 'log', 'debug', 'verbose']; 
 
   const app: INestApplication = await NestFactory.create<NestExpressApplication>(AppModule, {
     logger: logLevels,

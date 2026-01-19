@@ -1,34 +1,68 @@
 import { Injectable } from '@nestjs/common';
-import { InsightsSyncService } from './insights-sync.service';
-import { InsightsQueryService } from './insights-query.service';
+import { PrismaService } from '@n-database/prisma/prisma.service';
 
 @Injectable()
 export class InsightsService {
-    constructor(
-        private readonly insightsSyncService: InsightsSyncService,
-        private readonly insightsQueryService: InsightsQueryService,
-    ) { }
+    constructor(private readonly prisma: PrismaService) { }
 
-    // Delegate to sync service
-    async syncInsightsForAd(adId: string, userId: number, dateStart: string, dateEnd: string, breakdown?: string) {
-        return this.insightsSyncService.syncInsightsForAd(adId, userId, dateStart, dateEnd, breakdown || 'all');
+    async getAccountInsights(accountId: number, startDate: Date, endDate: Date) {
+        return this.prisma.unifiedInsight.groupBy({
+            by: ['date'],
+            where: {
+                accountId,
+                date: { gte: startDate, lte: endDate },
+            },
+            _sum: {
+                spend: true,
+                impressions: true,
+                clicks: true,
+                conversions: true,
+                results: true,
+            },
+            orderBy: { date: 'asc' },
+        });
     }
 
-    async syncDailyInsights(accountId: string, userId: number, dateStart: string, dateEnd: string) {
-        return this.insightsSyncService.syncDailyInsights(accountId, userId, dateStart, dateEnd);
+    async findAll(userId: number, filters: { accountId?: number; branchId?: number; dateStart?: string; dateEnd?: string }) {
+        const where: any = {
+            account: {
+                identity: { userId },
+            },
+        };
+
+        if (filters.accountId) {
+            where.accountId = filters.accountId;
+        }
+
+        if (filters.branchId) {
+            where.account.branchId = filters.branchId;
+        }
+
+        if (filters.dateStart || filters.dateEnd) {
+            where.date = {};
+            if (filters.dateStart) where.date.gte = new Date(filters.dateStart);
+            if (filters.dateEnd) where.date.lte = new Date(filters.dateEnd);
+        }
+
+        return this.prisma.unifiedInsight.findMany({
+            where,
+            include: {
+                account: { include: { platform: true } },
+                campaign: true,
+                adGroup: true,
+                ad: true,
+            },
+            orderBy: { date: 'desc' },
+        });
     }
 
-    // Delegate to query service
-    async getDailyInsights(userId: number, filters?: { accountId?: string; dateStart?: string; dateEnd?: string; branchId?: string }) {
-        return this.insightsQueryService.getDailyInsights(userId, filters);
-    }
-
-    async getAdAnalytics(adId: string, userId: number, dateStart?: string, dateEnd?: string) {
-        return this.insightsQueryService.getAdAnalytics(adId, userId, dateStart, dateEnd);
-    }
-
-    async getHourlyInsights(adId: string, userId: number, date?: string) {
-        return this.insightsQueryService.getHourlyInsights(adId, userId, date);
+    async getCampaignInsights(campaignId: string, startDate: Date, endDate: Date) {
+        return this.prisma.unifiedInsight.findMany({
+            where: {
+                campaignId,
+                date: { gte: startDate, lte: endDate },
+            },
+            orderBy: { date: 'asc' },
+        });
     }
 }
-

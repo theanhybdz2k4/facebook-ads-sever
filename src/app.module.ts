@@ -16,21 +16,20 @@ import validate from '@n-configs/env/env.validation';
 import { APP_INTERCEPTOR, APP_FILTER } from '@nestjs/core';
 import { ResponseInterceptor } from '@n-interceptors/response.interceptor';
 import { AllExceptionFilter } from './filter-exceptions/exception.filter';
+
+// Unified Modules
 import { AuthModule } from './modules/auth/auth.module';
-import { FacebookAdsModule } from './modules/facebook-ads/facebook-ads.module';
-import { PgBossModule } from './pgboss/pgboss.module';
 import { SharedModule } from './modules/shared/shared.module';
-import { TokensModule } from './modules/tokens/tokens.module';
-import { FbAccountsModule } from './modules/fb-accounts/fb-accounts.module';
-import { JobsModule } from './modules/jobs/jobs.module';
-import { AdAccountsModule } from './modules/ad-accounts/ad-accounts.module';
+import { PlatformsModule } from './modules/platforms/platforms.module';
+import { AccountsModule } from './modules/accounts/accounts.module';
 import { CampaignsModule } from './modules/campaigns/campaigns.module';
-import { AdSetsModule } from './modules/adsets/adsets.module';
+import { AdGroupsModule } from './modules/ad-groups/ad-groups.module';
 import { AdsModule } from './modules/ads/ads.module';
 import { InsightsModule } from './modules/insights/insights.module';
-import { TelegramModule } from './modules/telegram/telegram.module';
-import { CronModule } from './modules/cron/cron.module';
 import { BranchesModule } from './modules/branches/branches.module';
+import { CronSettingsModule } from './modules/cron-settings/cron-settings.module';
+import { TelegramModule } from './modules/telegram/telegram.module';
+import { SyncModule } from './modules/sync/sync.module';
 
 @Module({
   imports: [
@@ -41,7 +40,6 @@ import { BranchesModule } from './modules/branches/branches.module';
       validate,
     }),
     SharedModule,
-    PgBossModule,
     LoggerModule.forRoot(LoggerOptions),
     ClsModule.forRoot({
       plugins: [
@@ -57,18 +55,16 @@ import { BranchesModule } from './modules/branches/branches.module';
     }),
     ScheduleModule.forRoot(),
     AuthModule,
-    FacebookAdsModule,
-    TokensModule,
-    FbAccountsModule,
-    JobsModule,
-    AdAccountsModule,
+    PlatformsModule,
+    AccountsModule,
     CampaignsModule,
-    AdSetsModule,
+    AdGroupsModule,
     AdsModule,
     InsightsModule,
-    TelegramModule,
-    CronModule,
     BranchesModule,
+    CronSettingsModule,
+    TelegramModule,
+    SyncModule,
   ],
   controllers: [AppController],
   providers: [
