@@ -11,20 +11,25 @@ async function main() {
     take: 10,
     select: {
       externalId: true,
+      accountId: true,
       status: true,
       effectiveStatus: true,
-      creativeData: true,
-      thumbnailUrl: true,
+      creativeId: true,
+      creative: {
+        select: {
+          thumbnailUrl: true
+        }
+      }
     }
   });
 
   console.log('Ads found:', ads.length);
   ads.forEach(ad => {
-    console.log(`Ad: ${ad.externalId}`);
+    console.log(`Ad: ${ad.externalId} (Account: ${ad.accountId})`);
     console.log(`  Status: ${ad.status}`);
     console.log(`  Effective: ${ad.effectiveStatus}`);
-    console.log(`  Thumbnail: ${ad.thumbnailUrl}`);
-    console.log(`  Creative ID: ${(ad.creativeData as any)?.id}`);
+    console.log(`  Creative ID (Internal): ${ad.creativeId}`);
+    console.log(`  Thumbnail: ${ad.creative?.thumbnailUrl}`);
   });
 }
 

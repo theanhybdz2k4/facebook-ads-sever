@@ -113,16 +113,16 @@ export class FacebookApiService {
   }
 
   async getAdCreatives(externalAccountId: string, accessToken: string, adIds?: string[]) {
-    // If adIds are provided, fetch creatives VIA the ads to ensure context and availability
+    // Fetch creatives VIA the ads to ensure absolute context and availability for current ads
     if (adIds && adIds.length > 0) {
       const data = await this.get<Record<string, any>>('/', accessToken, {
         ids: adIds.join(','),
-        fields: 'id,creative{id,thumbnail_url,image_url,object_story_spec{link_data{picture},video_data{image_url}}}',
+        fields: 'id,creative{id,object_story_spec,asset_feed_spec,image_hash,video_id,thumbnail_url,name}',
       });
       return Object.values(data);
     }
 
-    const fields = 'id,thumbnail_url,image_url,object_story_spec{link_data{picture},video_data{image_url}}';
+    const fields = 'id,object_story_spec,asset_feed_spec,image_hash,video_id,thumbnail_url,name';
     const data = await this.get<{ data: any[] }>(`/${externalAccountId}/adcreatives`, accessToken, {
       fields,
       limit: 1000,

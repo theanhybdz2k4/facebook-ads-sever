@@ -46,13 +46,14 @@ export class AdsService {
 
         const ads = await this.prisma.unifiedAd.findMany({
             where,
-            include: { 
+            include: {
                 account: { include: { platform: true } },
                 adGroup: {
                     include: {
                         campaign: true
                     }
-                }
+                },
+                creative: true,
             },
             orderBy: { createdAt: 'desc' },
         });
@@ -104,7 +105,7 @@ export class AdsService {
                 ...ad,
                 campaign: ad.adGroup?.campaign,
                 adset: ad.adGroup,
-                summary,
+                thumbnailUrl: (ad as any).creative?.thumbnailUrl || null,
                 // Match frontend expectations for list view metrics
                 metrics: {
                     results: totalResults,

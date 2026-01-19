@@ -155,6 +155,7 @@ model PlatformAccount {
   hourlyInsights UnifiedHourlyInsight[]
   syncJobs       SyncJob[]
   telegramBots   TelegramBot[]
+  creatives      UnifiedAdCreative[]
 
   @@unique([platformId, externalId])
   @@index([identityId])
@@ -223,11 +224,10 @@ model UnifiedAd {
   id              String        @id @default(cuid())
   adGroupId       String        @map("unified_ad_group_id")
   accountId       Int           @map("platform_account_id")
+  creativeId      String?       @map("unified_ad_creative_id")
   externalId      String        @map("external_id")
   name            String?       @map("name")
   status          UnifiedStatus @default(ACTIVE)
-  creativeData    Json?         @map("creative_data")
-  thumbnailUrl    String?       @map("thumbnail_url")
   effectiveStatus String?       @map("effective_status")
   platformData    Json?         @map("platform_data")
   syncedAt        DateTime      @map("synced_at")
@@ -236,12 +236,34 @@ model UnifiedAd {
 
   adGroup        UnifiedAdGroup         @relation(fields: [adGroupId], references: [id], onDelete: Cascade)
   account        PlatformAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  creative       UnifiedAdCreative?     @relation(fields: [creativeId], references: [id])
   insights       UnifiedInsight[]
   hourlyInsights UnifiedHourlyInsight[]
 
   @@unique([accountId, externalId])
   @@index([adGroupId])
+  @@index([creativeId])
   @@map("unified_ads")
+}
+
+model UnifiedAdCreative {
+  id              String        @id @default(cuid())
+  accountId       Int           @map("platform_account_id")
+  externalId      String        @map("external_id")
+  name            String?       @map("name")
+  body            String?       @map("body")
+  imageUrl        String?       @map("image_url")
+  thumbnailUrl    String?       @map("thumbnail_url")
+  title           String?       @map("title")
+  platformData    Json?         @map("platform_data")
+  syncedAt        DateTime      @map("synced_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  account        PlatformAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  ads            UnifiedAd[]
+
+  @@unique([accountId, externalId])
+  @@map("unified_ad_creatives")
 }
 
 // ============================================================================

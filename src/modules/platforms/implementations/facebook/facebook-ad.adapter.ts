@@ -12,7 +12,6 @@ export class FacebookAdAdapter implements IEntityAdapter<any, Prisma.UnifiedAdCr
       externalId: raw.id,
       name: raw.name,
       status: this.mapStatus(raw.effective_status || raw.status),
-      creativeData: raw.creative,
       effectiveStatus: raw.effective_status,
       platformData: {
         created_time: raw.created_time,

@@ -6,6 +6,7 @@ import { FacebookAdAdapter } from '../../platforms/implementations/facebook/face
 import { CampaignsService } from '../../campaigns/campaigns.service';
 import { AdGroupsService } from '../../ad-groups/services/ad-groups.service';
 import { BulkUpsertService } from '../../shared/services/bulk-upsert.service';
+import { CreativeSyncService } from './creative-sync.service';
 
 @Injectable()
 export class AdsSyncService {
@@ -19,6 +20,7 @@ export class AdsSyncService {
     private readonly fbAdGroupAdapter: FacebookAdGroupAdapter,
     private readonly fbAdAdapter: FacebookAdAdapter,
     private readonly bulkUpsert: BulkUpsertService,
+    private readonly creativeSync: CreativeSyncService,
   ) { }
 
   async syncByAccount(accountId: number, forceFullSync = false) {
@@ -152,7 +154,6 @@ export class AdsSyncService {
               external_id: mapped.externalId,
               name: mapped.name,
               status: mapped.status,
-              creative_data: (mapped as any).creativeData,
               effective_status: mapped.effectiveStatus,
               platform_data: mapped.platformData,
               synced_at: mapped.syncedAt,
@@ -169,7 +170,7 @@ export class AdsSyncService {
           'unified_ads',
           adEntities,
           ['platform_account_id', 'external_id'],
-          ['name', 'status', 'creative_data', 'effective_status', 'platform_data', 'synced_at', 'deleted_at', 'unified_ad_group_id']
+          ['name', 'status', 'effective_status', 'platform_data', 'synced_at', 'deleted_at', 'unified_ad_group_id']
         );
       }
 
@@ -221,79 +222,9 @@ export class AdsSyncService {
 
       this.logger.log(`Sync Summary for ${account.name} (Ads/AdGroups): AdGroups Updated ${matchedAdGroups.length}, Ads Fetched ${totalRawAds}, Updated ${adEntities.length}, Deleted ${deletedAdsCount}`);
 
-      // 3. Sync Ad Creatives for ACTIVE ads
-      // Fetch all active ads for this account from DB to ensure we cover ones that weren't just updated but might be missing thumbnails
-      const dbActiveAds = await this.prisma.unifiedAd.findMany({
-        where: {
-          accountId: account.id,
-          effectiveStatus: 'ACTIVE',
-          OR: [
-            { thumbnailUrl: null },
-            { syncedAt: { lte: new Date(Date.now() - 24 * 3600 * 1000) } } // Or old ones
-          ]
-        }
-      });
-
-      this.logger.log(`Active ads needing creative sync in account ${account.id}: ${dbActiveAds.length}`);
-
-      if (dbActiveAds.length > 0) {
-        try {
-          const adExternalIds = dbActiveAds.map(ad => ad.externalId);
-          
-          const chunkSize = 50;
-          let allFetchedAds = [];
-          for (let i = 0; i < adExternalIds.length; i += chunkSize) {
-            const chunk = adExternalIds.slice(i, i + chunkSize);
-            const chunkResult = await adapter.fetchAdCreatives(account.externalId, credential.credentialValue, chunk);
-            allFetchedAds = allFetchedAds.concat(chunkResult);
-          }
-
-          this.logger.log(`Successfully fetched total ${allFetchedAds.length} ads with creative data`);
-
-          const adToCreativeMap = new Map(allFetchedAds.map(a => [a.id, a.creative]));
-          const adsWithUpdatedCreatives = [];
-          
-          for (const ad of dbActiveAds) {
-            const creative = adToCreativeMap.get(ad.externalId);
-            
-            if (creative) {
-              const spec = (creative as any).object_story_spec || {};
-              
-              const thumbnailUrl = creative.thumbnail_url || 
-                                 creative.image_url || 
-                                 spec.link_data?.picture || 
-                                 spec.video_data?.image_url ||
-                                 null;
-              
-              if (thumbnailUrl) {
-                this.logger.log(`Ad ${ad.externalId} -> Creative ${creative.id}. Thumbnail: ${thumbnailUrl.substring(0, 60)}...`);
-                adsWithUpdatedCreatives.push({
-                  platform_account_id: ad.accountId,
-                  external_id: ad.externalId,
-                  creative_data: creative,
-                  thumbnail_url: thumbnailUrl,
-                  synced_at: new Date()
-                });
-              } else {
-                this.logger.debug(`No valid thumbnail found for Ad ${ad.externalId} in creative data.`);
-              }
-            }
-          }
-
-          if (adsWithUpdatedCreatives.length > 0) {
-            this.logger.log(`Updating ${adsWithUpdatedCreatives.length} ad thumbnails in database...`);
-            await this.bulkUpsert.execute(
-              'unified_ads',
-              adsWithUpdatedCreatives,
-              ['platform_account_id', 'external_id'],
-              ['creative_data', 'thumbnail_url', 'synced_at']
-            );
-            this.logger.log(`Update complete for ${adsWithUpdatedCreatives.length} ads.`);
-          }
-        } catch (error) {
-          this.logger.error(`Failed to sync ad creatives: ${error.message}`);
-        }
-      }
+      // 3. Trigger Creative Sync via Service
+      this.logger.debug(`Triggering separate creative sync for active ads...`);
+      await this.creativeSync.syncByAccount(account.id);
 
       return { adGroups: matchedAdGroups.length, ads: adEntities.length };
     } catch (error) {
