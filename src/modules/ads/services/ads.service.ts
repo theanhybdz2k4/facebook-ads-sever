@@ -12,7 +12,22 @@ export class AdsService {
         });
     }
 
-    async findAll(userId: number, filters: { accountId?: number; adGroupId?: string; status?: string; effectiveStatus?: string; search?: string; branchId?: number }) {
+    async findAll(userId: number, filters: {
+        accountId?: number;
+        adGroupId?: string;
+        status?: string;
+        effectiveStatus?: string;
+        search?: string;
+        branchId?: number;
+        page?: number;
+        limit?: number;
+        dateStart?: string;
+        dateEnd?: string;
+    }) {
+        const page = filters.page || 1;
+        const limit = filters.limit || 20;
+        const skip = (page - 1) * limit;
+
         const where: any = {
             account: { identity: { userId } }
         };
@@ -34,7 +49,7 @@ export class AdsService {
         }
 
         if (filters.branchId) {
-            where.account.branchId = filters.branchId;
+            where.account = { ...where.account, branchId: filters.branchId };
         }
 
         if (filters.search) {
@@ -43,6 +58,9 @@ export class AdsService {
                 { externalId: { contains: filters.search, mode: 'insensitive' } },
             ];
         }
+
+        // Get total count for pagination
+        const total = await this.prisma.unifiedAd.count({ where });
 
         const ads = await this.prisma.unifiedAd.findMany({
             where,
@@ -56,18 +74,36 @@ export class AdsService {
                 creative: true,
             },
             orderBy: { createdAt: 'desc' },
+            skip,
+            take: limit,
         });
 
-        if (ads.length === 0) return [];
+        if (ads.length === 0) {
+            return {
+                data: [],
+                meta: {
+                    total,
+                    page,
+                    limit,
+                    totalPages: Math.ceil(total / limit)
+                }
+            };
+        }
 
         const adIds = ads.map(a => a.id);
+        const insightWhere: any = { adId: { in: adIds } };
 
-        // Fetch aggregated insights for these ads (lifetime or total for now)
+        if (filters.dateStart && filters.dateEnd) {
+            insightWhere.date = {
+                gte: new Date(`${filters.dateStart}T00:00:00.000Z`),
+                lte: new Date(`${filters.dateEnd}T00:00:00.000Z`),
+            };
+        }
+
+        // Fetch aggregated insights for these ads only
         const insights = await this.prisma.unifiedInsight.groupBy({
             by: ['adId'],
-            where: {
-                adId: { in: adIds }
-            },
+            where: insightWhere,
             _sum: {
                 spend: true,
                 impressions: true,
@@ -81,7 +117,7 @@ export class AdsService {
         // Map insights to ads
         const insightMap = new Map(insights.map(i => [i.adId, i]));
 
-        return ads.map(ad => {
+        const data = ads.map(ad => {
             const sumData = insightMap.get(ad.id);
             const totalSpend = Number(sumData?._sum?.spend || 0);
             const totalResults = Number(sumData?._sum?.results || 0);
@@ -106,11 +142,10 @@ export class AdsService {
                 campaign: ad.adGroup?.campaign,
                 adset: ad.adGroup,
                 thumbnailUrl: (ad as any).creative?.thumbnailUrl || null,
-                // Match frontend expectations for list view metrics
                 metrics: {
                     results: totalResults,
                     costPerResult: summary.avgCpr,
-                    messagingStarted: totalResults, // Proxy
+                    messagingStarted: totalResults,
                     costPerMessaging: summary.avgCpr,
                 },
                 totalSpend,
@@ -118,6 +153,16 @@ export class AdsService {
                 avgCpr: summary.avgCpr,
             };
         });
+
+        return {
+            data,
+            meta: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        };
     }
 
     async findOne(id: string) {

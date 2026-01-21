@@ -9,7 +9,18 @@ export class CampaignsService {
         private readonly platformsService: PlatformsService,
     ) { }
 
-    async findAll(userId: number, filters: { accountId?: number; status?: string; search?: string; branchId?: number }) {
+    async findAll(userId: number, filters: {
+        accountId?: number;
+        status?: string;
+        search?: string;
+        branchId?: number;
+        page?: number;
+        limit?: number;
+    }) {
+        const page = filters.page || 1;
+        const limit = filters.limit || 20;
+        const skip = (page - 1) * limit;
+
         const where: any = {
             account: { identity: { userId } }
         };
@@ -31,7 +42,7 @@ export class CampaignsService {
         }
 
         if (filters.branchId) {
-            where.account.branchId = filters.branchId;
+            where.account = { ...where.account, branchId: filters.branchId };
         }
 
         if (filters.search) {
@@ -41,14 +52,28 @@ export class CampaignsService {
             ];
         }
 
-        return this.prisma.unifiedCampaign.findMany({
+        const total = await this.prisma.unifiedCampaign.count({ where });
+
+        const data = await this.prisma.unifiedCampaign.findMany({
             where,
-            include: { 
+            include: {
                 _count: { select: { adGroups: true } },
                 account: { include: { platform: true } }
             },
             orderBy: { createdAt: 'desc' },
+            skip,
+            take: limit,
         });
+
+        return {
+            data,
+            meta: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        };
     }
 
     async findByAccountSimple(accountId: number) {

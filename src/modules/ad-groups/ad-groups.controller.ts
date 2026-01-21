@@ -20,6 +20,8 @@ export class AdGroupsController {
         @Query('status') status?: string,
         @Query('search') search?: string,
         @Query('branchId') branchId?: string,
+        @Query('page') page?: string,
+        @Query('limit') limit?: string,
     ) {
         return this.adGroupsService.findAll(userId, {
             accountId: accountId ? Number(accountId) : undefined,
@@ -27,22 +29,24 @@ export class AdGroupsController {
             status,
             search,
             branchId: branchId && branchId !== 'all' ? Number(branchId) : undefined,
+            page: page ? Number(page) : 1,
+            limit: limit ? Number(limit) : 20,
         });
     }
 
-    @Get('by-campaign/:campaignId')
-    @ApiOperation({ summary: 'List ad groups by unified campaign ID' })
-    async getByCampaign(
-        @CurrentUser('id') userId: number,
-        @Param('campaignId') campaignId: string
-    ) {
-        return this.adGroupsService.findAll(userId, { campaignId });
-    }
+@Get('by-campaign/:campaignId')
+@ApiOperation({ summary: 'List ad groups by unified campaign ID' })
+async getByCampaign(
+    @CurrentUser('id') userId: number,
+    @Param('campaignId') campaignId: string
+) {
+    return this.adGroupsService.findAll(userId, { campaignId });
+}
 
-    @Get(':id')
-    @ApiOperation({ summary: 'Get ad group details' })
-    async getOne(@Param('id') id: string) {
-        // Logic for single entity detail
-        return { id, name: 'Ad Group Detail Mock' };
-    }
+@Get(':id')
+@ApiOperation({ summary: 'Get ad group details' })
+async getOne(@Param('id') id: string) {
+    // Logic for single entity detail
+    return { id, name: 'Ad Group Detail Mock' };
+}
 }

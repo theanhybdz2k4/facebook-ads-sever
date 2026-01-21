@@ -23,12 +23,16 @@ export class InsightsController {
     @Query('dateStart') dateStart?: string,
     @Query('dateEnd') dateEnd?: string,
     @Query('branchId') branchId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
     return this.insightsQuery.getDailyInsights(user.id, {
       accountId: accountId ? Number(accountId) : undefined,
       dateStart,
       dateEnd,
       branchId: branchId ? Number(branchId) : undefined,
+      page: page ? Number(page) : 1,
+      limit: limit ? Number(limit) : 50,
     });
   }
 

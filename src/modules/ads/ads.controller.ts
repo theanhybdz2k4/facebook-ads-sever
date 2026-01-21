@@ -35,6 +35,10 @@ export class AdsController {
         @Query('effectiveStatus') effectiveStatus?: string,
         @Query('search') search?: string,
         @Query('branchId') branchId?: string,
+        @Query('page') page?: string,
+        @Query('limit') limit?: string,
+        @Query('dateStart') dateStart?: string,
+        @Query('dateEnd') dateEnd?: string,
     ) {
         return this.adsService.findAll(userId, {
             accountId: accountId ? Number(accountId) : undefined,
@@ -43,6 +47,10 @@ export class AdsController {
             effectiveStatus,
             search,
             branchId: branchId && branchId !== 'all' ? Number(branchId) : undefined,
+            page: page ? Number(page) : 1,
+            limit: limit ? Number(limit) : 20,
+            dateStart,
+            dateEnd,
         });
     }
 

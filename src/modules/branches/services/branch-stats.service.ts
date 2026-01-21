@@ -127,32 +127,34 @@ export class BranchStatsService {
     async getDashboardStats(userId: number, dateStart: string, dateEnd: string, platformCode?: string) {
         const start = new Date(`${dateStart}T00:00:00.000Z`);
         const end = new Date(`${dateEnd}T00:00:00.000Z`);
+        const isAllPlatforms = !platformCode || platformCode === 'all';
 
-        const branches = await this.prisma.branch.findMany({
-            where: { userId },
-            include: {
-                accounts: {
-                    where: platformCode && platformCode !== 'all' ? { platform: { code: platformCode } } : undefined,
-                    select: { id: true }
+        // Fetch everything in parallel to minimize roundtrip latency
+        const [branches, allAccounts, allStats, deviceStatsRaw, ageGenderStatsRaw, regionStatsRaw] = await Promise.all([
+            this.prisma.branch.findMany({
+                where: { userId },
+                select: { id: true, name: true, code: true }
+            }),
+            this.prisma.platformAccount.findMany({
+                where: {
+                    branch: { userId },
+                    platform: isAllPlatforms ? undefined : { code: platformCode }
                 },
-                stats: {
-                    where: {
-                        date: { gte: start, lte: end },
-                        platformCode: platformCode && platformCode !== 'all' ? platformCode : undefined
-                    },
-                    orderBy: { date: 'asc' }
-                }
-            }
-        });
-
-        const accountIds = branches.flatMap(b => b.accounts.map(a => a.id));
-
-        const [deviceStats, ageGenderStats, regionStats] = await Promise.all([
+                select: { id: true, branchId: true }
+            }),
+            this.prisma.branchDailyStats.findMany({
+                where: {
+                    branch: { userId },
+                    date: { gte: start, lte: end },
+                    platformCode: isAllPlatforms ? undefined : platformCode
+                },
+                orderBy: { date: 'asc' }
+            }),
             this.prisma.unifiedInsightDevice.groupBy({
                 by: ['device'],
                 where: {
                     insight: {
-                        accountId: { in: accountIds },
+                        account: { branch: { userId } },
                         date: { gte: start, lte: end }
                     }
                 },
@@ -162,7 +164,7 @@ export class BranchStatsService {
                 by: ['age', 'gender'],
                 where: {
                     insight: {
-                        accountId: { in: accountIds },
+                        account: { branch: { userId } },
                         date: { gte: start, lte: end }
                     }
                 },
@@ -172,7 +174,7 @@ export class BranchStatsService {
                 by: ['region', 'country'],
                 where: {
                     insight: {
-                        accountId: { in: accountIds },
+                        account: { branch: { userId } },
                         date: { gte: start, lte: end }
                     }
                 },
@@ -180,27 +182,56 @@ export class BranchStatsService {
             })
         ]);
 
-        // Map to frontend format
-        const mapStats = (stats: any[], keys: string[]) => stats.map(s => ({
-            key: keys.map(k => s[k]).join('|'),
-            ...keys.reduce((acc, k) => ({ ...acc, [k]: s[k] }), {}),
-            spend: Number(s._sum.spend || 0),
-            impressions: Number(s._sum.impressions || 0),
-            clicks: Number(s._sum.clicks || 0),
-            results: Number(s._sum.results || 0)
-        }));
+        // Efficiently map stats
+        const mapStats = (stats: any[], keys: string[]) => stats.map(s => {
+            const result: any = {
+                key: keys.map(k => s[k]).join('|'),
+                spend: Number(s._sum.spend || 0),
+                impressions: Number(s._sum.impressions || 0),
+                clicks: Number(s._sum.clicks || 0),
+                results: Number(s._sum.results || 0)
+            };
+            keys.forEach(k => result[k] = s[k]);
+            return result;
+        });
 
-        const device = mapStats(deviceStats, ['device']);
-        const ageGender = mapStats(ageGenderStats, ['age', 'gender']);
-        const region = mapStats(regionStats, ['region', 'country']);
+        const device = mapStats(deviceStatsRaw, ['device']);
+        const ageGender = mapStats(ageGenderStatsRaw, ['age', 'gender']);
+        const region = mapStats(regionStatsRaw, ['region', 'country']);
 
-        return {
-            branches: branches.map(b => {
-                // Group stats by platform for this branch
-                const platformMap = new Map<string, any>();
-                b.stats.forEach(s => {
-                    if (s.platformCode === 'all') return; // Skip migration default if we want granular data
+        // Group accounts and stats by branchId for fast lookup
+        const accountsByBranch = new Map<number, any[]>();
+        allAccounts.forEach(acc => {
+            if (!accountsByBranch.has(acc.branchId)) accountsByBranch.set(acc.branchId, []);
+            accountsByBranch.get(acc.branchId).push(acc);
+        });
 
+        const statsByBranch = new Map<number, any[]>();
+        allStats.forEach(stat => {
+            if (!statsByBranch.has(stat.branchId)) statsByBranch.set(stat.branchId, []);
+            statsByBranch.get(stat.branchId).push(stat);
+        });
+
+        const mappedBranches = branches.map(b => {
+            const branchStats = statsByBranch.get(b.id) || [];
+            const platformMap = new Map<string, any>();
+            let totalSpend = 0;
+            let totalImpressions = 0;
+            let totalClicks = 0;
+            let totalResults = 0;
+
+            branchStats.forEach(s => {
+                const sSpend = Number(s.totalSpend);
+                const sImpressions = Number(s.totalImpressions);
+                const sClicks = Number(s.totalClicks);
+                const sResults = Number(s.totalResults);
+
+                totalSpend += sSpend;
+                totalImpressions += sImpressions;
+                totalClicks += sClicks;
+                totalResults += sResults;
+
+                if (s.platformCode !== 'all') {
                     if (!platformMap.has(s.platformCode)) {
                         platformMap.set(s.platformCode, {
                             code: s.platformCode,
@@ -211,49 +242,51 @@ export class BranchStatsService {
                         });
                     }
                     const p = platformMap.get(s.platformCode);
-                    p.spend += Number(s.totalSpend);
-                    p.impressions += Number(s.totalImpressions);
-                    p.clicks += Number(s.totalClicks);
-                    p.results += Number(s.totalResults);
-                });
-
-                const platforms = Array.from(platformMap.values());
-
-                // If platforms is empty, use the "all" rows (migration case)
-                if (platforms.length === 0) {
-                    const allRowStats = b.stats.filter(s => s.platformCode === 'all');
-                    if (allRowStats.length > 0) {
-                        platforms.push({
-                            code: 'all',
-                            spend: allRowStats.reduce((sum, s) => sum + Number(s.totalSpend), 0),
-                            impressions: allRowStats.reduce((sum, s) => sum + Number(s.totalImpressions), 0),
-                            clicks: allRowStats.reduce((sum, s) => sum + Number(s.totalClicks), 0),
-                            results: allRowStats.reduce((sum, s) => sum + Number(s.totalResults), 0)
-                        });
-                    }
+                    p.spend += sSpend;
+                    p.impressions += sImpressions;
+                    p.clicks += sClicks;
+                    p.results += sResults;
                 }
+            });
 
-                return {
-                    id: b.id,
-                    name: b.name,
-                    code: b.code,
-                    totalSpend: b.stats.reduce((sum, s) => sum + Number(s.totalSpend), 0),
-                    totalImpressions: b.stats.reduce((sum, s) => sum + Number(s.totalImpressions), 0),
-                    totalClicks: b.stats.reduce((sum, s) => sum + Number(s.totalClicks), 0),
-                    totalResults: b.stats.reduce((sum, s) => sum + Number(s.totalResults), 0),
-                    totalMessaging: b.stats.reduce((sum, s) => sum + Number(s.totalResults), 0),
-                    platforms,
-                    stats: b.stats.map(s => ({
-                        date: s.date.toISOString().split('T')[0],
-                        platformCode: s.platformCode,
-                        spend: Number(s.totalSpend),
-                        impressions: Number(s.totalImpressions),
-                        clicks: Number(s.totalClicks),
-                        results: Number(s.totalResults),
-                        messaging: Number(s.totalResults),
-                    }))
-                };
-            }),
+            const platforms = Array.from(platformMap.values());
+            if (platforms.length === 0) {
+                const allRows = branchStats.filter(s => s.platformCode === 'all');
+                if (allRows.length > 0) {
+                    platforms.push({
+                        code: 'all',
+                        spend: allRows.reduce((sum, s) => sum + Number(s.totalSpend), 0),
+                        impressions: allRows.reduce((sum, s) => sum + Number(s.totalImpressions), 0),
+                        clicks: allRows.reduce((sum, s) => sum + Number(s.totalClicks), 0),
+                        results: allRows.reduce((sum, s) => sum + Number(s.totalResults), 0)
+                    });
+                }
+            }
+
+            return {
+                id: b.id,
+                name: b.name,
+                code: b.code,
+                totalSpend,
+                totalImpressions,
+                totalClicks,
+                totalResults,
+                totalMessaging: totalResults,
+                platforms,
+                stats: branchStats.map(s => ({
+                    date: s.date.toISOString().split('T')[0],
+                    platformCode: s.platformCode,
+                    spend: Number(s.totalSpend),
+                    impressions: Number(s.totalImpressions),
+                    clicks: Number(s.totalClicks),
+                    results: Number(s.totalResults),
+                    messaging: Number(s.totalResults),
+                }))
+            };
+        });
+
+        return {
+            branches: mappedBranches,
             breakdowns: {
                 device,
                 ageGender,
@@ -265,34 +298,32 @@ export class BranchStatsService {
     async getBranchStatsByCode(userId: number, branchCode: string, dateStart: string, dateEnd: string, platformCode?: string) {
         const start = new Date(`${dateStart}T00:00:00.000Z`);
         const end = new Date(`${dateEnd}T00:00:00.000Z`);
+        const isAllPlatforms = !platformCode || platformCode === 'all';
+        const branchFilter = isNaN(Number(branchCode)) ? { code: branchCode } : { id: Number(branchCode) };
 
-        const branch = await this.prisma.branch.findFirst({
-            where: { userId, OR: [{ code: branchCode }, { id: isNaN(Number(branchCode)) ? undefined : Number(branchCode) }] },
-            include: {
-                accounts: {
-                    where: platformCode && platformCode !== 'all' ? { platform: { code: platformCode } } : undefined,
-                    select: { id: true }
-                },
-                stats: {
-                    where: {
-                        date: { gte: start, lte: end },
-                        platformCode: platformCode && platformCode !== 'all' ? platformCode : undefined
+        // Fetch everything in parallel
+        const [branch, deviceStatsRaw, ageGenderStatsRaw, regionStatsRaw] = await Promise.all([
+            this.prisma.branch.findFirst({
+                where: { userId, OR: [branchFilter] },
+                include: {
+                    accounts: {
+                        where: isAllPlatforms ? undefined : { platform: { code: platformCode } },
+                        select: { id: true }
                     },
-                    orderBy: { date: 'asc' }
+                    stats: {
+                        where: {
+                            date: { gte: start, lte: end },
+                            platformCode: isAllPlatforms ? undefined : platformCode
+                        },
+                        orderBy: { date: 'asc' }
+                    }
                 }
-            }
-        });
-
-        if (!branch) throw new Error(`Branch with code/id "${branchCode}" not found`);
-
-        const accountIds = branch.accounts.map(a => a.id);
-
-        const [deviceStats, ageGenderStats, regionStats] = await Promise.all([
+            }),
             this.prisma.unifiedInsightDevice.groupBy({
                 by: ['device'],
                 where: {
                     insight: {
-                        accountId: { in: accountIds },
+                        account: { branch: { ...branchFilter, userId } },
                         date: { gte: start, lte: end }
                     }
                 },
@@ -302,7 +333,7 @@ export class BranchStatsService {
                 by: ['age', 'gender'],
                 where: {
                     insight: {
-                        accountId: { in: accountIds },
+                        account: { branch: { ...branchFilter, userId } },
                         date: { gte: start, lte: end }
                     }
                 },
@@ -312,7 +343,7 @@ export class BranchStatsService {
                 by: ['region', 'country'],
                 where: {
                     insight: {
-                        accountId: { in: accountIds },
+                        account: { branch: { ...branchFilter, userId } },
                         date: { gte: start, lte: end }
                     }
                 },
@@ -320,48 +351,83 @@ export class BranchStatsService {
             })
         ]);
 
-        const mapStats = (stats: any[], keys: string[]) => stats.map(s => ({
-            key: keys.map(k => s[k]).join('|'),
-            ...keys.reduce((acc, k) => ({ ...acc, [k]: s[k] }), {}),
-            spend: Number(s._sum.spend || 0),
-            impressions: Number(s._sum.impressions || 0),
-            clicks: Number(s._sum.clicks || 0),
-            results: Number(s._sum.results || 0)
-        }));
+        if (!branch) throw new Error(`Branch with code/id "${branchCode}" not found`);
 
-        // Group stats by platform for this branch
+        const mapStats = (stats: any[], keys: string[]) => stats.map(s => {
+            const result: any = {
+                key: keys.map(k => s[k]).join('|'),
+                spend: Number(s._sum.spend || 0),
+                impressions: Number(s._sum.impressions || 0),
+                clicks: Number(s._sum.clicks || 0),
+                results: Number(s._sum.results || 0)
+            };
+            keys.forEach(k => result[k] = s[k]);
+            return result;
+        });
+
+        const deviceStats = mapStats(deviceStatsRaw, ['device']);
+        const ageGenderStats = mapStats(ageGenderStatsRaw, ['age', 'gender']);
+        const regionStats = mapStats(regionStatsRaw, ['region', 'country']);
+
         const platformMap = new Map<string, any>();
-        branch.stats.forEach(s => {
-            if (s.platformCode === 'all' && platformCode && platformCode !== 'all') return;
+        let totalSpend = 0;
+        let totalImpressions = 0;
+        let totalClicks = 0;
+        let totalResults = 0;
 
-            if (!platformMap.has(s.platformCode)) {
-                platformMap.set(s.platformCode, {
-                    code: s.platformCode,
-                    spend: 0,
-                    impressions: 0,
-                    clicks: 0,
-                    results: 0
-                });
+        branch.stats.forEach(s => {
+            const sSpend = Number(s.totalSpend);
+            const sImpressions = Number(s.totalImpressions);
+            const sClicks = Number(s.totalClicks);
+            const sResults = Number(s.totalResults);
+
+            totalSpend += sSpend;
+            totalImpressions += sImpressions;
+            totalClicks += sClicks;
+            totalResults += sResults;
+
+            if (s.platformCode !== 'all') {
+                if (!platformMap.has(s.platformCode)) {
+                    platformMap.set(s.platformCode, {
+                        code: s.platformCode,
+                        spend: 0,
+                        impressions: 0,
+                        clicks: 0,
+                        results: 0
+                    });
+                }
+                const p = platformMap.get(s.platformCode);
+                p.spend += sSpend;
+                p.impressions += sImpressions;
+                p.clicks += sClicks;
+                p.results += sResults;
             }
-            const p = platformMap.get(s.platformCode);
-            p.spend += Number(s.totalSpend);
-            p.impressions += Number(s.totalImpressions);
-            p.clicks += Number(s.totalClicks);
-            p.results += Number(s.totalResults);
         });
 
         const platforms = Array.from(platformMap.values());
+        if (platforms.length === 0) {
+            const allRows = branch.stats.filter(s => s.platformCode === 'all');
+            if (allRows.length > 0) {
+                platforms.push({
+                    code: 'all',
+                    spend: allRows.reduce((sum, s) => sum + Number(s.totalSpend), 0),
+                    impressions: allRows.reduce((sum, s) => sum + Number(s.totalImpressions), 0),
+                    clicks: allRows.reduce((sum, s) => sum + Number(s.totalClicks), 0),
+                    results: allRows.reduce((sum, s) => sum + Number(s.totalResults), 0)
+                });
+            }
+        }
 
         return {
             branch: {
                 id: branch.id,
                 name: branch.name,
                 code: branch.code,
-                totalSpend: branch.stats.reduce((sum, s) => sum + Number(s.totalSpend), 0),
-                totalImpressions: branch.stats.reduce((sum, s) => sum + Number(s.totalImpressions), 0),
-                totalClicks: branch.stats.reduce((sum, s) => sum + Number(s.totalClicks), 0),
-                totalResults: branch.stats.reduce((sum, s) => sum + Number(s.totalResults), 0),
-                totalMessaging: branch.stats.reduce((sum, s) => sum + Number(s.totalResults), 0),
+                totalSpend,
+                totalImpressions,
+                totalClicks,
+                totalResults,
+                totalMessaging: totalResults,
                 platforms,
                 stats: branch.stats.map(s => ({
                     date: s.date.toISOString().split('T')[0],

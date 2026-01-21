@@ -243,24 +243,26 @@ model UnifiedAd {
   @@unique([accountId, externalId])
   @@index([adGroupId])
   @@index([creativeId])
+  @@index([accountId, status])
+  @@index([accountId, effectiveStatus])
   @@map("unified_ads")
 }
 
 model UnifiedAdCreative {
-  id              String        @id @default(cuid())
-  accountId       Int           @map("platform_account_id")
-  externalId      String        @map("external_id")
-  name            String?       @map("name")
-  body            String?       @map("body")
-  imageUrl        String?       @map("image_url")
-  thumbnailUrl    String?       @map("thumbnail_url")
-  title           String?       @map("title")
-  platformData    Json?         @map("platform_data")
-  syncedAt        DateTime      @map("synced_at")
-  createdAt       DateTime      @default(now()) @map("created_at")
+  id           String   @id @default(cuid())
+  accountId    Int      @map("platform_account_id")
+  externalId   String   @map("external_id")
+  name         String?  @map("name")
+  body         String?  @map("body")
+  imageUrl     String?  @map("image_url")
+  thumbnailUrl String?  @map("thumbnail_url")
+  title        String?  @map("title")
+  platformData Json?    @map("platform_data")
+  syncedAt     DateTime @map("synced_at")
+  createdAt    DateTime @default(now()) @map("created_at")
 
-  account        PlatformAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  ads            UnifiedAd[]
+  account PlatformAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  ads     UnifiedAd[]
 
   @@unique([accountId, externalId])
   @@map("unified_ad_creatives")
@@ -298,26 +300,29 @@ model UnifiedInsight {
   adGroup  UnifiedAdGroup?  @relation(fields: [adGroupId], references: [id], onDelete: Cascade)
   ad       UnifiedAd?       @relation(fields: [adId], references: [id], onDelete: Cascade)
 
+  deviceStats    UnifiedInsightDevice[]
+  ageGenderStats UnifiedInsightAgeGender[]
+  regionStats    UnifiedInsightRegion[]
+
   @@unique([accountId, campaignId, adGroupId, adId, date])
   @@index([accountId, date])
+  @@index([campaignId, date])
+  @@index([adGroupId, date])
+  @@index([adId, date])
   @@map("unified_insights")
-
-  deviceStats     UnifiedInsightDevice[]
-  ageGenderStats  UnifiedInsightAgeGender[]
-  regionStats     UnifiedInsightRegion[]
 }
 
 model UnifiedInsightDevice {
-  id               String   @id @default(cuid())
-  unifiedInsightId String   @map("unified_insight_id")
-  device           String   @map("device") // 'desktop', 'mobile', etc.
-  impressionDevice String?  @map("impression_device")
+  id               String  @id @default(cuid())
+  unifiedInsightId String  @map("unified_insight_id")
+  device           String  @map("device") // 'desktop', 'mobile', etc.
+  impressionDevice String? @map("impression_device")
 
   spend       Decimal? @map("spend") @db.Decimal(20, 4)
   impressions BigInt?  @map("impressions")
   clicks      BigInt?  @map("clicks")
   results     BigInt?  @map("results")
-  
+
   insight UnifiedInsight @relation(fields: [unifiedInsightId], references: [id], onDelete: Cascade)
 
   @@index([unifiedInsightId])
@@ -325,10 +330,10 @@ model UnifiedInsightDevice {
 }
 
 model UnifiedInsightAgeGender {
-  id               String   @id @default(cuid())
-  unifiedInsightId String   @map("unified_insight_id")
-  age              String   @map("age")
-  gender           String   @map("gender")
+  id               String @id @default(cuid())
+  unifiedInsightId String @map("unified_insight_id")
+  age              String @map("age")
+  gender           String @map("gender")
 
   spend       Decimal? @map("spend") @db.Decimal(20, 4)
   impressions BigInt?  @map("impressions")
@@ -342,10 +347,10 @@ model UnifiedInsightAgeGender {
 }
 
 model UnifiedInsightRegion {
-  id               String   @id @default(cuid())
-  unifiedInsightId String   @map("unified_insight_id")
-  region           String   @map("region")
-  country          String?  @map("country")
+  id               String  @id @default(cuid())
+  unifiedInsightId String  @map("unified_insight_id")
+  region           String  @map("region")
+  country          String? @map("country")
 
   spend       Decimal? @map("spend") @db.Decimal(20, 4)
   impressions BigInt?  @map("impressions")

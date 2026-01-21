@@ -26,12 +26,12 @@ export class CampaignsController {
     @Query('force') force?: string
   ) {
     const forceFullSync = force === 'true';
-    
+
     // Use skipSyncedAtUpdate=true to prevent CampaignsSyncService from updating the timestamp
     // until we finish sync both campaigns and ads.
     const campaigns = await this.campaignsSync.syncByAccount(id, forceFullSync, true);
     const ads = await this.adsSync.syncByAccount(id, forceFullSync);
-    
+
     // Now update syncedAt once
     await this.prisma.platformAccount.update({
       where: { id },
@@ -49,27 +49,31 @@ export class CampaignsController {
     @Query('status') status?: string,
     @Query('search') search?: string,
     @Query('branchId') branchId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
     return this.campaignsService.findAll(userId, {
       accountId: accountId ? Number(accountId) : undefined,
       status,
       search,
       branchId: branchId && branchId !== 'all' ? Number(branchId) : undefined,
+      page: page ? Number(page) : 1,
+      limit: limit ? Number(limit) : 20,
     });
   }
 
-  @Get('by-account/:accountId')
-  @ApiOperation({ summary: 'List campaigns by unified account ID' })
-  async getByAccount(
-    @CurrentUser('id') userId: number,
-    @Param('accountId', ParseIntPipe) accountId: number
-  ) {
-    return this.campaignsService.findAll(userId, { accountId });
-  }
+@Get('by-account/:accountId')
+@ApiOperation({ summary: 'List campaigns by unified account ID' })
+async getByAccount(
+  @CurrentUser('id') userId: number,
+  @Param('accountId', ParseIntPipe) accountId: number
+) {
+  return this.campaignsService.findAll(userId, { accountId });
+}
 
-  @Get(':id')
-  @ApiOperation({ summary: 'Get campaign details' })
-  async getOne(@Param('id') id: string) {
-    return this.campaignsService.findOne(id);
-  }
+@Get(':id')
+@ApiOperation({ summary: 'Get campaign details' })
+async getOne(@Param('id') id: string) {
+  return this.campaignsService.findOne(id);
+}
 }

@@ -1,4 +1,4 @@
-import { Injectable, CanActivate, ExecutionContext, ForbiddenException } from '@nestjs/common';
+import { Injectable, CanActivate, ExecutionContext, ForbiddenException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 /**
@@ -15,10 +15,12 @@ export class InternalApiKeyGuard implements CanActivate {
         const expectedKey = this.configService.get<string>('INTERNAL_API_KEY');
 
         if (!expectedKey) {
+            Logger.error('Internal API key not configured in environment (INTERNAL_API_KEY)');
             throw new ForbiddenException('Internal API key not configured');
         }
 
         if (!apiKey || apiKey !== expectedKey) {
+            Logger.warn(`Invalid internal API key attempt. Received: "${apiKey}", Expected: "${expectedKey}"`);
             throw new ForbiddenException('Invalid internal API key');
         }
 

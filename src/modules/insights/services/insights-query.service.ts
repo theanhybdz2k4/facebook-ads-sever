@@ -14,7 +14,13 @@ export class InsightsQueryService {
     dateStart?: string;
     dateEnd?: string;
     branchId?: number;
+    page?: number;
+    limit?: number;
   }) {
+    const page = filters?.page || 1;
+    const limit = filters?.limit || 50;
+    const skip = (page - 1) * limit;
+
     const where: any = {};
 
     if (filters?.dateStart && filters?.dateEnd) {
@@ -38,7 +44,9 @@ export class InsightsQueryService {
       identity: { userId },
     };
 
-    return this.prisma.unifiedInsight.findMany({
+    const total = await this.prisma.unifiedInsight.count({ where });
+
+    const data = await this.prisma.unifiedInsight.findMany({
       where,
       include: {
         account: { select: { id: true, name: true, platform: { select: { code: true, name: true } } } },
@@ -53,7 +61,19 @@ export class InsightsQueryService {
         }
       },
       orderBy: { date: 'desc' },
+      skip,
+      take: limit,
     });
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
   }
 
   async getBranchAggregatedStats(userId: number, dateStart: string, dateEnd: string) {
