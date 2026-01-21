@@ -71,6 +71,26 @@ export class BranchesController {
         return this.branchStatsService.getBranchBreakdowns(id, dateStart, dateEnd, 'region', platformCode);
     }
 
+    @Get('all/stats')
+    @UseGuards(InternalApiKeyGuard)
+    @ApiOperation({ summary: 'Get consolidated stats for all branches (Internal/External API)' })
+    async getExternalDashboardStats(
+        @Query('userId') userId: string,
+        @Query('dateStart') dateStart?: string,
+        @Query('dateEnd') dateEnd?: string,
+        @Query('platformCode') platformCode?: string,
+    ) {
+        const today = new Date().toISOString().split('T')[0];
+        const defaultStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+        return this.branchStatsService.getDashboardStats(
+            Number(userId),
+            dateStart || defaultStart,
+            dateEnd || today,
+            platformCode
+        );
+    }
+
     @Get(':id/stats')
     @UseGuards(InternalApiKeyGuard)
     @ApiOperation({ summary: 'Get consolidated stats for a specific branch (by ID or code)' })
@@ -101,10 +121,10 @@ export class BranchesController {
     }
 
     @Get('stats/dashboard')
-    @UseGuards(InternalApiKeyGuard)
+    @UseGuards(JwtAuthGuard)
     @ApiOperation({ summary: 'Get consolidated dashboard stats' })
     async getDashboardStats(
-        @Query('userId') queryUserId: string,
+        @CurrentUser('id') userId: number,
         @Query('dateStart') dateStart?: string,
         @Query('dateEnd') dateEnd?: string,
         @Query('platformCode') platformCode?: string,
@@ -113,7 +133,7 @@ export class BranchesController {
         const defaultStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
         return this.branchStatsService.getDashboardStats(
-            Number(queryUserId),
+            userId,
             dateStart || defaultStart,
             dateEnd || today,
             platformCode
