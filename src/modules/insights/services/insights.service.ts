@@ -65,4 +65,15 @@ export class InsightsService {
             orderBy: { date: 'asc' },
         });
     }
+
+    async getHourlyInsights(adId: string, date: string) {
+        const targetDate = new Date(date);
+        return this.prisma.unifiedHourlyInsight.findMany({
+            where: {
+                adId,
+                date: targetDate,
+            },
+            orderBy: { hour: 'asc' },
+        });
+    }
 }

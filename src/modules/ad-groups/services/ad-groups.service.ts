@@ -59,15 +59,37 @@ export class AdGroupsService {
       include: {
         _count: { select: { ads: true } },
         account: { include: { platform: true } },
-        campaign: true
+        campaign: true,
+        insights: true,
       },
       orderBy: { createdAt: 'desc' },
       skip,
       take: limit,
     });
 
+    const dataWithStats = data.map((adGroup) => {
+        const stats = adGroup.insights.reduce(
+            (acc, curr) => {
+                return {
+                    spend: acc.spend + Number(curr.spend || 0),
+                    impressions: acc.impressions + Number(curr.impressions || 0),
+                    clicks: acc.clicks + Number(curr.clicks || 0),
+                    results: acc.results + Number(curr.results || 0),
+                };
+            },
+            { spend: 0, impressions: 0, clicks: 0, results: 0 },
+        );
+
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { insights, ...rest } = adGroup;
+        return {
+            ...rest,
+            stats,
+        };
+    });
+
     return {
-      data,
+      data: dataWithStats,
       meta: {
         total,
         page,

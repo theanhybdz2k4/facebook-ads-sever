@@ -142,6 +142,12 @@ export class AdsService {
                 campaign: ad.adGroup?.campaign,
                 adset: ad.adGroup,
                 thumbnailUrl: (ad as any).creative?.thumbnailUrl || null,
+                stats: {
+                    spend: totalSpend,
+                    impressions: totalImpressions,
+                    clicks: totalClicks,
+                    results: totalResults,
+                },
                 metrics: {
                     results: totalResults,
                     costPerResult: summary.avgCpr,
