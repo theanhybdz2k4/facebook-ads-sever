@@ -33,13 +33,14 @@ export class FacebookInsightAdapter implements IEntityAdapter<any, Prisma.Unifie
 
     // Normalize to Vietnam Time (GMT+7)
     // FB returns hourly stats in the ADVERTISER timezone.
-    // To convert to VN Time:
-    // 1. Get offset of accountTimezone relative to UTC.
-    // 2. Adjust hour and date to GMT+7.
+    // If we want it in Vietnam Time:
+    // hour_vn = (hour_advertiser - offset_advertiser) + 7
+    // For now, if we don't have a reliable timezone lib on the server,
+    // we assume the account is set to a specific timezone or we keep it as is.
+    // However, to fix the "yesterday" issues, we should at least ensure the date is correctly associated.
 
-    // Simplification for now: If account is not GMT+7, we'd need a library like date-fns-tz.
-    // Given the user request, we prioritize GMT+7 alignment.
-    // If accountTimezone is say 'Asia/Ho_Chi_Minh' (GMT+7), no shift needed from aggregated_by_advertiser_time_zone.
+    // If accountTimezone is present (e.g. '7'), we can adjust.
+    // For now, let's keep the date as provided by date_start which is the day in advertiser timezone.
 
     return {
       accountId: 0,
@@ -56,12 +57,50 @@ export class FacebookInsightAdapter implements IEntityAdapter<any, Prisma.Unifie
     };
   }
 
+  mapToDeviceBreakdown(raw: any, unifiedInsightId: string): Prisma.UnifiedInsightDeviceCreateManyInput {
+    return {
+      unifiedInsightId,
+      device: raw.impression_device || 'unknown',
+      impressionDevice: raw.impression_device, // redundant but robust
+      spend: raw.spend ? new Prisma.Decimal(raw.spend) : new Prisma.Decimal(0),
+      impressions: raw.impressions ? BigInt(raw.impressions) : BigInt(0),
+      clicks: raw.clicks ? BigInt(raw.clicks) : BigInt(0),
+      results: this.extractResults(raw),
+    };
+  }
+
+  mapToAgeGenderBreakdown(raw: any, unifiedInsightId: string): Prisma.UnifiedInsightAgeGenderCreateManyInput {
+    return {
+      unifiedInsightId,
+      age: raw.age || 'unknown',
+      gender: raw.gender || 'unknown',
+      spend: raw.spend ? new Prisma.Decimal(raw.spend) : new Prisma.Decimal(0),
+      impressions: raw.impressions ? BigInt(raw.impressions) : BigInt(0),
+      clicks: raw.clicks ? BigInt(raw.clicks) : BigInt(0),
+      results: this.extractResults(raw),
+    };
+  }
+
+  mapToRegionBreakdown(raw: any, unifiedInsightId: string): Prisma.UnifiedInsightRegionCreateManyInput {
+    return {
+      unifiedInsightId,
+      region: raw.region || 'unknown',
+      country: raw.country || 'unknown',
+      spend: raw.spend ? new Prisma.Decimal(raw.spend) : new Prisma.Decimal(0),
+      impressions: raw.impressions ? BigInt(raw.impressions) : BigInt(0),
+      clicks: raw.clicks ? BigInt(raw.clicks) : BigInt(0),
+      results: this.extractResults(raw),
+    };
+  }
+
   private extractResults(raw: any): bigint {
     if (!raw.actions) return BigInt(0);
     const resultTypes = [
       'onsite_conversion.messaging_conversation_started_7d',
       'onsite_conversion.messaging_first_reply',
       'lead',
+      'purchase',
+      'mobile_app_install',
     ];
     const total = raw.actions
       .filter((a: any) => resultTypes.includes(a.action_type))

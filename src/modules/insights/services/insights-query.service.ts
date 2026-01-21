@@ -32,17 +32,25 @@ export class InsightsQueryService {
       where.account = { branchId: filters.branchId };
     }
 
-    // Verify user access via branch
+    // Verify user access via identity
     where.account = {
       ...where.account,
-      branch: { userId },
+      identity: { userId },
     };
 
     return this.prisma.unifiedInsight.findMany({
       where,
       include: {
-        account: { select: { id: true, name: true, platform: { select: { name: true } } } },
+        account: { select: { id: true, name: true, platform: { select: { code: true, name: true } } } },
         campaign: { select: { name: true } },
+        ad: { 
+          select: { 
+            id: true, 
+            name: true, 
+            externalId: true,
+            account: { select: { platform: { select: { code: true } } } }
+          } 
+        }
       },
       orderBy: { date: 'desc' },
     });
@@ -73,7 +81,7 @@ export class InsightsQueryService {
     const ad = await this.prisma.unifiedAd.findFirst({
       where: {
         id: adId,
-        account: { branch: { userId } }
+        account: { identity: { userId } }
       }
     });
     if (!ad) throw new ForbiddenException('Access denied or ad not found');
@@ -149,7 +157,7 @@ export class InsightsQueryService {
     const ad = await this.prisma.unifiedAd.findFirst({
       where: {
         id: adId,
-        account: { branch: { userId } }
+        account: { identity: { userId } }
       }
     });
     if (!ad) throw new ForbiddenException('Access denied or ad not found');

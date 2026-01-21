@@ -15,12 +15,12 @@ export class DispatchService {
     private readonly adsSync: AdsSyncService,
     private readonly insightsSync: InsightsSyncService,
     private readonly telegramService: TelegramService,
-  ) {}
+  ) { }
 
-  async dispatch() {
+  async dispatch(dateStart?: string, dateEnd?: string) {
     const now = new Date();
     const currentHour = now.getHours();
-    this.logger.log(`Dispatching sync jobs for hour: ${currentHour}`);
+    this.logger.log(`Dispatching sync jobs for hour: ${currentHour}${dateStart ? ` (Range: ${dateStart} - ${dateEnd})` : ''}`);
 
     const cronSettings = await this.prisma.cronSetting.findMany({
       where: {
@@ -33,7 +33,7 @@ export class DispatchService {
     const results = [];
     for (const setting of cronSettings) {
       try {
-        const userResults = await this.processUserSync(setting.userId, setting.cronType);
+        const userResults = await this.processUserSync(setting.userId, setting.cronType, dateStart, dateEnd);
         results.push({ userId: setting.userId, cronType: setting.cronType, ...userResults });
 
         // Send Telegram notification if enabled
@@ -48,7 +48,9 @@ export class DispatchService {
     return results;
   }
 
-  private async processUserSync(userId: number, cronType: string) {
+  private async processUserSync(userId: number, cronType: string, dateStart?: string, dateEnd?: string) {
+    const start = dateStart || this.getYesterday();
+    const end = dateEnd || this.getToday();
     const accounts = await this.prisma.platformAccount.findMany({
       where: { identity: { userId }, accountStatus: 'ACTIVE' },
       include: { platform: true },
@@ -70,7 +72,7 @@ export class DispatchService {
         if (cronType === 'ads' || cronType === 'full') {
           await this.adsSync.syncByAccount(account.id);
         }
-        
+
         // Update syncedAt if we did at least campaigns
         if (campaignsSynced) {
           await this.prisma.platformAccount.update({
@@ -79,8 +81,17 @@ export class DispatchService {
           });
         }
 
-        if (cronType === 'insight' || cronType === 'insight_hour' || cronType === 'full') {
-          const res = await this.insightsSync.syncAccountInsights(account.id, this.getYesterday(), this.getToday());
+        if (cronType === 'insight_hour') {
+          // Sync Hourly: Yesterday + Today (For Charts) - Skip Hierarchy for performance
+          const resHourly = await this.insightsSync.syncAccountHourlyInsights(account.id, start, end, false, undefined, true);
+          summary.items += resHourly.count;
+
+          // Sync Daily: Yesterday + Today (For Totals) - Skip Hierarchy & Breakdowns for performance
+          const resDaily = await this.insightsSync.syncAccountInsights(account.id, start, end, false, undefined, true, true);
+          summary.items += resDaily.count;
+        } else if (cronType === 'insight' || cronType === 'full') {
+          // Sync Daily: Yesterday + Today (Includes Hierarchy Sync by default)
+          const res = await this.insightsSync.syncAccountInsights(account.id, start, end);
           summary.items += res.count;
         }
       } catch (err) {
@@ -94,7 +105,7 @@ export class DispatchService {
 
   private async sendTelegramReport(userId: number, results: any) {
     const message = `📊 *Sync Report*\n\n` +
-      `📅 Time: ${new Date().toLocaleString('vi-VN')}\n` +
+      `📅 Time: ${new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}\n` +
       `✅ Accounts: ${results.accounts}\n` +
       `📈 Insights: ${results.items} items\n` +
       `⚠️ Errors: ${results.errors}\n\n` +
@@ -104,12 +115,17 @@ export class DispatchService {
   }
 
   private getToday() {
-    return new Date().toISOString().split('T')[0];
+    // Vietnam Timezone (UTC+7)
+    const now = new Date();
+    const vietnamTime = new Date(now.getTime() + (7 * 60 * 60 * 1000));
+    return vietnamTime.toISOString().split('T')[0];
   }
 
   private getYesterday() {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return d.toISOString().split('T')[0];
+    // Vietnam Timezone (UTC+7)
+    const now = new Date();
+    const vietnamTime = new Date(now.getTime() + (7 * 60 * 60 * 1000));
+    vietnamTime.setDate(vietnamTime.getDate() - 1);
+    return vietnamTime.toISOString().split('T')[0];
   }
 }

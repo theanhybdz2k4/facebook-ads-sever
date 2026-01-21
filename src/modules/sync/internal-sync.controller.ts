@@ -1,7 +1,15 @@
-import { Controller, Post, UseGuards, Logger } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiSecurity } from '@nestjs/swagger';
+import { Controller, Post, UseGuards, Logger, Body } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiSecurity, ApiProperty } from '@nestjs/swagger';
 import { InternalApiKeyGuard } from '@n-modules/auth/guards/internal-api-key.guard';
 import { DispatchService } from './dispatch.service';
+
+class DispatchDto {
+    @ApiProperty({ required: false })
+    dateStart?: string;
+
+    @ApiProperty({ required: false })
+    dateEnd?: string;
+}
 
 @ApiTags('Internal (n8n)')
 @Controller('internal/n8n')
@@ -14,9 +22,9 @@ export class InternalSyncController {
 
     @Post('dispatch')
     @ApiOperation({ summary: 'Dispatch sync jobs for the current hour based on user cron settings' })
-    async dispatch() {
-        this.logger.log('Received dispatch request from n8n');
-        const results = await this.dispatchService.dispatch();
+    async dispatch(@Body() body: DispatchDto) {
+        this.logger.log(`Received dispatch request from n8n${body.dateStart ? ` for range ${body.dateStart} - ${body.dateEnd}` : ''}`);
+        const results = await this.dispatchService.dispatch(body.dateStart, body.dateEnd);
         return {
             success: true,
             timestamp: new Date().toISOString(),

@@ -301,6 +301,61 @@ model UnifiedInsight {
   @@unique([accountId, campaignId, adGroupId, adId, date])
   @@index([accountId, date])
   @@map("unified_insights")
+
+  deviceStats     UnifiedInsightDevice[]
+  ageGenderStats  UnifiedInsightAgeGender[]
+  regionStats     UnifiedInsightRegion[]
+}
+
+model UnifiedInsightDevice {
+  id               String   @id @default(cuid())
+  unifiedInsightId String   @map("unified_insight_id")
+  device           String   @map("device") // 'desktop', 'mobile', etc.
+  impressionDevice String?  @map("impression_device")
+
+  spend       Decimal? @map("spend") @db.Decimal(20, 4)
+  impressions BigInt?  @map("impressions")
+  clicks      BigInt?  @map("clicks")
+  results     BigInt?  @map("results")
+  
+  insight UnifiedInsight @relation(fields: [unifiedInsightId], references: [id], onDelete: Cascade)
+
+  @@index([unifiedInsightId])
+  @@map("unified_insight_devices")
+}
+
+model UnifiedInsightAgeGender {
+  id               String   @id @default(cuid())
+  unifiedInsightId String   @map("unified_insight_id")
+  age              String   @map("age")
+  gender           String   @map("gender")
+
+  spend       Decimal? @map("spend") @db.Decimal(20, 4)
+  impressions BigInt?  @map("impressions")
+  clicks      BigInt?  @map("clicks")
+  results     BigInt?  @map("results")
+
+  insight UnifiedInsight @relation(fields: [unifiedInsightId], references: [id], onDelete: Cascade)
+
+  @@index([unifiedInsightId])
+  @@map("unified_insight_age_gender")
+}
+
+model UnifiedInsightRegion {
+  id               String   @id @default(cuid())
+  unifiedInsightId String   @map("unified_insight_id")
+  region           String   @map("region")
+  country          String?  @map("country")
+
+  spend       Decimal? @map("spend") @db.Decimal(20, 4)
+  impressions BigInt?  @map("impressions")
+  clicks      BigInt?  @map("clicks")
+  results     BigInt?  @map("results")
+
+  insight UnifiedInsight @relation(fields: [unifiedInsightId], references: [id], onDelete: Cascade)
+
+  @@index([unifiedInsightId])
+  @@map("unified_insight_regions")
 }
 
 model UnifiedHourlyInsight {
@@ -357,15 +412,17 @@ model Branch {
 model BranchDailyStats {
   id               Int      @id @default(autoincrement())
   branchId         Int      @map("branch_id")
+  platformCode     String   @default("all") @map("platform_code")
   date             DateTime @map("date") @db.Date
   totalSpend       Decimal  @default(0) @db.Decimal(20, 4)
   totalImpressions BigInt   @default(0)
+  totalClicks      BigInt   @default(0)
   totalResults     BigInt   @default(0)
   createdAt        DateTime @default(now())
 
   branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
-  @@unique([branchId, date])
+  @@unique([branchId, date, platformCode])
   @@map("branch_daily_stats")
 }
 

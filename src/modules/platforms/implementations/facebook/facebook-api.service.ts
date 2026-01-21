@@ -137,7 +137,8 @@ export class FacebookApiService {
     dateRange: { start: string; end: string },
     granularity: 'DAILY' | 'HOURLY' = 'DAILY',
     campaignIds?: string[],
-    adIds?: string[]
+    adIds?: string[],
+    breakdowns?: string | string[],
   ) {
     const params: any = {
       level,
@@ -160,11 +161,20 @@ export class FacebookApiService {
 
     if (granularity === 'HOURLY') {
       params.breakdowns = 'hourly_stats_aggregated_by_advertiser_time_zone';
+      // For hourly, time_increment should be omitted or 'all_days'
+      // Using 'all_days' ensures we get one set of hours for the whole range,
+      // but if since/until is just one day, it's perfect.
+      // If we want it per day, we shouldn't use time_increment.
     } else {
       params.time_increment = 1;
+      if (breakdowns) {
+        params.breakdowns = Array.isArray(breakdowns) ? breakdowns.join(',') : breakdowns;
+      }
     }
 
+    this.logger.debug(`Fetching Insights from FB: ${externalId}, range ${dateRange.start} - ${dateRange.end}, granularity ${granularity}`);
     const data = await this.get<{ data: any[] }>(`/${externalId}/insights`, accessToken, params);
+    this.logger.debug(`Fetched ${data?.data?.length || 0} items from FB for ${externalId}`);
     return data.data;
   }
 }

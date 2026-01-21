@@ -38,6 +38,7 @@ export interface IPlatformAdapter {
     granularity?: 'DAILY' | 'HOURLY';
     campaignIds?: string[];
     adIds?: string[];
+    breakdowns?: string | string[];
   }): Promise<Array<any>>;
 
   /**

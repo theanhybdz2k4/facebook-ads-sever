@@ -1,0 +1,92 @@
+{
+  "users": [
+    {
+      "id": 1,
+      "email": "admin@gmail.com",
+      "password": "$2a$10$Q45bSeehlLikD71P5COomeSptTunByLFPs/OevrZ0nP48tzOa1blm",
+      "name": "System Admin",
+      "isActive": true,
+      "createdAt": "2026-01-19T11:34:03.491Z",
+      "updatedAt": "2026-01-19T11:34:03.491Z",
+      "deletedAt": null,
+      "_count": {
+        "identities": 1,
+        "branches": 0
+      }
+    }
+  ],
+  "identities": [
+    {
+      "id": 2,
+      "name": "ColorME ADS",
+      "externalId": "2723870874469102",
+      "userId": 1
+    }
+  ],
+  "accounts": [
+    {
+      "id": 6,
+      "name": "colorME 13",
+      "externalId": "act_875746726970056",
+      "branchId": null,
+      "identityId": 2
+    },
+    {
+      "id": 8,
+      "name": "colorME 14",
+      "externalId": "act_1329488227850176",
+      "branchId": null,
+      "identityId": 2
+    },
+    {
+      "id": 9,
+      "name": "colorME 15",
+      "externalId": "act_878754100071087",
+      "branchId": null,
+      "identityId": 2
+    },
+    {
+      "id": 7,
+      "name": "colorME 02 (in-house)",
+      "externalId": "act_643165800763573",
+      "branchId": null,
+      "identityId": 2
+    },
+    {
+      "id": 10,
+      "name": "colorME 12",
+      "externalId": "act_568594108265682",
+      "branchId": null,
+      "identityId": 2
+    },
+    {
+      "id": 4,
+      "name": "Bùi Quang Sơn",
+      "externalId": "act_132820516907497",
+      "branchId": null,
+      "identityId": 2
+    },
+    {
+      "id": 3,
+      "name": "Trần Đan Phương Nhi",
+      "externalId": "act_414542725348321",
+      "branchId": null,
+      "identityId": 2
+    },
+    {
+      "id": 2,
+      "name": "colorME 01",
+      "externalId": "act_174629217787917",
+      "branchId": null,
+      "identityId": 2
+    },
+    {
+      "id": 5,
+      "name": "color ME 11",
+      "externalId": "act_461903055427781",
+      "branchId": null,
+      "identityId": 2
+    }
+  ],
+  "insightsCount": 77
+}

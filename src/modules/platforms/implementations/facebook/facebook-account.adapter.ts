@@ -71,6 +71,7 @@ export class FacebookAdapter implements IPlatformAdapter {
         granularity?: 'DAILY' | 'HOURLY';
         campaignIds?: string[];
         adIds?: string[];
+        breakdowns?: string | string[];
     }): Promise<Array<any>> {
         return this.facebookApi.getInsights(
             params.externalAccountId,
@@ -80,6 +81,7 @@ export class FacebookAdapter implements IPlatformAdapter {
             params.granularity || 'DAILY',
             params.campaignIds,
             params.adIds,
+            params.breakdowns,
         );
     }
 
