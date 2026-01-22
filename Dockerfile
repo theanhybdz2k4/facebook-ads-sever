@@ -13,10 +13,10 @@ WORKDIR /app
 
 COPY package.json yarn.lock ./
 
-# ⚠️ BẮT BUỘC: dùng npm registry + clean cache
+# ⚠️ BẮT BUỘC: dùng npm registry + clean cache + ignore-scripts (prisma generate chạy sau)
 RUN yarn config set registry https://registry.npmjs.org \
  && yarn cache clean --all \
- && yarn install --frozen-lockfile
+ && yarn install --frozen-lockfile --ignore-scripts
 
 COPY . .
 
@@ -43,10 +43,13 @@ COPY --from=builder /app/prisma ./prisma
 
 COPY package.json yarn.lock ./
 
-# ⚠️ QUAN TRỌNG NHẤT
+# ⚠️ QUAN TRỌNG NHẤT: ignore-scripts vì prisma generate đã chạy ở builder
 RUN yarn config set registry https://registry.npmjs.org \
  && yarn cache clean --all \
- && yarn install --frozen-lockfile --production
+ && yarn install --frozen-lockfile --production --ignore-scripts
+
+# Prisma generate với schema đã copy
+RUN yarn prisma generate
 
 # App build
 COPY --from=builder /app/dist ./dist
