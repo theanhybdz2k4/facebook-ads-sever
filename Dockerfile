@@ -38,16 +38,15 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# Prisma schema needed for postinstall prisma generate
+COPY --from=builder /app/prisma ./prisma
+
 COPY package.json yarn.lock ./
 
 # ⚠️ QUAN TRỌNG NHẤT
 RUN yarn config set registry https://registry.npmjs.org \
  && yarn cache clean --all \
  && yarn install --frozen-lockfile --production
-
-# Prisma
-COPY --from=builder /app/prisma ./prisma
-RUN yarn prisma generate
 
 # App build
 COPY --from=builder /app/dist ./dist
