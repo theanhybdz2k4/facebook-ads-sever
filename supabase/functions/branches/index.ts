@@ -23,12 +23,11 @@ async function verifyAuth(req: Request) {
     const authHeader = req.headers.get("Authorization");
     const serviceKeyHeader = req.headers.get("x-service-key");
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-    const hardcoded = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxuY2dtYXh0cWpmYmN5cG5jZm9lIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NzM0NzQxMywiZXhwIjoyMDgyOTIzNDEzfQ.zalV6mnyd1Iit0KbHnqLxemnBKFPbKz2159tkHtodJY";
 
-    // 1. Try x-service-key
+    // 1. Try x-service-key (Bypass Postman Auth issues)
     if (serviceKeyHeader) {
         const val = serviceKeyHeader.trim();
-        if (val === hardcoded || (serviceKey !== "" && val === serviceKey)) {
+        if (serviceKey !== "" && val === serviceKey) {
             const url = new URL(req.url);
             const queryUserId = url.searchParams.get("userId");
             return { userId: queryUserId ? parseInt(queryUserId, 10) : 1 };
@@ -38,7 +37,7 @@ async function verifyAuth(req: Request) {
     // 2. Try Bearer Token
     if (authHeader?.startsWith("Bearer ")) {
         const token = authHeader.substring(7).trim();
-        if (token === hardcoded || (serviceKey !== "" && token === serviceKey)) {
+        if (serviceKey !== "" && token === serviceKey) {
             const url = new URL(req.url);
             const queryUserId = url.searchParams.get("userId");
             return { userId: queryUserId ? parseInt(queryUserId, 10) : 1 };
@@ -61,11 +60,7 @@ Deno.serve(async (req) => {
 
     const auth = await verifyAuth(req);
     if (!auth) {
-        return jsonResponse({ 
-            success: false, 
-            error: "Unauthorized", 
-            hint: "Try using 'x-service-key' header with your full token if Bearer is truncated."
-        }, 401);
+        return jsonResponse({ success: false, error: "Unauthorized" }, 401);
     }
 
     const url = new URL(req.url);
