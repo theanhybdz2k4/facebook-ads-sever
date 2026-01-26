@@ -70,10 +70,15 @@ export class CronSettingsService {
 
     for (const setting of settings) {
       let callsPerExecution = 0;
-      if (setting.cronType === 'insights_hour' || setting.cronType === 'insights_daily' || setting.cronType === 'insight') {
+      if (setting.cronType === 'insight' || setting.cronType === 'insight_hourly' || setting.cronType === 'insight_daily') {
         callsPerExecution = adAccountCount;
-      } else if (setting.cronType === 'entities' || setting.cronType === 'full') {
-        callsPerExecution = adAccountCount * 3;
+      } else if (setting.cronType.startsWith('insight_')) {
+        // Breakdowns (device, placement, age_gender, region)
+        callsPerExecution = adAccountCount;
+      } else if (setting.cronType === 'campaign' || setting.cronType === 'ads' || setting.cronType === 'adset' || setting.cronType === 'creative') {
+        callsPerExecution = adAccountCount;
+      } else if (setting.cronType === 'full') {
+        callsPerExecution = adAccountCount * 3 + adAccountCount; // Entities + Insights
       } else {
         callsPerExecution = adAccountCount;
       }

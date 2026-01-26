@@ -16,6 +16,8 @@ export class CampaignsService {
         branchId?: number;
         page?: number;
         limit?: number;
+        dateStart?: string;
+        dateEnd?: string;
     }) {
         const page = filters.page || 1;
         const limit = filters.limit || 20;
@@ -52,38 +54,81 @@ export class CampaignsService {
             ];
         }
 
-        const total = await this.prisma.unifiedCampaign.count({ where });
+        // ✅ Optimization: Fetch count and data in parallel
+        const [total, data] = await Promise.all([
+            this.prisma.unifiedCampaign.count({ where }),
+            this.prisma.unifiedCampaign.findMany({
+                where,
+                select: {
+                    id: true,
+                    externalId: true,
+                    name: true,
+                    status: true,
+                    objective: true,
+                    dailyBudget: true,
+                    lifetimeBudget: true,
+                    startTime: true,
+                    endTime: true,
+                    effectiveStatus: true,
+                    syncedAt: true,
+                    createdAt: true,
+                    accountId: true,
+                    account: { 
+                        select: { 
+                            id: true, 
+                            name: true,
+                            platform: { select: { code: true, name: true } },
+                        } 
+                    },
+                    _count: { select: { adGroups: true } },
+                },
+                orderBy: { createdAt: 'desc' },
+                skip,
+                take: limit,
+            }),
+        ]);
 
-        const data = await this.prisma.unifiedCampaign.findMany({
-            where,
-            include: {
-                _count: { select: { adGroups: true } },
-                account: { include: { platform: true } },
-                insights: true,
+        // ✅ Optimization: Use aggregation instead of fetching all insights
+        const campaignIds = data.map(c => c.id);
+        
+        const statsWhere: any = { campaignId: { in: campaignIds } };
+        if (filters.dateStart || filters.dateEnd) {
+            statsWhere.date = {};
+            if (filters.dateStart) statsWhere.date.gte = new Date(filters.dateStart);
+            if (filters.dateEnd) statsWhere.date.lte = new Date(filters.dateEnd);
+        }
+
+        const stats = await this.prisma.unifiedInsight.groupBy({
+            by: ['campaignId'],
+            where: statsWhere,
+            _sum: {
+                spend: true,
+                impressions: true,
+                clicks: true,
+                results: true,
             },
-            orderBy: { createdAt: 'desc' },
-            skip,
-            take: limit,
         });
 
-        const dataWithStats = data.map((campaign) => {
-            const stats = campaign.insights.reduce(
-                (acc, curr) => {
-                    return {
-                        spend: acc.spend + Number(curr.spend || 0),
-                        impressions: acc.impressions + Number(curr.impressions || 0),
-                        clicks: acc.clicks + Number(curr.clicks || 0),
-                        results: acc.results + Number(curr.results || 0),
-                    };
-                },
-                { spend: 0, impressions: 0, clicks: 0, results: 0 },
-            );
+        const statsMap = new Map(stats.map(s => [s.campaignId, s._sum]));
 
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            const { insights, ...rest } = campaign;
+        const dataWithStats = data.map((campaign) => {
+            const campaignStats = statsMap.get(campaign.id) || {
+                spend: 0,
+                impressions: 0,
+                clicks: 0,
+                results: 0,
+            };
+            
+            const { _count, ...rest } = campaign;
             return {
                 ...rest,
-                stats,
+                stats: {
+                    spend: Number(campaignStats.spend || 0),
+                    impressions: Number(campaignStats.impressions || 0),
+                    clicks: Number(campaignStats.clicks || 0),
+                    results: Number(campaignStats.results || 0),
+                },
+                adGroupCount: _count.adGroups,
             };
         });
 

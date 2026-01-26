@@ -51,6 +51,8 @@ export class CampaignsController {
     @Query('branchId') branchId?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('dateStart') dateStart?: string,
+    @Query('dateEnd') dateEnd?: string,
   ) {
     return this.campaignsService.findAll(userId, {
       accountId: accountId ? Number(accountId) : undefined,
@@ -59,21 +61,23 @@ export class CampaignsController {
       branchId: branchId && branchId !== 'all' ? Number(branchId) : undefined,
       page: page ? Number(page) : 1,
       limit: limit ? Number(limit) : 20,
+      dateStart,
+      dateEnd,
     });
   }
 
-@Get('by-account/:accountId')
-@ApiOperation({ summary: 'List campaigns by unified account ID' })
-async getByAccount(
-  @CurrentUser('id') userId: number,
-  @Param('accountId', ParseIntPipe) accountId: number
-) {
-  return this.campaignsService.findAll(userId, { accountId });
-}
+  @Get('by-account/:accountId')
+  @ApiOperation({ summary: 'List campaigns by unified account ID' })
+  async getByAccount(
+    @CurrentUser('id') userId: number,
+    @Param('accountId', ParseIntPipe) accountId: number
+  ) {
+    return this.campaignsService.findAll(userId, { accountId });
+  }
 
-@Get(':id')
-@ApiOperation({ summary: 'Get campaign details' })
-async getOne(@Param('id') id: string) {
-  return this.campaignsService.findOne(id);
-}
+  @Get(':id')
+  @ApiOperation({ summary: 'Get campaign details' })
+  async getOne(@Param('id') id: string) {
+    return this.campaignsService.findOne(id);
+  }
 }

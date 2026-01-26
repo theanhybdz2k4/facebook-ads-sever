@@ -140,10 +140,15 @@ export class FacebookApiService {
     adIds?: string[],
     breakdowns?: string | string[],
   ) {
+    const fields = ['ad_id', 'adset_id', 'campaign_id', 'date_start', 'date_stop', 'spend', 'impressions', 'clicks', 'actions', 'action_values'];
+    if (granularity !== 'HOURLY') {
+      fields.push('reach');
+    }
+
     const params: any = {
       level,
       time_range: JSON.stringify({ since: dateRange.start, until: dateRange.end }),
-      fields: 'ad_id,adset_id,campaign_id,date_start,date_stop,spend,impressions,clicks,reach,actions,action_values',
+      fields: fields.join(','),
       limit: 1000,
     };
 

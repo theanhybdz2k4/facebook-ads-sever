@@ -75,6 +75,31 @@ export class BranchStatsService {
         return results;
     }
 
+    async aggregateBranchStatsForDateRange(branchId: number, dateStart: string, dateEnd: string) {
+        const startDate = new Date(`${dateStart}T00:00:00.000Z`);
+        const endDate = new Date(`${dateEnd}T00:00:00.000Z`);
+
+        // Get all unique dates where this branch has insights
+        const dates = await this.prisma.unifiedInsight.findMany({
+            where: {
+                account: { branchId }
+            },
+            select: { date: true },
+            distinct: ['date'],
+        });
+
+        if (dates.length === 0) return { aggregated: 0 };
+
+        let aggregatedCount = 0;
+        for (const { date } of dates) {
+            const dateStr = date.toISOString().split('T')[0];
+            const result = await this.aggregateBranchStats(branchId, dateStr);
+            if (result) aggregatedCount++;
+        }
+
+        return { aggregated: aggregatedCount };
+    }
+
     async rebuildStats(userId: number) {
         // Get all branches for this user
         const branches = await this.prisma.branch.findMany({

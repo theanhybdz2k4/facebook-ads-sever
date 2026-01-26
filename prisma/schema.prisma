@@ -191,6 +191,8 @@ model UnifiedCampaign {
 
   @@unique([accountId, externalId])
   @@index([accountId])
+  @@index([accountId, status])
+  @@index([accountId, createdAt])
   @@map("unified_campaigns")
 }
 
@@ -217,6 +219,8 @@ model UnifiedAdGroup {
 
   @@unique([accountId, externalId])
   @@index([campaignId])
+  @@index([accountId, status])
+  @@index([accountId, createdAt])
   @@map("unified_ad_groups")
 }
 
@@ -245,6 +249,7 @@ model UnifiedAd {
   @@index([creativeId])
   @@index([accountId, status])
   @@index([accountId, effectiveStatus])
+  @@index([accountId, createdAt])
   @@map("unified_ads")
 }
 
@@ -428,6 +433,8 @@ model BranchDailyStats {
   branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
   @@unique([branchId, date, platformCode])
+  @@index([branchId, date])
+  @@index([branchId, platformCode])
   @@map("branch_daily_stats")
 }
 

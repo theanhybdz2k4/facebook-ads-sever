@@ -40,14 +40,14 @@ export class InsightsController {
   @ApiOperation({ summary: 'Sync insights for a platform account' })
   async syncAccount(
     @Param('id', ParseIntPipe) id: number,
-    @Body() dto: { dateStart: string; dateEnd: string; granularity?: 'DAILY' | 'HOURLY' },
+    @Body() dto: { dateStart: string; dateEnd: string; granularity?: 'DAILY' | 'HOURLY' | 'BOTH' },
     @Query('force') force?: string,
   ) {
     const forceFullSync = force === 'true';
     if (dto.granularity === 'HOURLY') {
       return this.insightsSync.syncAccountHourlyInsights(id, dto.dateStart, dto.dateEnd, forceFullSync);
     }
-    return this.insightsSync.syncAccountInsights(id, dto.dateStart, dto.dateEnd, forceFullSync);
+    return this.insightsSync.syncAccountInsights(id, dto.dateStart, dto.dateEnd, forceFullSync, undefined, false, false, dto.granularity);
   }
 
   @Post('sync/branch/:id')

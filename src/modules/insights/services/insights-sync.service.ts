@@ -74,8 +74,13 @@ export class InsightsSyncService {
     return results;
   }
 
-  async syncAccountInsights(accountId: number, dateStart: string, dateEnd: string, forceFullSync = false, targetAdExternalIds?: string[], skipHierarchySync = false, skipBreakdowns = false) {
-    return this.syncInternal(accountId, dateStart, dateEnd, 'DAILY', forceFullSync, targetAdExternalIds, skipHierarchySync, skipBreakdowns);
+  async syncAccountInsights(accountId: number, dateStart: string, dateEnd: string, forceFullSync = false, targetAdExternalIds?: string[], skipHierarchySync = false, skipBreakdowns = false, granularity: 'DAILY' | 'HOURLY' | 'BOTH' = 'DAILY') {
+    if (granularity === 'BOTH') {
+      const daily = await this.syncInternal(accountId, dateStart, dateEnd, 'DAILY', forceFullSync, targetAdExternalIds, skipHierarchySync, skipBreakdowns);
+      const hourly = await this.syncInternal(accountId, dateStart, dateEnd, 'HOURLY', forceFullSync, targetAdExternalIds, true, true); // skip hierarchy and breakdowns for hourly
+      return { count: daily.count + hourly.count };
+    }
+    return this.syncInternal(accountId, dateStart, dateEnd, granularity as 'DAILY' | 'HOURLY', forceFullSync, targetAdExternalIds, skipHierarchySync, skipBreakdowns);
   }
 
   async syncAccountHourlyInsights(accountId: number, dateStart: string, dateEnd: string, forceFullSync = false, targetAdExternalIds?: string[], skipHierarchySync = false) {
