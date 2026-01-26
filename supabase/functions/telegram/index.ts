@@ -5,7 +5,7 @@ import { verify } from "https://deno.land/x/djwt@v3.0.1/mod.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-const JWT_SECRET = Deno.env.get("JWT_SECRET") || "heSq8+qsjA5sN/4UM6HJ/fg5t8Pjt/9r/tOAy5iVHyQ=";
+const JWT_SECRET = Deno.env.get("JWT_SECRET") || "your-secret-key";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const corsHeaders = {
@@ -29,17 +29,26 @@ async function getKey(): Promise<CryptoKey> {
 // Helper to get user from token
 async function getUser(req: Request) {
   const authHeader = req.headers.get("Authorization");
-  if (!authHeader?.startsWith("Bearer ")) return null;
+  console.log(`[Auth] Header: ${authHeader ? "Present" : "Missing"}`);
+  if (!authHeader?.startsWith("Bearer ")) {
+    console.log("[Auth] Bearer token missing");
+    return null;
+  }
   const token = authHeader.substring(7);
 
   try {
     const key = await getKey();
+    console.log(`[Auth] Verifying token with secret fallback: ${JWT_SECRET === "your-secret-key" ? "your-secret-key" : "custom"}`);
     const payload = await verify(token, key);
-    if (!payload || !payload.sub) return null;
+    console.log(`[Auth] Payload: ${JSON.stringify(payload)}`);
+    if (!payload || !payload.sub) {
+      console.log("[Auth] Payload invalid or missing sub");
+      return null;
+    }
 
     return { id: Number(payload.sub) };
   } catch (err) {
-    console.error("JWT Verify Error:", err);
+    console.error("[Auth] JWT Verify Error:", err.message);
     return null;
   }
 }
@@ -213,16 +222,51 @@ Deno.serve(async (req: Request) => {
     const botIdParam = botsIndex !== -1 && parts[botsIndex + 1] ? parts[botsIndex + 1] : null;
     const botId = botIdParam && !isNaN(parseInt(botIdParam)) ? parseInt(botIdParam, 10) : null;
 
-    // --- GET /telegram/bots ---
     if (method === "GET" && !botId) {
         const { data, error } = await supabase
             .from("telegram_bots")
-            .select("*, adAccount:platform_accounts(id, name)")
-            .eq("user_id", userId)
-            .eq("is_active", true);
+            .select("*, adAccount:platform_accounts(id, name), notificationSettings:telegram_bot_notification_settings(*)")
+            .eq("is_active", true)
+            .eq("user_id", userId);
             
         if (error) throw error;
-        return jsonResponse({ success: true, result: { bots: data } });
+        
+        // Enrich and map to camelCase to match frontend interface
+        const enrichedBots = await Promise.all((data || []).map(async (bot: any) => {
+            const [activeRes, totalRes] = await Promise.all([
+                supabase.from("telegram_subscribers").select("*", { count: 'exact', head: true }).eq("telegram_bot_id", bot.id).eq("is_active", true),
+                supabase.from("telegram_subscribers").select("*", { count: 'exact', head: true }).eq("telegram_bot_id", bot.id)
+            ]);
+            
+            // Map notification settings to camelCase
+            const settings = bot.notificationSettings?.[0] || bot.notificationSettings || null;
+            const notificationSettings = settings ? {
+                id: settings.id,
+                userId: settings.user_id,
+                botId: settings.telegram_bot_id,
+                allowedHours: settings.allowed_hours || [],
+                enabled: settings.enabled ?? true,
+                createdAt: settings.created_at,
+                updatedAt: settings.updated_at
+            } : null;
+
+            return {
+                id: bot.id,
+                userId: bot.user_id,
+                adAccountId: bot.platform_account_id,
+                botToken: bot.bot_token,
+                botName: bot.bot_name,
+                botUsername: bot.bot_username,
+                isActive: bot.is_active,
+                adAccount: bot.adAccount,
+                notificationSettings,
+                activeSubscribers: activeRes.count || 0,
+                subscriberCount: totalRes.count || 0,
+                telegramLink: `https://t.me/${bot.bot_username || 'your_bot'}`
+            };
+        }));
+        
+        return jsonResponse({ success: true, result: { bots: enrichedBots } });
     }
 
     // --- GET /telegram/bots/:id/settings ---

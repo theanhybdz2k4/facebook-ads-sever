@@ -30,6 +30,14 @@ export class BranchesService {
         });
     }
 
+    async getBranchesSimple(userId: number) {
+        return this.prisma.branch.findMany({
+            where: { userId },
+            select: { id: true, name: true, code: true },
+            orderBy: { name: 'asc' },
+        });
+    }
+
     async getBranch(branchId: number, userId: number) {
         const branch = await this.prisma.branch.findFirst({
             where: { id: branchId, userId },

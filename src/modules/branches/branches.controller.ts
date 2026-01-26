@@ -22,6 +22,13 @@ export class BranchesController {
         return this.branchesService.getBranches(userId);
     }
 
+    @Get('internal/list')
+    @UseGuards(InternalApiKeyGuard)
+    @ApiOperation({ summary: 'Simple branch list for internal tools (no logic)' })
+    async getInternalBranches(@Query('userId', ParseIntPipe) userId: number) {
+        return this.branchesService.getBranchesSimple(userId);
+    }
+
     @Post()
     @UseGuards(JwtAuthGuard)
     @ApiOperation({ summary: 'Create a new branch' })

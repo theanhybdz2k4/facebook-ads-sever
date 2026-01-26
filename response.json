@@ -1,0 +1,1368 @@
+{
+    "branches": [
+        {
+            "id": 2,
+            "name": "Sài Gòn",
+            "code": "colormesg",
+            "totalSpend": 39617586,
+            "totalImpressions": 691395,
+            "totalClicks": 9951,
+            "totalResults": 1014,
+            "totalMessaging": 1014,
+            "platforms": [
+                {
+                    "code": "facebook",
+                    "spend": 39617586,
+                    "impressions": 691395,
+                    "clicks": 9951,
+                    "results": 1014
+                }
+            ],
+            "stats": [
+                {
+                    "date": "2026-01-18",
+                    "platformCode": "facebook",
+                    "spend": 1391532,
+                    "impressions": 22640,
+                    "clicks": 372,
+                    "results": 51,
+                    "messaging": 51
+                },
+                {
+                    "date": "2026-01-24",
+                    "platformCode": "facebook",
+                    "spend": 1521635,
+                    "impressions": 30295,
+                    "clicks": 504,
+                    "results": 55,
+                    "messaging": 55
+                },
+                {
+                    "date": "2026-01-19",
+                    "platformCode": "facebook",
+                    "spend": 1537845,
+                    "impressions": 26565,
+                    "clicks": 416,
+                    "results": 36,
+                    "messaging": 36
+                },
+                {
+                    "date": "2026-01-01",
+                    "platformCode": "facebook",
+                    "spend": 1360701,
+                    "impressions": 50393,
+                    "clicks": 405,
+                    "results": 17,
+                    "messaging": 17
+                },
+                {
+                    "date": "2026-01-20",
+                    "platformCode": "facebook",
+                    "spend": 2034052,
+                    "impressions": 34775,
+                    "clicks": 665,
+                    "results": 60,
+                    "messaging": 60
+                },
+                {
+                    "date": "2026-01-09",
+                    "platformCode": "facebook",
+                    "spend": 1691937,
+                    "impressions": 23763,
+                    "clicks": 373,
+                    "results": 43,
+                    "messaging": 43
+                },
+                {
+                    "date": "2026-01-02",
+                    "platformCode": "facebook",
+                    "spend": 1459267,
+                    "impressions": 44395,
+                    "clicks": 345,
+                    "results": 28,
+                    "messaging": 28
+                },
+                {
+                    "date": "2026-01-21",
+                    "platformCode": "facebook",
+                    "spend": 1587020,
+                    "impressions": 25912,
+                    "clicks": 539,
+                    "results": 54,
+                    "messaging": 54
+                },
+                {
+                    "date": "2026-01-10",
+                    "platformCode": "facebook",
+                    "spend": 1640923,
+                    "impressions": 25197,
+                    "clicks": 351,
+                    "results": 35,
+                    "messaging": 35
+                },
+                {
+                    "date": "2026-01-03",
+                    "platformCode": "facebook",
+                    "spend": 1113435,
+                    "impressions": 42401,
+                    "clicks": 318,
+                    "results": 34,
+                    "messaging": 34
+                },
+                {
+                    "date": "2026-01-04",
+                    "platformCode": "facebook",
+                    "spend": 1805842,
+                    "impressions": 55207,
+                    "clicks": 450,
+                    "results": 35,
+                    "messaging": 35
+                },
+                {
+                    "date": "2026-01-11",
+                    "platformCode": "facebook",
+                    "spend": 2145642,
+                    "impressions": 29590,
+                    "clicks": 438,
+                    "results": 44,
+                    "messaging": 44
+                },
+                {
+                    "date": "2026-01-22",
+                    "platformCode": "facebook",
+                    "spend": 1173019,
+                    "impressions": 13746,
+                    "clicks": 300,
+                    "results": 43,
+                    "messaging": 43
+                },
+                {
+                    "date": "2026-01-05",
+                    "platformCode": "facebook",
+                    "spend": 1542492,
+                    "impressions": 29231,
+                    "clicks": 356,
+                    "results": 32,
+                    "messaging": 32
+                },
+                {
+                    "date": "2026-01-12",
+                    "platformCode": "facebook",
+                    "spend": 2107793,
+                    "impressions": 22865,
+                    "clicks": 382,
+                    "results": 38,
+                    "messaging": 38
+                },
+                {
+                    "date": "2026-01-13",
+                    "platformCode": "facebook",
+                    "spend": 1261860,
+                    "impressions": 16186,
+                    "clicks": 239,
+                    "results": 43,
+                    "messaging": 43
+                },
+                {
+                    "date": "2026-01-23",
+                    "platformCode": "facebook",
+                    "spend": 1127706,
+                    "impressions": 15702,
+                    "clicks": 321,
+                    "results": 23,
+                    "messaging": 23
+                },
+                {
+                    "date": "2026-01-06",
+                    "platformCode": "facebook",
+                    "spend": 1592186,
+                    "impressions": 27746,
+                    "clicks": 476,
+                    "results": 52,
+                    "messaging": 52
+                },
+                {
+                    "date": "2026-01-14",
+                    "platformCode": "facebook",
+                    "spend": 1096034,
+                    "impressions": 11700,
+                    "clicks": 199,
+                    "results": 27,
+                    "messaging": 27
+                },
+                {
+                    "date": "2026-01-07",
+                    "platformCode": "facebook",
+                    "spend": 1528121,
+                    "impressions": 21580,
+                    "clicks": 345,
+                    "results": 37,
+                    "messaging": 37
+                },
+                {
+                    "date": "2026-01-15",
+                    "platformCode": "facebook",
+                    "spend": 1037083,
+                    "impressions": 11895,
+                    "clicks": 218,
+                    "results": 40,
+                    "messaging": 40
+                },
+                {
+                    "date": "2026-01-16",
+                    "platformCode": "facebook",
+                    "spend": 1066990,
+                    "impressions": 13232,
+                    "clicks": 260,
+                    "results": 33,
+                    "messaging": 33
+                },
+                {
+                    "date": "2026-01-17",
+                    "platformCode": "facebook",
+                    "spend": 927268,
+                    "impressions": 19012,
+                    "clicks": 285,
+                    "results": 23,
+                    "messaging": 23
+                },
+                {
+                    "date": "2026-01-08",
+                    "platformCode": "facebook",
+                    "spend": 1457833,
+                    "impressions": 18683,
+                    "clicks": 293,
+                    "results": 31,
+                    "messaging": 31
+                },
+                {
+                    "date": "2026-01-25",
+                    "platformCode": "facebook",
+                    "spend": 2658354,
+                    "impressions": 36311,
+                    "clicks": 674,
+                    "results": 74,
+                    "messaging": 74
+                },
+                {
+                    "date": "2026-01-26",
+                    "platformCode": "facebook",
+                    "spend": 1751016,
+                    "impressions": 22373,
+                    "clicks": 427,
+                    "results": 26,
+                    "messaging": 26
+                }
+            ]
+        },
+        {
+            "id": 3,
+            "name": "Hà Nội",
+            "code": "colormehn",
+            "totalSpend": 52270019,
+            "totalImpressions": 1070521,
+            "totalClicks": 14257,
+            "totalResults": 1448,
+            "totalMessaging": 1448,
+            "platforms": [
+                {
+                    "code": "facebook",
+                    "spend": 52270019,
+                    "impressions": 1070521,
+                    "clicks": 14257,
+                    "results": 1448
+                }
+            ],
+            "stats": [
+                {
+                    "date": "2026-01-04",
+                    "platformCode": "facebook",
+                    "spend": 2159390,
+                    "impressions": 59534,
+                    "clicks": 666,
+                    "results": 49,
+                    "messaging": 49
+                },
+                {
+                    "date": "2026-01-13",
+                    "platformCode": "facebook",
+                    "spend": 1817565,
+                    "impressions": 25946,
+                    "clicks": 340,
+                    "results": 55,
+                    "messaging": 55
+                },
+                {
+                    "date": "2026-01-05",
+                    "platformCode": "facebook",
+                    "spend": 2446072,
+                    "impressions": 62813,
+                    "clicks": 776,
+                    "results": 71,
+                    "messaging": 71
+                },
+                {
+                    "date": "2026-01-06",
+                    "platformCode": "facebook",
+                    "spend": 2341868,
+                    "impressions": 60513,
+                    "clicks": 723,
+                    "results": 59,
+                    "messaging": 59
+                },
+                {
+                    "date": "2026-01-14",
+                    "platformCode": "facebook",
+                    "spend": 1751094,
+                    "impressions": 28647,
+                    "clicks": 402,
+                    "results": 48,
+                    "messaging": 48
+                },
+                {
+                    "date": "2026-01-25",
+                    "platformCode": "facebook",
+                    "spend": 2698396,
+                    "impressions": 46331,
+                    "clicks": 782,
+                    "results": 102,
+                    "messaging": 102
+                },
+                {
+                    "date": "2026-01-07",
+                    "platformCode": "facebook",
+                    "spend": 2448064,
+                    "impressions": 57388,
+                    "clicks": 603,
+                    "results": 48,
+                    "messaging": 48
+                },
+                {
+                    "date": "2026-01-08",
+                    "platformCode": "facebook",
+                    "spend": 2301125,
+                    "impressions": 43700,
+                    "clicks": 518,
+                    "results": 48,
+                    "messaging": 48
+                },
+                {
+                    "date": "2026-01-20",
+                    "platformCode": "facebook",
+                    "spend": 1885447,
+                    "impressions": 37160,
+                    "clicks": 568,
+                    "results": 62,
+                    "messaging": 62
+                },
+                {
+                    "date": "2026-01-15",
+                    "platformCode": "facebook",
+                    "spend": 2088644,
+                    "impressions": 28731,
+                    "clicks": 411,
+                    "results": 69,
+                    "messaging": 69
+                },
+                {
+                    "date": "2026-01-21",
+                    "platformCode": "facebook",
+                    "spend": 1664908,
+                    "impressions": 30210,
+                    "clicks": 687,
+                    "results": 57,
+                    "messaging": 57
+                },
+                {
+                    "date": "2026-01-22",
+                    "platformCode": "facebook",
+                    "spend": 2075860,
+                    "impressions": 32640,
+                    "clicks": 665,
+                    "results": 77,
+                    "messaging": 77
+                },
+                {
+                    "date": "2026-01-09",
+                    "platformCode": "facebook",
+                    "spend": 2309954,
+                    "impressions": 49218,
+                    "clicks": 611,
+                    "results": 55,
+                    "messaging": 55
+                },
+                {
+                    "date": "2026-01-16",
+                    "platformCode": "facebook",
+                    "spend": 1577524,
+                    "impressions": 26072,
+                    "clicks": 351,
+                    "results": 49,
+                    "messaging": 49
+                },
+                {
+                    "date": "2026-01-01",
+                    "platformCode": "facebook",
+                    "spend": 930049,
+                    "impressions": 32798,
+                    "clicks": 356,
+                    "results": 23,
+                    "messaging": 23
+                },
+                {
+                    "date": "2026-01-10",
+                    "platformCode": "facebook",
+                    "spend": 1948282,
+                    "impressions": 45229,
+                    "clicks": 517,
+                    "results": 42,
+                    "messaging": 42
+                },
+                {
+                    "date": "2026-01-02",
+                    "platformCode": "facebook",
+                    "spend": 1143573,
+                    "impressions": 30915,
+                    "clicks": 330,
+                    "results": 20,
+                    "messaging": 20
+                },
+                {
+                    "date": "2026-01-17",
+                    "platformCode": "facebook",
+                    "spend": 1424481,
+                    "impressions": 39775,
+                    "clicks": 405,
+                    "results": 38,
+                    "messaging": 38
+                },
+                {
+                    "date": "2026-01-03",
+                    "platformCode": "facebook",
+                    "spend": 1970753,
+                    "impressions": 57477,
+                    "clicks": 642,
+                    "results": 33,
+                    "messaging": 33
+                },
+                {
+                    "date": "2026-01-11",
+                    "platformCode": "facebook",
+                    "spend": 2225755,
+                    "impressions": 52237,
+                    "clicks": 571,
+                    "results": 59,
+                    "messaging": 59
+                },
+                {
+                    "date": "2026-01-12",
+                    "platformCode": "facebook",
+                    "spend": 2461540,
+                    "impressions": 40589,
+                    "clicks": 504,
+                    "results": 93,
+                    "messaging": 93
+                },
+                {
+                    "date": "2026-01-18",
+                    "platformCode": "facebook",
+                    "spend": 2162712,
+                    "impressions": 36265,
+                    "clicks": 468,
+                    "results": 52,
+                    "messaging": 52
+                },
+                {
+                    "date": "2026-01-19",
+                    "platformCode": "facebook",
+                    "spend": 2393664,
+                    "impressions": 43186,
+                    "clicks": 566,
+                    "results": 68,
+                    "messaging": 68
+                },
+                {
+                    "date": "2026-01-26",
+                    "platformCode": "facebook",
+                    "spend": 1901623,
+                    "impressions": 27220,
+                    "clicks": 475,
+                    "results": 53,
+                    "messaging": 53
+                },
+                {
+                    "date": "2026-01-23",
+                    "platformCode": "facebook",
+                    "spend": 2208699,
+                    "impressions": 36190,
+                    "clicks": 630,
+                    "results": 55,
+                    "messaging": 55
+                },
+                {
+                    "date": "2026-01-24",
+                    "platformCode": "facebook",
+                    "spend": 1932977,
+                    "impressions": 39737,
+                    "clicks": 690,
+                    "results": 63,
+                    "messaging": 63
+                }
+            ]
+        }
+    ],
+    "breakdowns": {
+        "device": [
+            {
+                "name": "iphone",
+                "spend": 57035433,
+                "value": 57035433,
+                "clicks": 14042,
+                "device": "iphone",
+                "results": 1460,
+                "impressions": 1115587
+            },
+            {
+                "name": "android_smartphone",
+                "spend": 18781938,
+                "value": 18781938,
+                "clicks": 5618,
+                "device": "android_smartphone",
+                "results": 591,
+                "impressions": 420773
+            },
+            {
+                "name": "desktop",
+                "spend": 8149378,
+                "value": 8149378,
+                "clicks": 2267,
+                "device": "desktop",
+                "results": 214,
+                "impressions": 94504
+            },
+            {
+                "name": "mobile_app",
+                "spend": 3234285,
+                "value": 3234285,
+                "clicks": 830,
+                "device": "mobile_app",
+                "results": 82,
+                "impressions": 45349
+            },
+            {
+                "name": "ipad",
+                "spend": 701254,
+                "value": 701254,
+                "clicks": 195,
+                "device": "ipad",
+                "results": 15,
+                "impressions": 15530
+            },
+            {
+                "name": "android_tablet",
+                "spend": 132525,
+                "value": 132525,
+                "clicks": 66,
+                "device": "android_tablet",
+                "results": 4,
+                "impressions": 3778
+            },
+            {
+                "name": "mobile_web",
+                "spend": 9972,
+                "value": 9972,
+                "clicks": 5,
+                "device": "mobile_web",
+                "results": 0,
+                "impressions": 333
+            },
+            {
+                "name": "other",
+                "spend": 88,
+                "value": 88,
+                "clicks": 0,
+                "device": "other",
+                "results": 0,
+                "impressions": 7
+            }
+        ],
+        "region": [
+            {
+                "name": "Hanoi",
+                "spend": 44807993,
+                "clicks": 12114,
+                "region": "Hanoi",
+                "country": "unknown",
+                "results": 378,
+                "impressions": 948260
+            },
+            {
+                "name": "Ho Chi Minh City",
+                "spend": 38274743,
+                "clicks": 9579,
+                "region": "Ho Chi Minh City",
+                "country": "unknown",
+                "results": 333,
+                "impressions": 671063
+            },
+            {
+                "name": "Ho Chi Minh City",
+                "spend": 3519857,
+                "clicks": 883,
+                "region": "Ho Chi Minh City",
+                "country": null,
+                "results": 29,
+                "impressions": 46977
+            },
+            {
+                "name": "Bình Dương Province",
+                "spend": 440808,
+                "clicks": 129,
+                "region": "Bình Dương Province",
+                "country": "unknown",
+                "results": 3,
+                "impressions": 8168
+            },
+            {
+                "name": "Đồng Nai Province",
+                "spend": 209782,
+                "clicks": 66,
+                "region": "Đồng Nai Province",
+                "country": "unknown",
+                "results": 2,
+                "impressions": 3162
+            },
+            {
+                "name": "Da Nang",
+                "spend": 82277,
+                "clicks": 46,
+                "region": "Da Nang",
+                "country": "unknown",
+                "results": 1,
+                "impressions": 1205
+            },
+            {
+                "name": "Hưng Yên Province",
+                "spend": 72961,
+                "clicks": 14,
+                "region": "Hưng Yên Province",
+                "country": "unknown",
+                "results": 1,
+                "impressions": 1254
+            },
+            {
+                "name": "Haiphong",
+                "spend": 64892,
+                "clicks": 21,
+                "region": "Haiphong",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 1406
+            },
+            {
+                "name": "Bình Dương Province",
+                "spend": 48299,
+                "clicks": 10,
+                "region": "Bình Dương Province",
+                "country": null,
+                "results": 0,
+                "impressions": 931
+            },
+            {
+                "name": "Bắc Ninh Province",
+                "spend": 47699,
+                "clicks": 15,
+                "region": "Bắc Ninh Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 1227
+            },
+            {
+                "name": "Cần Thơ",
+                "spend": 33297,
+                "clicks": 4,
+                "region": "Cần Thơ",
+                "country": "unknown",
+                "results": 1,
+                "impressions": 543
+            },
+            {
+                "name": "Long An Province",
+                "spend": 30198,
+                "clicks": 13,
+                "region": "Long An Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 805
+            },
+            {
+                "name": "Khánh Hòa Province",
+                "spend": 28572,
+                "clicks": 4,
+                "region": "Khánh Hòa Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 377
+            },
+            {
+                "name": "Hà Nam Province",
+                "spend": 25812,
+                "clicks": 5,
+                "region": "Hà Nam Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 248
+            },
+            {
+                "name": "An Giang Province",
+                "spend": 23423,
+                "clicks": 5,
+                "region": "An Giang Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 171
+            },
+            {
+                "name": "Quảng Ninh Province",
+                "spend": 23153,
+                "clicks": 11,
+                "region": "Quảng Ninh Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 574
+            },
+            {
+                "name": "Nghệ An Province",
+                "spend": 17857,
+                "clicks": 2,
+                "region": "Nghệ An Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 460
+            },
+            {
+                "name": "Thừa Thiên–Huế Province",
+                "spend": 15885,
+                "clicks": 3,
+                "region": "Thừa Thiên–Huế Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 460
+            },
+            {
+                "name": "Lào Cai Province",
+                "spend": 15574,
+                "clicks": 5,
+                "region": "Lào Cai Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 215
+            },
+            {
+                "name": "Bà Rịa–Vũng Tàu Province",
+                "spend": 15563,
+                "clicks": 4,
+                "region": "Bà Rịa–Vũng Tàu Province",
+                "country": "unknown",
+                "results": 1,
+                "impressions": 230
+            },
+            {
+                "name": "Tiền Giang Province",
+                "spend": 14933,
+                "clicks": 2,
+                "region": "Tiền Giang Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 189
+            },
+            {
+                "name": "Hải Dương Province",
+                "spend": 14391,
+                "clicks": 12,
+                "region": "Hải Dương Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 431
+            },
+            {
+                "name": "Nam Định Province",
+                "spend": 14259,
+                "clicks": 6,
+                "region": "Nam Định Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 413
+            },
+            {
+                "name": "Thái Bình Province",
+                "spend": 14231,
+                "clicks": 8,
+                "region": "Thái Bình Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 471
+            },
+            {
+                "name": "Thái Nguyên Province",
+                "spend": 13635,
+                "clicks": 9,
+                "region": "Thái Nguyên Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 657
+            },
+            {
+                "name": "Tây Ninh Province",
+                "spend": 13427,
+                "clicks": 3,
+                "region": "Tây Ninh Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 158
+            },
+            {
+                "name": "Thanh Hóa Province",
+                "spend": 12646,
+                "clicks": 3,
+                "region": "Thanh Hóa Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 496
+            },
+            {
+                "name": "Bắc Giang Province",
+                "spend": 12289,
+                "clicks": 4,
+                "region": "Bắc Giang Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 415
+            },
+            {
+                "name": "Ninh Bình Province",
+                "spend": 11965,
+                "clicks": 6,
+                "region": "Ninh Bình Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 304
+            },
+            {
+                "name": "Lâm Đồng Province",
+                "spend": 10899,
+                "clicks": 2,
+                "region": "Lâm Đồng Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 262
+            },
+            {
+                "name": "Vĩnh Phúc Province",
+                "spend": 9066,
+                "clicks": 2,
+                "region": "Vĩnh Phúc Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 417
+            },
+            {
+                "name": "Bình Định Province",
+                "spend": 8276,
+                "clicks": 1,
+                "region": "Bình Định Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 212
+            },
+            {
+                "name": "Bình Thuận Province",
+                "spend": 8088,
+                "clicks": 1,
+                "region": "Bình Thuận Province",
+                "country": "unknown",
+                "results": 1,
+                "impressions": 174
+            },
+            {
+                "name": "Kiên Giang Province",
+                "spend": 7700,
+                "clicks": 3,
+                "region": "Kiên Giang Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 206
+            },
+            {
+                "name": "Đồng Tháp Province",
+                "spend": 7305,
+                "clicks": 0,
+                "region": "Đồng Tháp Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 124
+            },
+            {
+                "name": "Quảng Nam Province",
+                "spend": 6665,
+                "clicks": 1,
+                "region": "Quảng Nam Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 199
+            },
+            {
+                "name": "Đắk Nông Province",
+                "spend": 6314,
+                "clicks": 0,
+                "region": "Đắk Nông Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 103
+            },
+            {
+                "name": "Phú Thọ Province",
+                "spend": 4959,
+                "clicks": 2,
+                "region": "Phú Thọ Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 246
+            },
+            {
+                "name": "Cao Bằng Province",
+                "spend": 4544,
+                "clicks": 0,
+                "region": "Cao Bằng Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 110
+            },
+            {
+                "name": "Đắk Lắk Province",
+                "spend": 4397,
+                "clicks": 1,
+                "region": "Đắk Lắk Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 201
+            },
+            {
+                "name": "Hòa Bình Province",
+                "spend": 3901,
+                "clicks": 1,
+                "region": "Hòa Bình Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 167
+            },
+            {
+                "name": "Yên Bái Province",
+                "spend": 3009,
+                "clicks": 2,
+                "region": "Yên Bái Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 127
+            },
+            {
+                "name": "Tuyên Quang Province",
+                "spend": 3002,
+                "clicks": 3,
+                "region": "Tuyên Quang Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 155
+            },
+            {
+                "name": "Đồng Nai Province",
+                "spend": 2991,
+                "clicks": 2,
+                "region": "Đồng Nai Province",
+                "country": null,
+                "results": 0,
+                "impressions": 52
+            },
+            {
+                "name": "Vĩnh Long Province",
+                "spend": 2730,
+                "clicks": 1,
+                "region": "Vĩnh Long Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 71
+            },
+            {
+                "name": "Lạng Sơn Province",
+                "spend": 2657,
+                "clicks": 1,
+                "region": "Lạng Sơn Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 132
+            },
+            {
+                "name": "Hà Giang Province",
+                "spend": 2656,
+                "clicks": 4,
+                "region": "Hà Giang Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 163
+            },
+            {
+                "name": "Phú Yên Province",
+                "spend": 2628,
+                "clicks": 1,
+                "region": "Phú Yên Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 54
+            },
+            {
+                "name": "Gia Lai Province",
+                "spend": 2370,
+                "clicks": 0,
+                "region": "Gia Lai Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 124
+            },
+            {
+                "name": "Cà Mau Province",
+                "spend": 2145,
+                "clicks": 1,
+                "region": "Cà Mau Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 65
+            },
+            {
+                "name": "Long An Province",
+                "spend": 1981,
+                "clicks": 1,
+                "region": "Long An Province",
+                "country": null,
+                "results": 0,
+                "impressions": 66
+            },
+            {
+                "name": "Điện Biên Province",
+                "spend": 1935,
+                "clicks": 1,
+                "region": "Điện Biên Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 111
+            },
+            {
+                "name": "Sơn La Province",
+                "spend": 1929,
+                "clicks": 1,
+                "region": "Sơn La Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 158
+            },
+            {
+                "name": "Quảng Bình Province",
+                "spend": 1811,
+                "clicks": 0,
+                "region": "Quảng Bình Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 78
+            },
+            {
+                "name": "Hà Tĩnh Province",
+                "spend": 1730,
+                "clicks": 1,
+                "region": "Hà Tĩnh Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 121
+            },
+            {
+                "name": "Sóc Trăng Province",
+                "spend": 1711,
+                "clicks": 0,
+                "region": "Sóc Trăng Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 86
+            },
+            {
+                "name": "Bến Tre Province",
+                "spend": 1061,
+                "clicks": 0,
+                "region": "Bến Tre Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 62
+            },
+            {
+                "name": "Bạc Liêu Province",
+                "spend": 959,
+                "clicks": 1,
+                "region": "Bạc Liêu Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 38
+            },
+            {
+                "name": "Trà Vinh Province",
+                "spend": 912,
+                "clicks": 0,
+                "region": "Trà Vinh Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 57
+            },
+            {
+                "name": "Bình Phước Province",
+                "spend": 862,
+                "clicks": 2,
+                "region": "Bình Phước Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 73
+            },
+            {
+                "name": "Quảng Ngãi Province",
+                "spend": 793,
+                "clicks": 0,
+                "region": "Quảng Ngãi Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 80
+            },
+            {
+                "name": "Bắc Kạn Province",
+                "spend": 703,
+                "clicks": 1,
+                "region": "Bắc Kạn Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 53
+            },
+            {
+                "name": "Quảng Trị Province",
+                "spend": 534,
+                "clicks": 0,
+                "region": "Quảng Trị Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 68
+            },
+            {
+                "name": "Lai Châu Province",
+                "spend": 444,
+                "clicks": 0,
+                "region": "Lai Châu Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 51
+            },
+            {
+                "name": "Ninh Thuận Province",
+                "spend": 429,
+                "clicks": 0,
+                "region": "Ninh Thuận Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 41
+            },
+            {
+                "name": "Kon Tum Province",
+                "spend": 271,
+                "clicks": 0,
+                "region": "Kon Tum Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 58
+            },
+            {
+                "name": "Unknown",
+                "spend": 51,
+                "clicks": 0,
+                "region": "Unknown",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 2
+            },
+            {
+                "name": "Hậu Giang Province",
+                "spend": 34,
+                "clicks": 0,
+                "region": "Hậu Giang Province",
+                "country": "unknown",
+                "results": 0,
+                "impressions": 24
+            }
+        ],
+        "ageGender": [
+            {
+                "age": "18-24",
+                "name": "18-24 - female",
+                "spend": 25194918,
+                "clicks": 6366,
+                "gender": "female",
+                "results": 722,
+                "impressions": 529126
+            },
+            {
+                "age": "25-34",
+                "name": "25-34 - female",
+                "spend": 19711912,
+                "clicks": 4522,
+                "gender": "female",
+                "results": 610,
+                "impressions": 295238
+            },
+            {
+                "age": "18-24",
+                "name": "18-24 - male",
+                "spend": 12719175,
+                "clicks": 4477,
+                "gender": "male",
+                "results": 318,
+                "impressions": 356666
+            },
+            {
+                "age": "25-34",
+                "name": "25-34 - male",
+                "spend": 11260091,
+                "clicks": 3879,
+                "gender": "male",
+                "results": 357,
+                "impressions": 237581
+            },
+            {
+                "age": "35-44",
+                "name": "35-44 - female",
+                "spend": 2462787,
+                "clicks": 631,
+                "gender": "female",
+                "results": 92,
+                "impressions": 24021
+            },
+            {
+                "age": "35-44",
+                "name": "35-44 - male",
+                "spend": 2152236,
+                "clicks": 629,
+                "gender": "male",
+                "results": 77,
+                "impressions": 27749
+            },
+            {
+                "age": "18-24",
+                "name": "18-24 - unknown",
+                "spend": 1051246,
+                "clicks": 389,
+                "gender": "unknown",
+                "results": 30,
+                "impressions": 28804
+            },
+            {
+                "age": "45-54",
+                "name": "45-54 - female",
+                "spend": 916703,
+                "clicks": 167,
+                "gender": "female",
+                "results": 9,
+                "impressions": 6711
+            },
+            {
+                "age": "45-54",
+                "name": "45-54 - male",
+                "spend": 563431,
+                "clicks": 177,
+                "gender": "male",
+                "results": 15,
+                "impressions": 5694
+            },
+            {
+                "age": "25-34",
+                "name": "25-34 - unknown",
+                "spend": 542646,
+                "clicks": 211,
+                "gender": "unknown",
+                "results": 12,
+                "impressions": 12585
+            },
+            {
+                "age": "55-64",
+                "name": "55-64 - male",
+                "spend": 205698,
+                "clicks": 27,
+                "gender": "male",
+                "results": 5,
+                "impressions": 1580
+            },
+            {
+                "age": "65+",
+                "name": "65+ - male",
+                "spend": 126951,
+                "clicks": 37,
+                "gender": "male",
+                "results": 0,
+                "impressions": 1741
+            },
+            {
+                "age": "65+",
+                "name": "65+ - female",
+                "spend": 114913,
+                "clicks": 34,
+                "gender": "female",
+                "results": 3,
+                "impressions": 1328
+            },
+            {
+                "age": "55-64",
+                "name": "55-64 - female",
+                "spend": 103982,
+                "clicks": 38,
+                "gender": "female",
+                "results": 4,
+                "impressions": 1072
+            },
+            {
+                "age": "35-44",
+                "name": "35-44 - unknown",
+                "spend": 22582,
+                "clicks": 5,
+                "gender": "unknown",
+                "results": 0,
+                "impressions": 521
+            },
+            {
+                "age": "55-64",
+                "name": "55-64 - unknown",
+                "spend": 5679,
+                "clicks": 5,
+                "gender": "unknown",
+                "results": 1,
+                "impressions": 144
+            },
+            {
+                "age": "45-54",
+                "name": "45-54 - unknown",
+                "spend": 4654,
+                "clicks": 5,
+                "gender": "unknown",
+                "results": 0,
+                "impressions": 140
+            },
+            {
+                "age": "65+",
+                "name": "65+ - unknown",
+                "spend": 1418,
+                "clicks": 1,
+                "gender": "unknown",
+                "results": 0,
+                "impressions": 67
+            }
+        ]
+    }
+}
