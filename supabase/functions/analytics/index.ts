@@ -21,8 +21,18 @@ const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(da
 
 async function verifyAuth(req: Request) {
   const authHeader = req.headers.get("Authorization");
+  const serviceKey = Deno.env.get("MASTER_KEY") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+
+  // 1. Try Service Role Key override
+  if (authHeader?.startsWith("Bearer ")) {
+    const token = authHeader.substring(7).trim();
+    if (serviceKey !== "" && token === serviceKey) {
+      return { userId: 1 }; // Default to admin user id
+    }
+  }
+
   if (!authHeader?.startsWith("Bearer ")) return null;
-  const token = authHeader.substring(7);
+  const token = authHeader.substring(7).trim();
   try {
     const encoder = new TextEncoder();
     const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
@@ -95,6 +105,51 @@ Deno.serve(async (req) => {
       }).sort((a: any, b: any) => a.hour - b.hour);
 
       return jsonResponse(mappedHourly);
+    }
+
+    // Branch Hourly Insights - Aggregated across all accounts
+    if (path.includes("/branch-hourly/") || (subPathSegments[0] === 'branch-hourly' && subPathSegments[1])) {
+      const branchId = parseInt(path.split("/").pop() || "0", 10);
+      const date = url.searchParams.get("date");
+      if (!date) return jsonResponse({ success: false, error: "date required" }, 400);
+
+      // 1. Get all account IDs for this branch
+      const { data: accounts } = await supabase.from("platform_accounts").select("id").eq("branch_id", branchId);
+      const accountIds = accounts?.map(a => a.id) || [];
+      if (accountIds.length === 0) return jsonResponse([]);
+
+      // 2. Fetch hourly insights for these accounts
+      const { data, error } = await supabase
+        .from("unified_hourly_insights")
+        .select("*")
+        .in("platform_account_id", accountIds)
+        .eq("date", date)
+        .order("hour", { ascending: true });
+
+      if (error) throw error;
+
+      // 3. Aggregate by Hour
+      const aggregated = (data || []).reduce((acc: any, curr: any) => {
+        const hour = curr.hour;
+        if (!acc[hour]) {
+          acc[hour] = {
+            hour,
+            date,
+            spend: 0,
+            impressions: 0,
+            clicks: 0,
+            results: 0
+          };
+        }
+        acc[hour].spend += Number(curr.spend || 0);
+        acc[hour].impressions += Number(curr.impressions || 0);
+        acc[hour].clicks += Number(curr.clicks || 0);
+        acc[hour].results += Number(curr.results || 0);
+        return acc;
+      }, {});
+
+      const result = Object.values(aggregated).sort((a: any, b: any) => a.hour - b.hour);
+      return jsonResponse(result);
     }
 
     // Ad Daily Insights - Aggregated

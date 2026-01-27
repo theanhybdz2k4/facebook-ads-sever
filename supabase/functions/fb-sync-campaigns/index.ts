@@ -91,7 +91,7 @@ Deno.serve(async (req: Request) => {
         // BATCH SYNC CAMPAIGNS
         const fbCampaigns = await fb.getCampaigns(account.external_id, since);
         if (fbCampaigns.length > 0) {
-            const { data: existingCamps } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", accountId);
+            const { data: existingCamps } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", accountId).limit(5000);
             const campaignIdMap = new Map((existingCamps || []).map(c => [c.external_id, c.id]));
 
             const campUpserts = fbCampaigns.map(c => ({
@@ -118,10 +118,10 @@ Deno.serve(async (req: Request) => {
         // BATCH SYNC ADSETS
         const fbAdSets = await fb.getAdSets(account.external_id, since);
         if (fbAdSets.length > 0) {
-            const { data: allCamps } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", accountId);
+            const { data: allCamps } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", accountId).limit(5000);
             const fullCampaignMap = new Map((allCamps || []).map((c: any) => [c.external_id, c.id]));
 
-            const { data: existingAdGroups } = await supabase.from("unified_ad_groups").select("id, external_id").eq("platform_account_id", accountId);
+            const { data: existingAdGroups } = await supabase.from("unified_ad_groups").select("id, external_id").eq("platform_account_id", accountId).limit(5000);
             const adGroupIdMap = new Map((existingAdGroups || []).map(ag => [ag.external_id, ag.id]));
 
             const adSetUpserts = fbAdSets.map(adset => {

@@ -72,7 +72,7 @@ Deno.serve(async (req) => {
 
       triggerBackground("fb-sync-campaigns", { accountId, force });
       triggerBackground("fb-sync-ads", { accountId, force });
-      triggerBackground("fb-sync-insights", { accountId, force });
+      triggerBackground("fb-sync-insights", { accountId, force, granularity: "BOTH" });
       triggerBackground("fb-sync-creatives", { accountId });
 
       return jsonResponse({ success: true, message: "Sync triggered" });
@@ -87,7 +87,7 @@ Deno.serve(async (req) => {
         for (const acc of accounts) {
           triggerBackground("fb-sync-campaigns", { accountId: acc.id });
           triggerBackground("fb-sync-ads", { accountId: acc.id });
-          triggerBackground("fb-sync-insights", { accountId: acc.id });
+          triggerBackground("fb-sync-insights", { accountId: acc.id, granularity: "BOTH" });
         }
       }
       return jsonResponse({ success: true, message: "Sync triggered" });

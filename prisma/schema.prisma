@@ -42,6 +42,7 @@ model User {
   password  String    @map("password")
   name      String?   @map("name")
   isActive  Boolean   @default(true) @map("is_active")
+  avatarUrl String?   @map("avatar_url")
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime? @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
@@ -408,6 +409,7 @@ model Branch {
   userId    Int       @map("user_id")
   name      String    @map("name")
   code      String?   @map("code")
+  autoMatchKeywords String[]  @default([]) @map("auto_match_keywords")
   createdAt DateTime  @default(now()) @map("created_at")
   deletedAt DateTime? @map("deleted_at")
 

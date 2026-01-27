@@ -19,10 +19,21 @@ const corsHeaders = {
 
 const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: corsHeaders });
 
+function getVietnamToday(): string {
+    const vn = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
+    return vn.toISOString().split("T")[0];
+}
+
+function getVietnamYesterday(): string {
+    const vn = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
+    vn.setDate(vn.getDate() - 1);
+    return vn.toISOString().split("T")[0];
+}
+
 async function verifyAuth(req: Request) {
     const authHeader = req.headers.get("Authorization");
     const serviceKeyHeader = req.headers.get("x-service-key");
-    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    const serviceKey = Deno.env.get("MASTER_KEY") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 
     // 1. Try x-service-key (Bypass Postman Auth issues)
     if (serviceKeyHeader) {
@@ -37,7 +48,10 @@ async function verifyAuth(req: Request) {
     // 2. Try Bearer Token
     if (authHeader?.startsWith("Bearer ")) {
         const token = authHeader.substring(7).trim();
+        console.log(`[Auth] Checking token: ${token.substring(0, 5)}... against ServiceKey: ${serviceKey.substring(0, 5)}...`);
+        
         if (serviceKey !== "" && token === serviceKey) {
+            console.log("[Auth] Service Key Match!");
             const url = new URL(req.url);
             const queryUserId = url.searchParams.get("userId");
             return { userId: queryUserId ? parseInt(queryUserId, 10) : 1 };
@@ -49,7 +63,10 @@ async function verifyAuth(req: Request) {
             const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
             const payload = await verify(token, key);
             return { userId: parseInt(payload.sub as string, 10) };
-        } catch { return null; }
+        } catch (e: any) { 
+            console.error("[Auth] JWT Verify Failed:", e.message);
+            return null; 
+        }
     }
 
     return null;
@@ -78,12 +95,13 @@ Deno.serve(async (req) => {
             const platformCode = url.searchParams.get("platformCode") || "all";
             const branchIdParam = url.searchParams.get("branchId") || "all";
             const queryUserId = url.searchParams.get("userId");
-            
+
             // Use queryUserId if provided, otherwise fallback to auth user
             const targetUserId = queryUserId ? parseInt(queryUserId, 10) : auth.userId;
+            console.log(`[Dashboard] dateStart: ${dateStart}, dateEnd: ${dateEnd}, branchId: ${branchIdParam}`);
 
             // 1. Fetch Branches filtered by user and optionally branchId
-            let branchQuery = supabase.from("branches").select("id, name, code").eq("user_id", targetUserId);
+            let branchQuery = supabase.from("branches").select("id, name, code, auto_match_keywords").eq("user_id", targetUserId);
             if (branchIdParam !== "all" && !isNaN(parseInt(branchIdParam))) {
                 branchQuery = branchQuery.eq("id", parseInt(branchIdParam));
             }
@@ -150,6 +168,40 @@ Deno.serve(async (req) => {
             return jsonResponse({ branches: mappedBranches, breakdowns });
         }
 
+        if (path.includes("/stats/recalculate") && method === "POST") {
+            const dateStart = url.searchParams.get("dateStart") || getVietnamYesterday();
+            const dateEnd = url.searchParams.get("dateEnd") || getVietnamToday();
+            const specificBranchId = path.split("/").filter(Boolean)[0]; // Expecting /branches/:id/stats/recalculate or similar
+
+            // Try to find branchId in path segments
+            let bId: number | null = null;
+            const segments = path.split("/").filter(Boolean);
+            // Current path logic in serve: if segments[0] == "branches" it's shifted. 
+            // So if URL is /branches/123/stats/recalculate -> path becomes /123/stats/recalculate
+            if (segments[0] && !isNaN(parseInt(segments[0]))) {
+                bId = parseInt(segments[0]);
+            }
+
+            if (!bId) return jsonResponse({ success: false, error: "Missing branchId" }, 400);
+
+            await aggregateBranchStats(bId, dateStart, dateEnd);
+            return jsonResponse({ success: true, message: `Recalculated stats for branch ${bId}` });
+        }
+
+        if (path.includes("/stats/rebuild") && method === "POST") {
+            const dateStart = url.searchParams.get("dateStart") || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+            const dateEnd = url.searchParams.get("dateEnd") || new Date().toISOString().split("T")[0];
+
+            const { data: branches } = await supabase.from("branches").select("id").eq("user_id", auth.userId);
+            if (!branches || branches.length === 0) return jsonResponse({ success: true, message: "No branches to rebuild" });
+
+            for (const b of branches) {
+                await aggregateBranchStats(b.id, dateStart, dateEnd);
+            }
+
+            return jsonResponse({ success: true, message: `Rebuilt stats for ${branches.length} branches` });
+        }
+
         // --- CRUD / LIST ---
         const idParam = path.split("/").filter(Boolean)[0];
         const id = idParam && !isNaN(parseInt(idParam)) ? parseInt(idParam) : null;
@@ -188,3 +240,16 @@ Deno.serve(async (req) => {
         return jsonResponse({ success: false, error: error.message }, 500);
     }
 });
+
+async function aggregateBranchStats(branch_id: number, dateStart: string, dateEnd: string) {
+    console.log(`[Branches] Aggregating stats for branch ${branch_id}: ${dateStart} to ${dateEnd}`);
+    const { error } = await supabase.rpc('recalculate_branch_daily_stats', {
+        p_branch_id: branch_id,
+        p_date_start: dateStart,
+        p_date_end: dateEnd
+    });
+    if (error) {
+        console.error(`[Branches] RPC Error for branch ${branch_id}:`, error.message);
+        throw error;
+    }
+}

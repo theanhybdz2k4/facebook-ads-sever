@@ -21,8 +21,18 @@ const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(da
 
 async function verifyAuth(req: Request) {
     const authHeader = req.headers.get("Authorization");
+    const serviceKey = Deno.env.get("MASTER_KEY") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+
+    // 1. Try Service Role Key override
+    if (authHeader?.startsWith("Bearer ")) {
+        const token = authHeader.substring(7).trim();
+        if (serviceKey !== "" && token === serviceKey) {
+            return { userId: 1 }; // Default to admin user id
+        }
+    }
+
     if (!authHeader?.startsWith("Bearer ")) return null;
-    const token = authHeader.substring(7);
+    const token = authHeader.substring(7).trim();
     try {
         const encoder = new TextEncoder();
         const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
@@ -95,6 +105,20 @@ Deno.serve(async (req: Request) => {
             return jsonResponse(await res.json(), res.status);
         }
 
+        // GET /insights/branches/:id/hourly
+        if (path.includes("/branches/") && path.includes("/hourly") && method === "GET") {
+            const branchId = subPathSegments[subPathSegments.indexOf("branches") + 1];
+            const date = url.searchParams.get("date");
+
+            const analyticsUrl = new URL(`${supabaseUrl}/functions/v1/analytics/branch-hourly/${branchId}`);
+            if (date) analyticsUrl.searchParams.set("date", date);
+
+            const res = await fetch(analyticsUrl.toString(), {
+                headers: { "Authorization": req.headers.get("Authorization") || "" }
+            });
+            return jsonResponse(await res.json(), res.status);
+        }
+
         // POST /insights/sync/account/:id
         if (path.includes("/sync/account/") && method === "POST") {
             const accountId = parseInt(subPathSegments[subPathSegments.indexOf("account") + 1], 10);
@@ -112,6 +136,8 @@ Deno.serve(async (req: Request) => {
         if (path.includes("/sync/branch/") && method === "POST") {
             const branchId = parseInt(subPathSegments[subPathSegments.indexOf("branch") + 1], 10);
             const body = await req.json();
+            const dateStart = body.dateStart || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+            const dateEnd = body.dateEnd || new Date().toISOString().split("T")[0];
 
             // Get all accounts for this branch
             const { data: accounts } = await supabase
@@ -124,10 +150,13 @@ Deno.serve(async (req: Request) => {
                 const syncResponse = await fetch(`${supabaseUrl}/functions/v1/fb-sync-insights`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json", "Authorization": req.headers.get("Authorization") || "" },
-                    body: JSON.stringify({ ...body, accountId: acc.id })
+                    body: JSON.stringify({ ...body, accountId: acc.id, skipBranchAggregation: true }) // Skip per-account to avoid overhead
                 });
                 results.push(await syncResponse.json());
             }
+
+            // Triggering branch-level recalculation is no longer needed in code.
+            // It is handled automatically by a database trigger when insights are synced.
 
             return jsonResponse({ success: true, results });
         }

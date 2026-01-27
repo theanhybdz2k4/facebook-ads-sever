@@ -44,7 +44,7 @@ class FacebookApiClient {
                 arr.push(dt.toISOString().split("T")[0]);
                 dt.setDate(dt.getDate() + 1);
             }
-            
+
             let all: any[] = [];
             for (const d of arr) {
                 const chunk = await this.getInsights(entityId, level, { start: d, end: d }, granularity, breakdowns);
@@ -94,7 +94,17 @@ class FacebookApiClient {
 
 function extractResults(raw: any): number {
     if (!raw.actions) return 0;
-    const types = ["onsite_conversion.messaging_conversation_started_7d", "onsite_conversion.messaging_first_reply", "lead", "purchase"];
+    const types = [
+        "onsite_conversion.messaging_conversation_started_7d", 
+        "onsite_conversion.messaging_first_reply", 
+        "lead", 
+        "purchase",
+        "onsite_conversion.lead",
+        "onsite_conversion.purchase",
+        "onsite_web_lead",
+        "onsite_web_purchase",
+        "offsite_complete_registration_add_meta_leads"
+    ];
     return raw.actions.filter((a: any) => types.includes(a.action_type)).reduce((s: number, a: any) => s + Number(a.value), 0);
 }
 
@@ -111,18 +121,27 @@ Deno.serve(async (req: Request) => {
             const dateEnd = url.searchParams.get("dateEnd");
             const adId = url.searchParams.get("adId");
             const accountId = url.searchParams.get("accountId");
+            const branchId = url.searchParams.get("branchId");
 
-            let query = supabase.from("unified_insights").select(`
+            let selectString = `
                 *,
                 unified_ads(id, name, external_id),
                 unified_ad_groups(id, name),
                 unified_campaigns(id, name)
-             `);
+            `;
+            
+            // Only add platform_accounts join if we need to filter by branch
+            if (branchId && branchId !== "all") {
+                selectString += `, platform_accounts!inner(id, branch_id)`;
+            }
+
+            let query = supabase.from("unified_insights").select(selectString);
 
             if (dateStart) query = query.gte("date", dateStart);
             if (dateEnd) query = query.lte("date", dateEnd);
             if (adId) query = query.eq("unified_ad_id", adId);
             if (accountId) query = query.eq("platform_account_id", accountId);
+            if (branchId && branchId !== "all") query = query.eq("platform_accounts.branch_id", branchId);
 
             const { data, error } = await query.order("date", { ascending: false }).limit(1000);
             if (error) throw error;
@@ -150,7 +169,7 @@ Deno.serve(async (req: Request) => {
 
         if (req.method === "POST") {
             const body = await req.json();
-            const { accountId: bodyAccountId, adId: bodyAdId, dateStart = getVietnamYesterday(), dateEnd = getVietnamToday(), granularity = "DAILY", breakdown } = body;
+            const { accountId: bodyAccountId, adId: bodyAdId, dateStart = getVietnamYesterday(), dateEnd = getVietnamToday(), granularity = "BOTH", breakdown } = body;
 
             let targetAccountId = bodyAccountId;
             let fbEntityId: string | null = null;
@@ -176,63 +195,94 @@ Deno.serve(async (req: Request) => {
             console.log(`[Insights] Sync start at VN Time: ${vnNow}`);
             const result: any = { insights: 0, hourly: 0, breakdowns: 0, debug: { vnNow } };
 
-            const { data: campaigns } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", targetAccountId);
-            const { data: adGroups } = await supabase.from("unified_ad_groups").select("id, external_id").eq("platform_account_id", targetAccountId);
-            const { data: ads } = await supabase.from("unified_ads").select("id, external_id").eq("platform_account_id", targetAccountId);
-
-            const campaignMap = new Map(campaigns?.map((c: any) => [c.external_id, c.id]));
-            const adGroupMap = new Map(adGroups?.map((ag: any) => [ag.external_id, ag.id]));
-            const adMap = new Map(ads?.map((a: any) => [a.external_id, a.id]));
-
-            // Pre-fetch existing insights for ID mapping
-            const { data: existingInsights } = await supabase.from("unified_insights").select("id, platform_account_id, unified_campaign_id, unified_ad_group_id, unified_ad_id, date").eq("platform_account_id", targetAccountId).gte("date", dateStart).lte("date", dateEnd);
-            const getInsightKey = (i: any) => `${i.platform_account_id}|${i.unified_campaign_id}|${i.unified_ad_group_id}|${i.unified_ad_id}|${i.date}`;
-            const insightIdMap = new Map(existingInsights?.map((i: any) => [getInsightKey(i), i.id]));
-
-            if (granularity === "DAILY" || granularity === "BOTH") {
-                const fbInsights = await fb.getInsights(fbEntityId as string, "ad", { start: dateStart, end: dateEnd });
-                if (fbInsights.length > 0) {
-                    const upserts = fbInsights.map(raw => {
-                        const cid = campaignMap.get(raw.campaign_id) || null;
-                        const agid = adGroupMap.get(raw.adset_id) || null;
-                        const adid = adMap.get(raw.ad_id) || null;
-                        const key = `${targetAccountId}|${cid}|${agid}|${adid}|${raw.date_start}`;
-                        return {
-                            id: insightIdMap.get(key) || crypto.randomUUID(),
-                            platform_account_id: targetAccountId,
-                            unified_campaign_id: cid,
-                            unified_ad_group_id: agid,
-                            unified_ad_id: adid,
-                            date: raw.date_start,
-                            spend: parseFloat(raw.spend || "0"),
-                            impressions: parseInt(raw.impressions || "0", 10),
-                            clicks: parseInt(raw.clicks || "0", 10),
-                            reach: parseInt(raw.reach || "0", 10),
-                            results: extractResults(raw),
-                            platform_metrics: { raw_actions: raw.actions },
-                            synced_at: getVietnamTime()
-                        };
-                    });
-
-                    const { data: saved, error: insErr } = await supabase.from("unified_insights").upsert(upserts, { onConflict: "platform_account_id,unified_campaign_id,unified_ad_group_id,unified_ad_id,date" }).select("id, platform_account_id, unified_campaign_id, unified_ad_group_id, unified_ad_id, date");
-                    if (insErr) result.debug.insightError = insErr.message;
-                    if (saved) {
-                        result.insights = saved.length;
-                        const { data: accInfo } = await supabase.from("platform_accounts").select("branch_id").eq("id", targetAccountId).single();
-                        const skipAggregation = body.skipBranchAggregation === true;
-                        if (!skipAggregation && (accInfo as any)?.branch_id) {
-                            await aggregateBranchStats((accInfo as any).branch_id, dateStart, dateEnd);
+            // Auto-assign branch if missing
+            const { data: accForBranch } = await supabase.from("platform_accounts").select("id, name, branch_id, platform_identities!inner(user_id)").eq("id", targetAccountId).single();
+            if (accForBranch && !accForBranch.branch_id) {
+                const userId = (accForBranch.platform_identities as any).user_id;
+                const { data: branches } = await supabase.from("branches").select("id, auto_match_keywords").eq("user_id", userId);
+                if (branches && branches.length > 0) {
+                    const accName = accForBranch.name?.toLowerCase() || "";
+                    for (const b of branches) {
+                        const keywords = b.auto_match_keywords || [];
+                        if (keywords.some((k: string) => k && accName.includes(k.toLowerCase()))) {
+                            await supabase.from("platform_accounts").update({ branch_id: b.id }).eq("id", targetAccountId);
+                            console.log(`[Insights] Auto-assigned account ${targetAccountId} to branch ${b.id}`);
+                            break;
                         }
                     }
                 }
             }
 
-            if (granularity === "HOURLY" || granularity === "BOTH") {
-                const { data: existingHourly } = await supabase.from("unified_hourly_insights").select("id, platform_account_id, unified_campaign_id, unified_ad_group_id, unified_ad_id, date, hour").eq("platform_account_id", targetAccountId).gte("date", dateStart).lte("date", dateEnd);
-                const getHourlyKey = (h: any) => `${h.platform_account_id}|${h.unified_campaign_id}|${h.unified_ad_group_id}|${h.unified_ad_id}|${h.date}|${h.hour}`;
-                const hourlyIdMap = new Map(existingHourly?.map((h: any) => [getHourlyKey(h), h.id]));
+            const { data: campaigns } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", targetAccountId).limit(2000);
+            const { data: adGroups } = await supabase.from("unified_ad_groups").select("id, external_id").eq("platform_account_id", targetAccountId).limit(5000);
+            const { data: ads } = await supabase.from("unified_ads").select("id, external_id").eq("platform_account_id", targetAccountId).limit(10000);
 
-                let adList = ads || [];
+            const campaignMap = new Map(campaigns?.map((c: any) => [c.external_id, c.id]));
+            const adGroupMap = new Map(adGroups?.map((ag: any) => [ag.external_id, ag.id]));
+            const adMap = new Map(ads?.map((a: any) => [a.external_id, a.id]));
+
+            if (granularity === "DAILY" || granularity === "BOTH") {
+                const fbInsights = await fb.getInsights(fbEntityId as string, "ad", { start: dateStart, end: dateEnd });
+                if (fbInsights.length > 0) {
+                    const aggregated = new Map<string, any>();
+
+                    for (const raw of fbInsights) {
+                        const cid = campaignMap.get(raw.campaign_id) || null;
+                        const agid = adGroupMap.get(raw.adset_id) || null;
+                        const adid = adMap.get(raw.ad_id) || null;
+                        const key = `${targetAccountId}|${cid}|${agid}|${adid}|${raw.date_start}`;
+
+                        const current = aggregated.get(key) || {
+                            platform_account_id: targetAccountId,
+                            unified_campaign_id: cid,
+                            unified_ad_group_id: agid,
+                            unified_ad_id: adid,
+                            date: raw.date_start,
+                            spend: 0,
+                            impressions: 0,
+                            clicks: 0,
+                            reach: 0,
+                            results: 0,
+                            platform_metrics: { raw_actions: [] }
+                        };
+
+                        current.spend += parseFloat(raw.spend || "0");
+                        current.impressions += parseInt(raw.impressions || "0", 10);
+                        current.clicks += parseInt(raw.clicks || "0", 10);
+                        current.reach = Math.max(current.reach, parseInt(raw.reach || "0", 10));
+                        current.results += extractResults(raw);
+                        if (raw.actions) {
+                            current.platform_metrics.raw_actions.push(...raw.actions);
+                        }
+
+                        aggregated.set(key, current);
+                    }
+
+                    const upserts = Array.from(aggregated.values()).map(i => ({
+                        ...i,
+                        synced_at: getVietnamTime()
+                    }));
+
+                    const { data: saved, error: insErr } = await supabase.from("unified_insights").upsert(upserts, { onConflict: "platform_account_id,unified_campaign_id,unified_ad_group_id,unified_ad_id,date" }).select("id, platform_account_id, unified_campaign_id, unified_ad_group_id, unified_ad_id, date");
+                    if (insErr) {
+                        console.error("Insight Upsert Error:", insErr);
+                        result.debug.insightError = insErr.message;
+                    }
+                    if (saved) {
+                        result.insights = saved.length;
+                    }
+                }
+            }
+
+            if (granularity === "HOURLY" || granularity === "BOTH") {
+                // For hourly sync, prioritize active ads to reduce overhead unless a specific adId is requested or force=true
+                const { data: activeAdsForHourly } = await supabase
+                    .from("unified_ads")
+                    .select("id, external_id")
+                    .eq("platform_account_id", targetAccountId)
+                    .in("effective_status", ["ACTIVE", "IN_PROCESS", "WITH_ISSUES"]);
+
+                let adList = bodyAdId ? ads : (activeAdsForHourly || ads || []);
                 if (bodyAdId) {
                     const specificAd = adList.find((a: any) => a.id === bodyAdId);
                     if (specificAd) adList = [specificAd];
@@ -251,9 +301,8 @@ Deno.serve(async (req: Request) => {
                     const chunk = adList.slice(i, i + CONCURRENCY);
                     await Promise.all(chunk.map(async (ad: any) => {
                         try {
-                            // Fetch all hours for the whole range in one go per ad
                             const fbHourly = await fb.getInsights(ad.external_id, "ad", { start: dateStart, end: dateEnd }, "HOURLY");
-                            
+
                             if (fbHourly.length > 0) {
                                 const hUpserts = fbHourly.map(raw => {
                                     const cid = campaignMap.get(raw.campaign_id) || null;
@@ -262,8 +311,8 @@ Deno.serve(async (req: Request) => {
                                     const hrRaw = raw.hourly_stats_aggregated_by_advertiser_time_zone || "0:0";
                                     const hr = parseInt(hrRaw.split(":")[0], 10);
                                     const key = `${targetAccountId}|${cid}|${agid}|${adid}|${raw.date_start}|${hr}`;
+
                                     return {
-                                        id: hourlyIdMap.get(key) || crypto.randomUUID(),
                                         platform_account_id: targetAccountId,
                                         unified_campaign_id: cid,
                                         unified_ad_group_id: agid,
@@ -308,7 +357,6 @@ Deno.serve(async (req: Request) => {
                         const adid = adMap.get(ad_id) || null;
                         const pKey = `${targetAccountId}|${cid}|${agid}|${adid}|${date}`;
                         return {
-                            id: insightIdMap.get(pKey) || crypto.randomUUID(),
                             platform_account_id: targetAccountId,
                             unified_campaign_id: cid,
                             unified_ad_group_id: agid,
@@ -330,7 +378,6 @@ Deno.serve(async (req: Request) => {
 
                         if (breakdown === "device") {
                             const deviceUpserts = fbBreakdowns.map(raw => ({
-                                id: `${getParentId(raw)}_${raw.device_platform}`,
                                 unified_insight_id: getParentId(raw),
                                 device: raw.device_platform,
                                 spend: parseFloat(raw.spend || "0"),
@@ -338,12 +385,11 @@ Deno.serve(async (req: Request) => {
                                 clicks: parseInt(raw.clicks || "0", 10),
                                 results: extractResults(raw)
                             })).filter(u => u.unified_insight_id);
-                            const { error: devErr } = await supabase.from("unified_insight_devices").upsert(deviceUpserts);
+                            const { error: devErr } = await supabase.from("unified_insight_devices").upsert(deviceUpserts, { onConflict: "unified_insight_id,device" });
                             if (devErr) result.debug.deviceError = devErr.message;
                             else result.breakdowns += deviceUpserts.length;
                         } else if (breakdown === "age_gender") {
                             const agUpserts = fbBreakdowns.map(raw => ({
-                                id: `${getParentId(raw)}_${raw.age}_${raw.gender}`,
                                 unified_insight_id: getParentId(raw),
                                 age: raw.age, gender: raw.gender,
                                 spend: parseFloat(raw.spend || "0"),
@@ -351,12 +397,11 @@ Deno.serve(async (req: Request) => {
                                 clicks: parseInt(raw.clicks || "0", 10),
                                 results: extractResults(raw)
                             })).filter(u => u.unified_insight_id);
-                            const { error: agErr } = await supabase.from("unified_insight_age_gender").upsert(agUpserts);
+                            const { error: agErr } = await supabase.from("unified_insight_age_gender").upsert(agUpserts, { onConflict: "unified_insight_id,age,gender" });
                             if (agErr) result.debug.agError = agErr.message;
                             else result.breakdowns += agUpserts.length;
                         } else if (breakdown === "region") {
                             const regUpserts = fbBreakdowns.map(raw => ({
-                                id: `${getParentId(raw)}_${raw.region}`,
                                 unified_insight_id: getParentId(raw),
                                 region: raw.region, country: raw.country,
                                 spend: parseFloat(raw.spend || "0"),
@@ -364,7 +409,7 @@ Deno.serve(async (req: Request) => {
                                 clicks: parseInt(raw.clicks || "0", 10),
                                 results: extractResults(raw)
                             })).filter(u => u.unified_insight_id);
-                            const { error: regErr } = await supabase.from("unified_insight_regions").upsert(regUpserts);
+                            const { error: regErr } = await supabase.from("unified_insight_regions").upsert(regUpserts, { onConflict: "unified_insight_id,region" });
                             if (regErr) result.debug.regError = regErr.message;
                             else result.breakdowns += regUpserts.length;
                         }
@@ -383,27 +428,4 @@ Deno.serve(async (req: Request) => {
     }
 });
 
-async function aggregateBranchStats(branchId: number, dateStart: string, dateEnd: string) {
-    const start = new Date(dateStart), end = new Date(dateEnd);
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        const dateStr = d.toISOString().split("T")[0];
-        const { data: accounts } = await supabase.from("platform_accounts").select("id, platform:platforms(code)").eq("branch_id", branchId);
-        if (!accounts || accounts.length === 0) continue;
-        const platformGroups = new Map<string, number[]>();
-        accounts.forEach((acc: any) => {
-            const code = acc.platform.code;
-            if (!platformGroups.has(code)) platformGroups.set(code, []);
-            platformGroups.get(code)!.push(acc.id);
-        });
-        for (const [platformCode, accountIds] of platformGroups.entries()) {
-            const { data: aggregation } = await supabase.from("unified_insights").select("spend, impressions, clicks, results").in("platform_account_id", accountIds).eq("date", dateStr);
-            const totals = (aggregation || []).reduce((s: any, i: any) => ({
-                spend: s.spend + Number(i.spend || 0),
-                impressions: s.impressions + Number(i.impressions || 0),
-                clicks: s.clicks + Number(i.clicks || 0),
-                results: s.results + Number(i.results || 0),
-            }), { spend: 0, impressions: 0, clicks: 0, results: 0 });
-            await supabase.from("branch_daily_stats").upsert({ branch_id: branchId, date: dateStr, platform_code: platformCode, totalSpend: totals.spend, totalImpressions: totals.impressions, totalClicks: totals.clicks, totalResults: totals.results }, { onConflict: 'branch_id, date, platform_code' });
-        }
-    }
-}
+// Local aggregateBranchStats removed in favor of centralized branches/stats/recalculate

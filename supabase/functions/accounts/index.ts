@@ -144,9 +144,25 @@ Deno.serve(async (req) => {
                 limit: "500"
             });
             if (fbAccs.error) return jsonResponse({ success: false, error: fbAccs.error.message }, 400);
-
+            
+            // Fetch branches for auto-matching
+            const { data: branches } = await supabase.from("branches").select("id, name, auto_match_keywords").eq("user_id", auth.userId);
+            
             const results = [];
             for (const acc of (fbAccs.data || [])) {
+                // Auto Match Logic
+                let branchIdToAssign = null;
+                if (branches && branches.length > 0) {
+                    const accName = acc.name?.toLowerCase() || "";
+                    for (const b of branches) {
+                        const keywords = b.auto_match_keywords || [];
+                        if (keywords.some((k: string) => k && accName.includes(k.toLowerCase()))) {
+                            branchIdToAssign = b.id;
+                            break;
+                        }
+                    }
+                }
+
                 const { data } = await supabase.from("platform_accounts").upsert({
                     platform_identity_id: identity.id,
                     platform_id: identity.platform_id,
@@ -156,6 +172,7 @@ Deno.serve(async (req) => {
                     timezone: acc.timezone_name,
                     account_status: acc.account_status.toString(),
                     platform_data: acc,
+                    branch_id: branchIdToAssign,
                     synced_at: new Date().toISOString()
                 }, { onConflict: "platform_id,external_id" }).select().single();
                 results.push(data);

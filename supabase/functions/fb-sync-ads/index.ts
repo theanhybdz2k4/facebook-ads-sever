@@ -37,11 +37,20 @@ class FacebookApiClient {
     }
 
     async getAds(accountId: string): Promise<any[]> {
-        const res = await this.request<{ data: any[] }>(`/${accountId}/ads`, {
-            fields: "id,adset_id,campaign_id,name,status,effective_status,creative,created_time,updated_time,configured_status",
-            limit: "1000",
-        });
-        return res.data || [];
+        let allAds: any[] = [];
+        const statusFilter = JSON.stringify(['ACTIVE', 'PENDING_REVIEW', 'IN_PROCESS', 'WITH_ISSUES']);
+        const filtering = JSON.stringify([{ field: 'effective_status', operator: 'IN', value: ['ACTIVE', 'PENDING_REVIEW', 'IN_PROCESS', 'WITH_ISSUES'] }]);
+        
+        let url = `${FB_BASE_URL}/${accountId}/ads?fields=id,adset_id,campaign_id,name,status,effective_status,creative,created_time,updated_time,configured_status&limit=1000&filtering=${encodeURIComponent(filtering)}&access_token=${this.accessToken}`;
+
+        while (url) {
+            const res = await fetch(url);
+            const data = await res.json();
+            if (data.error) throw new Error(`Facebook API Error: ${data.error.message}`);
+            if (data.data) allAds = allAds.concat(data.data);
+            url = data.paging?.next || null;
+        }
+        return allAds;
     }
 
     async getAdCreatives(adIds: string[]): Promise<any[]> {
@@ -84,13 +93,13 @@ Deno.serve(async (req: Request) => {
         const fb = new FacebookApiClient(tokenCred.credential_value);
         const result = { ads: 0, creatives: 0, errors: [] as string[] };
 
-        const { data: adGroups } = await supabase.from("unified_ad_groups").select("id, external_id").eq("platform_account_id", accountId);
+        const { data: adGroups } = await supabase.from("unified_ad_groups").select("id, external_id").eq("platform_account_id", accountId).limit(5000);
         const adGroupMap = new Map((adGroups || []).map((ag: any) => [ag.external_id, ag.id]));
 
         // BATCH SYNC ADS
         const fbAds = await fb.getAds(account.external_id);
         if (fbAds.length > 0) {
-            const { data: existingAds } = await supabase.from("unified_ads").select("id, external_id").eq("platform_account_id", accountId);
+            const { data: existingAds } = await supabase.from("unified_ads").select("id, external_id").eq("platform_account_id", accountId).limit(10000);
             const adIdMap = new Map((existingAds || []).map(a => [a.external_id, a.id]));
 
             const adUpserts = fbAds.map(ad => {
