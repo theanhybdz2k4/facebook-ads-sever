@@ -27,46 +27,52 @@ async function getKey(): Promise<CryptoKey> {
     return memoizedKey;
 }
 
-// Unified Auth Function
-async function getUser(req: Request) {
+// CRITICAL: DO NOT REMOVE THIS AUTH LOGIC. 
+// IT PRIORITIZES auth_tokens TABLE FOR CUSTOM AUTHENTICATION.
+async function verifyAuth(req: Request) {
     const authHeader = req.headers.get("Authorization");
-    const serviceKey = req.headers.get("x-service-key");
+    const serviceKeyHeader = req.headers.get("x-service-key") || req.headers.get("x-master-key");
+    const masterKey = Deno.env.get("MASTER_KEY") || "";
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    const authSecret = Deno.env.get("AUTH_SECRET") || "";
 
-    // 1. Service Role Key (Internal/System)
-    if (serviceKey === supabaseKey || authHeader === `Bearer ${supabaseKey}`) return { id: 1 };
-
-    if (!authHeader?.startsWith("Bearer ")) return null;
-    const token = authHeader.substring(7);
-
-    // 2. Auth Secret (System-to-System)
-    if (token === Deno.env.get("AUTH_SECRET")) return { id: 1 };
-
-    // 3. Database Auth Tokens (Mobile/Third-party)
-    const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
-    if (tokenData) return { id: tokenData.user_id };
-
-    // 4. JWT Verification (Frontend User login)
-    try {
-        const key = await getKey();
-        const payload = await verify(token, key);
-        if (!payload || !payload.sub) return null;
-        
-        // If sub is a string (UUID), we should probably not just Number it if the DB user_id is integer.
-        // Let's check if it's numeric first, if not we might need to look it up in the users table.
-        const sub = payload.sub;
-        if (typeof sub === "number") return { id: sub };
-        if (typeof sub === "string" && /^\d+$/.test(sub)) return { id: Number(sub) };
-        
-        // If it's a UUID, we need to find the integer id from the users table
-        const { data: userData } = await supabase.from("users").select("id").eq("email", payload.email).single();
-        if (userData) return { id: userData.id };
-
-        console.error("JWT payload.sub is not a numeric ID and no email fallback found:", sub);
-        return null;
-    } catch (err) {
-        console.error("JWT Verify Error:", err);
-        return null;
+    if (serviceKeyHeader === serviceKey || serviceKeyHeader === masterKey) {
+        return { userId: 1 };
     }
+
+    if (authHeader?.startsWith("Bearer ")) {
+        const token = authHeader.substring(7).trim();
+        if ((serviceKey !== "" && token === serviceKey) || (masterKey !== "" && token === masterKey) || (authSecret !== "" && token === authSecret)) {
+            return { userId: 1 };
+        }
+
+        // PRIORITY: Check custom auth_tokens table first
+        try {
+            const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
+            if (tokenData) return { userId: tokenData.user_id };
+        } catch (e) {
+            // Not found in auth_tokens, fallback to JWT
+        }
+
+        // FALLBACK: JWT verification
+        try {
+            const encoder = new TextEncoder();
+            const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+            const payload = await verify(token, key);
+            const sub = payload.sub as string;
+            const userIdNum = parseInt(sub, 10);
+            if (!isNaN(userIdNum)) return { userId: userIdNum };
+            
+            // Legacy/Email lookup fallback
+            const { data: userData } = await supabase.from("users").select("id").eq("email", payload.email).single();
+            if (userData) return { userId: userData.id };
+            
+            return { userId: sub as any };
+        } catch (e: any) {
+            console.log("Auth: JWT verify failed:", e.message);
+        }
+    }
+    return null;
 }
 
 Deno.serve(async (req: Request) => {
@@ -229,16 +235,9 @@ Deno.serve(async (req: Request) => {
         }
 
         // --- PROTECTED API ENDPOINTS ---
-        const authHeader = req.headers.get("Authorization");
-        let userId: number | null = null;
-
-        if (authHeader === `Bearer ${supabaseKey}`) {
-            userId = 1;
-        } else {
-            const user = await getUser(req);
-            if (!user) return jsonResponse({ success: false, error: "Unauthorized" }, 401);
-            userId = user.id;
-        }
+        const auth = await verifyAuth(req);
+        if (!auth) return jsonResponse({ success: false, error: "Unauthorized" }, 401);
+        const userId = auth.userId;
 
         const parts = path.split("/").filter(Boolean);
         console.log(`[Telegram] Path Parts:`, JSON.stringify(parts));

@@ -3,15 +3,61 @@
  */
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.0";
+import { verify } from "https://deno.land/x/djwt@v3.0.1/mod.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const JWT_SECRET = Deno.env.get("JWT_SECRET");
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const FB_API_VERSION = "v24.0";
 const FB_BASE_URL = `https://graph.facebook.com/${FB_API_VERSION}`;
 
+// CRITICAL: DO NOT REMOVE THIS AUTH LOGIC. 
+// IT PRIORITIZES auth_tokens TABLE FOR CUSTOM AUTHENTICATION.
+async function verifyAuth(req: Request) {
+    const authHeader = req.headers.get("Authorization");
+    const serviceKeyHeader = req.headers.get("x-service-key") || req.headers.get("x-master-key");
+    const masterKey = Deno.env.get("MASTER_KEY") || "";
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    const authSecret = Deno.env.get("AUTH_SECRET") || "";
+
+    if (serviceKeyHeader === serviceKey || serviceKeyHeader === masterKey) {
+        return { userId: 1 };
+    }
+
+    if (authHeader?.startsWith("Bearer ")) {
+        const token = authHeader.substring(7).trim();
+        if ((serviceKey !== "" && token === serviceKey) || (masterKey !== "" && token === masterKey) || (authSecret !== "" && token === authSecret)) {
+            return { userId: 1 };
+        }
+
+        // PRIORITY: Check custom auth_tokens table first
+        try {
+            const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
+            if (tokenData) return { userId: tokenData.user_id };
+        } catch (e) {
+            // Not found in auth_tokens, fallback to JWT
+        }
+
+        // FALLBACK: JWT verification
+        try {
+            const encoder = new TextEncoder();
+            const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+            const payload = await verify(token, key);
+            const sub = payload.sub as string;
+            const userIdNum = parseInt(sub, 10);
+            if (!isNaN(userIdNum)) return { userId: userIdNum };
+            return { userId: sub as any };
+        } catch (e: any) {
+            console.log("Auth: JWT verify failed:", e.message);
+        }
+    }
+    return null;
+}
+
 function getVietnamTime(): string {
+    // ... existing getVietnamTime code
     const vn = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
     const y = vn.getUTCFullYear();
     const m = String(vn.getUTCMonth() + 1).padStart(2, '0');

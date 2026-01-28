@@ -19,60 +19,46 @@ const corsHeaders = {
 
 const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: corsHeaders });
 
+// CRITICAL: DO NOT REMOVE THIS AUTH LOGIC. 
+// IT PRIORITIZES auth_tokens TABLE FOR CUSTOM AUTHENTICATION.
 async function verifyAuth(req: Request) {
   const authHeader = req.headers.get("Authorization");
-  const serviceKeyHeader = req.headers.get("x-service-key");
+  const serviceKeyHeader = req.headers.get("x-service-key") || req.headers.get("x-master-key");
   const masterKey = Deno.env.get("MASTER_KEY") || "";
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
   const authSecret = Deno.env.get("AUTH_SECRET") || "";
 
-  // 1. Try Service Role Key / x-service-key override
   if (serviceKeyHeader === serviceKey || serviceKeyHeader === masterKey) {
-    console.log("Auth: Authenticated via service key header");
     return { userId: 1 };
   }
 
   if (authHeader?.startsWith("Bearer ")) {
     const token = authHeader.substring(7).trim();
     if ((serviceKey !== "" && token === serviceKey) || (masterKey !== "" && token === masterKey) || (authSecret !== "" && token === authSecret)) {
-      console.log("Auth: Authenticated via bearer secret token");
       return { userId: 1 };
     }
 
-    // 2. Try JWT Verify first (standard path)
+    // PRIORITY: Check custom auth_tokens table first
+    try {
+      const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
+      if (tokenData) return { userId: tokenData.user_id };
+    } catch (e) {
+      // Not found in auth_tokens, fallback to JWT
+    }
+
+    // FALLBACK: JWT verification
     try {
       const encoder = new TextEncoder();
       const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
       const payload = await verify(token, key);
-
-      // Handle both integer (legacy) and UUID (supabase) sub
       const sub = payload.sub as string;
       const userIdNum = parseInt(sub, 10);
-
-      if (!isNaN(userIdNum)) {
-        console.log(`Auth: Authenticated via custom JWT (id: ${userIdNum})`);
-        return { userId: userIdNum };
-      } else {
-        console.log(`Auth: Authenticated via Supabase JWT (uuid: ${sub})`);
-        return { userId: sub as any };
-      }
+      if (!isNaN(userIdNum)) return { userId: userIdNum };
+      return { userId: sub as any };
     } catch (e: any) {
-      console.log("Auth: JWT verify failed, checking database:", e.message);
-    }
-
-    // 3. Try auth_tokens table (if it exists)
-    try {
-      const { data: tokenData, error } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
-      if (tokenData && !error) {
-        console.log(`Auth: Authenticated via auth_tokens (id: ${tokenData.user_id})`);
-        return { userId: tokenData.user_id };
-      }
-    } catch (e: any) {
-      console.log("Auth: auth_tokens check failed (table might be missing)");
+      console.log("Auth: JWT verify failed:", e.message);
     }
   }
-
-  console.log("Auth: Authentication failed");
   return null;
 }
 
