@@ -7,43 +7,76 @@ import { verify } from "https://deno.land/x/djwt@v3.0.1/mod.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-const JWT_SECRET = Deno.env.get("JWT_SECRET") || "your-secret-key";
+const JWT_SECRET = Deno.env.get("JWT_SECRET");
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const corsHeaders = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-client-info, apikey, x-service-key",
 };
 
 const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: corsHeaders });
 
 async function verifyAuth(req: Request) {
     const authHeader = req.headers.get("Authorization");
-    const serviceKey = Deno.env.get("MASTER_KEY") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    const serviceKeyHeader = req.headers.get("x-service-key");
+    const masterKey = Deno.env.get("MASTER_KEY") || "";
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    const authSecret = Deno.env.get("AUTH_SECRET") || "";
 
-    // 1. Try Service Role Key override
+    // 1. Try Service Role Key / x-service-key override
+    if (serviceKeyHeader === serviceKey || serviceKeyHeader === masterKey) {
+        console.log("Auth: Authenticated via service key header");
+        return { userId: 1 };
+    }
+    
     if (authHeader?.startsWith("Bearer ")) {
         const token = authHeader.substring(7).trim();
-        if (serviceKey !== "" && token === serviceKey) {
-            return { userId: 1 }; // Default to admin user id
+        if ((serviceKey !== "" && token === serviceKey) || (masterKey !== "" && token === masterKey) || (authSecret !== "" && token === authSecret)) {
+            console.log("Auth: Authenticated via bearer secret token");
+            return { userId: 1 };
+        }
+
+        // 2. Try JWT Verify first (standard path)
+        try {
+            const encoder = new TextEncoder();
+            const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+            const payload = await verify(token, key);
+            
+            // Handle both integer (legacy) and UUID (supabase) sub
+            const sub = payload.sub as string;
+            const userIdNum = parseInt(sub, 10);
+            
+            if (!isNaN(userIdNum)) {
+                console.log(`Auth: Authenticated via custom JWT (id: ${userIdNum})`);
+                return { userId: userIdNum };
+            } else {
+                // If it's a UUID, we need to map it or handle it. 
+                // For now, let's log it and see.
+                console.log(`Auth: Authenticated via Supabase JWT (uuid: ${sub})`);
+                return { userId: sub as any }; 
+            }
+        } catch (e: any) {
+            // Not a valid JWT or different secret, proceed to database check
+            console.log("Auth: JWT verify failed, checking database:", e.message);
+        }
+
+        // 3. Try auth_tokens table (if it exists)
+        try {
+            const { data: tokenData, error } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
+            if (tokenData && !error) {
+                console.log(`Auth: Authenticated via auth_tokens (id: ${tokenData.user_id})`);
+                return { userId: tokenData.user_id };
+            }
+        } catch (e: any) {
+            console.log("Auth: auth_tokens check failed (table might be missing)");
         }
     }
 
-    if (!authHeader?.startsWith("Bearer ")) return null;
-    const token = authHeader.substring(7).trim();
-    try {
-        const encoder = new TextEncoder();
-        const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-        const payload = await verify(token, key);
-        const userId = parseInt(payload.sub as string, 10);
-        if (isNaN(userId)) return null;
-        return { userId };
-    } catch (e: any) {
-        console.error("Auth error:", e.message);
-        return null;
-    }
+    console.log("Auth: Authentication failed");
+    return null;
 }
 
 Deno.serve(async (req: Request) => {
@@ -146,17 +179,41 @@ Deno.serve(async (req: Request) => {
                 .eq("branch_id", branchId);
 
             const results = [];
+            const token = req.headers.get("Authorization") || "";
+
             for (const acc of (accounts || [])) {
+                // 1. Sync Standard Insights
                 const syncResponse = await fetch(`${supabaseUrl}/functions/v1/fb-sync-insights`, {
                     method: "POST",
-                    headers: { "Content-Type": "application/json", "Authorization": req.headers.get("Authorization") || "" },
-                    body: JSON.stringify({ ...body, accountId: acc.id, skipBranchAggregation: true }) // Skip per-account to avoid overhead
+                    headers: { "Content-Type": "application/json", "Authorization": token },
+                    body: JSON.stringify({ ...body, accountId: acc.id, skipBranchAggregation: true })
                 });
-                results.push(await syncResponse.json());
+                const resData = await syncResponse.json();
+                results.push({ accountId: acc.id, main: resData });
+
+                // 2. Sync Breakdowns (Device, Age/Gender, Region) for the same date range
+                const breakdownTypes = ["device", "age_gender", "region"];
+                for (const bType of breakdownTypes) {
+                    try {
+                        console.log(`[Insights] Syncing ${bType} for account ${acc.id} (${dateStart} to ${dateEnd})`);
+                        await fetch(`${supabaseUrl}/functions/v1/fb-sync-insights`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", "Authorization": token },
+                            body: JSON.stringify({
+                                accountId: acc.id,
+                                dateStart,
+                                dateEnd,
+                                breakdown: bType
+                            })
+                        });
+                    } catch (e: any) {
+                        console.error(`[Insights] Breakdown sync (${bType}) failed for account ${acc.id}:`, e.message);
+                    }
+                }
             }
 
-            // Triggering branch-level recalculation is no longer needed in code.
-            // It is handled automatically by a database trigger when insights are synced.
+            // Recalculation is now handled by database trigger 'tr_recalculate_branch_stats' 
+            // on 'unified_insights' table. No manual RPC call needed here.
 
             return jsonResponse({ success: true, results });
         }

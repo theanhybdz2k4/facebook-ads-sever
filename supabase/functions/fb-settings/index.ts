@@ -17,7 +17,7 @@ const corsHeaders = {
 const jsonResponse = (data: any, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: corsHeaders });
 
-const JWT_SECRET = Deno.env.get("JWT_SECRET") || "heSq8+qsjA5sN/4UM6HJ/fg5t8Pjt/9r/tOAy5iVHyQ=";
+const JWT_SECRET = Deno.env.get("JWT_SECRET");
 
 // Performance Optimization: Cache the crypto key globally
 let memoizedKey: CryptoKey | null = null;
@@ -28,17 +28,29 @@ async function getKey(): Promise<CryptoKey> {
   return memoizedKey;
 }
 
-// Helper to get user from token
+// Unified Auth Function
 async function getUser(req: Request) {
   const authHeader = req.headers.get("Authorization");
+  const serviceKey = req.headers.get("x-service-key");
+
+  // 1. Service Role Key (Internal/System)
+  if (serviceKey === supabaseKey || authHeader === `Bearer ${supabaseKey}`) return { id: 1 };
+
   if (!authHeader?.startsWith("Bearer ")) return null;
   const token = authHeader.substring(7);
 
+  // 2. Auth Secret (System-to-System)
+  if (token === Deno.env.get("AUTH_SECRET")) return { id: 1 };
+
+  // 3. Database Auth Tokens (Mobile/Third-party)
+  const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
+  if (tokenData) return { id: tokenData.user_id };
+
+  // 4. JWT Verification (Frontend User login)
   try {
     const key = await getKey();
     const payload = await verify(token, key);
     if (!payload || !payload.sub) return null;
-
     return { id: Number(payload.sub) };
   } catch (err) {
     console.error("JWT Verify Error:", err);
@@ -162,10 +174,9 @@ Deno.serve(async (req: Request) => {
         user_id: userId,
         cron_type: cronType,
         allowed_hours: allowedHours,
-        enabled: enabled,
-        updated_at: new Date().toISOString(),
-        created_at: new Date().toISOString()
-      }, { onConflict: 'user_id, cron_type' }).select().single();
+        enabled: enabled ?? true,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'user_id,cron_type' }).select().single();
 
       if (error) {
         console.error("Supabase Upsert Error:", error);

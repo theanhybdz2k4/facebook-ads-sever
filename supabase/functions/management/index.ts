@@ -8,7 +8,7 @@ import { verify } from "https://deno.land/x/djwt@v3.0.1/mod.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-const JWT_SECRET = Deno.env.get("JWT_SECRET") || "your-secret-key";
+const JWT_SECRET = Deno.env.get("JWT_SECRET");
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const corsHeaders = {
@@ -20,10 +20,25 @@ const corsHeaders = {
 
 const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: corsHeaders });
 
+// Unified Auth Function
 async function verifyAuth(req: Request) {
     const authHeader = req.headers.get("Authorization");
+    const serviceKey = req.headers.get("x-service-key");
+
+    // 1. Service Role Key (Internal/System)
+    if (serviceKey === supabaseKey || authHeader === `Bearer ${supabaseKey}`) return { userId: 1 };
+
     if (!authHeader?.startsWith("Bearer ")) return null;
     const token = authHeader.substring(7);
+
+    // 2. Auth Secret (System-to-System)
+    if (token === Deno.env.get("AUTH_SECRET")) return { userId: 1 };
+
+    // 3. Database Auth Tokens (Mobile/Third-party)
+    const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
+    if (tokenData) return { userId: tokenData.user_id };
+
+    // 4. JWT Verification (Frontend User login)
     try {
         const encoder = new TextEncoder();
         const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);

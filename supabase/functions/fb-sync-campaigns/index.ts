@@ -8,7 +8,7 @@ const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-const FB_API_VERSION = "v19.0";
+const FB_API_VERSION = "v24.0";
 const FB_BASE_URL = `https://graph.facebook.com/${FB_API_VERSION}`;
 
 function getVietnamTime(): string {
@@ -116,17 +116,23 @@ Deno.serve(async (req: Request) => {
         }
 
         // BATCH SYNC ADSETS
+        console.log(`[CampaignSync] Fetching adsets for ${account.external_id}, since=${since}`);
         const fbAdSets = await fb.getAdSets(account.external_id, since);
+        console.log(`[CampaignSync] Got ${fbAdSets.length} adsets from FB`);
         if (fbAdSets.length > 0) {
             const { data: allCamps } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", accountId).limit(5000);
             const fullCampaignMap = new Map((allCamps || []).map((c: any) => [c.external_id, c.id]));
+            console.log(`[CampaignSync] Found ${allCamps?.length || 0} campaigns in DB for matching`);
 
             const { data: existingAdGroups } = await supabase.from("unified_ad_groups").select("id, external_id").eq("platform_account_id", accountId).limit(5000);
             const adGroupIdMap = new Map((existingAdGroups || []).map(ag => [ag.external_id, ag.id]));
 
             const adSetUpserts = fbAdSets.map(adset => {
                 const campaignId = fullCampaignMap.get(adset.campaign_id);
-                if (!campaignId) return null;
+                if (!campaignId) {
+                    console.log(`[CampaignSync] Adset ${adset.id} skipped - campaign ${adset.campaign_id} not found in DB`);
+                    return null;
+                }
                 return {
                     id: adGroupIdMap.get(adset.id) || crypto.randomUUID(),
                     external_id: adset.id,
@@ -139,7 +145,7 @@ Deno.serve(async (req: Request) => {
                     optimization_goal: adset.optimization_goal,
                     start_time: adset.start_time || null,
                     end_time: adset.end_time || null,
-                    platform_data: adset,
+                    platform_data: adset,  // Store full FB data including start/end time
                     synced_at: getVietnamTime(),
                 };
             }).filter(Boolean);

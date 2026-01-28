@@ -50,19 +50,7 @@ async function getUser(req: Request) {
         const key = await getKey();
         const payload = await verify(token, key);
         if (!payload || !payload.sub) return null;
-        
-        // If sub is a string (UUID), we should probably not just Number it if the DB user_id is integer.
-        // Let's check if it's numeric first, if not we might need to look it up in the users table.
-        const sub = payload.sub;
-        if (typeof sub === "number") return { id: sub };
-        if (typeof sub === "string" && /^\d+$/.test(sub)) return { id: Number(sub) };
-        
-        // If it's a UUID, we need to find the integer id from the users table
-        const { data: userData } = await supabase.from("users").select("id").eq("email", payload.email).single();
-        if (userData) return { id: userData.id };
-
-        console.error("JWT payload.sub is not a numeric ID and no email fallback found:", sub);
-        return null;
+        return { id: Number(payload.sub) };
     } catch (err) {
         console.error("JWT Verify Error:", err);
         return null;
@@ -77,8 +65,7 @@ Deno.serve(async (req: Request) => {
         const path = url.pathname;
         const method = req.method;
 
-        console.log(`[Telegram] ${method} ${path}`);
-        console.log(`[Telegram] Headers:`, JSON.stringify(Object.fromEntries(req.headers.entries())));
+        // --- PUBLIC WEBHOOK ENDPOINT (No custom JWT auth, uses bot_token from path) ---
         // URL format: /telegram/webhook/:bot_token
         if (path.includes("/webhook/")) {
             const botToken = path.split("/").pop();
@@ -241,15 +228,9 @@ Deno.serve(async (req: Request) => {
         }
 
         const parts = path.split("/").filter(Boolean);
-        console.log(`[Telegram] Path Parts:`, JSON.stringify(parts));
-
-        // Find the index of "bots" to determine if this is a bots-related request
-        // Sometimes the path inside the function might include "telegram" if called via a proxy
         const botsIndex = parts.indexOf("bots");
         const botIdParam = botsIndex !== -1 && parts[botsIndex + 1] ? parts[botsIndex + 1] : null;
         const botId = botIdParam && !isNaN(parseInt(botIdParam)) ? parseInt(botIdParam, 10) : null;
-        
-        console.log(`[Telegram] botsIndex: ${botsIndex}, botIdParam: ${botIdParam}, botId: ${botId}`);
 
         if (method === "GET" && !botId) {
             const { data, error } = await supabase
@@ -313,22 +294,13 @@ Deno.serve(async (req: Request) => {
         // --- POST /telegram/bots (Upsert Bot) ---
         if (method === "POST" && !botId) {
             const body = await req.json();
-            console.log(`[Telegram] POST /bots Body:`, JSON.stringify(body));
             const { botToken, botName, adAccountId } = body;
 
-            if (!botToken) {
-                console.error("[Telegram] Missing botToken");
-                return jsonResponse({ success: false, error: "Bot token is required" }, 400);
-            }
+            if (!botToken) return jsonResponse({ success: false, error: "Bot token is required" }, 400);
 
-            console.log(`[Telegram] Checking bot token with Telegram API...`);
             const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/getMe`).then(r => r.json());
-            if (!tgRes.ok) {
-                console.error("[Telegram] Telegram API check failed:", JSON.stringify(tgRes));
-                return jsonResponse({ success: false, error: "Invalid bot token (Telegram check failed)", details: tgRes }, 400);
-            }
+            if (!tgRes.ok) return jsonResponse({ success: false, error: "Invalid bot token (Telegram check failed)" }, 400);
 
-            console.log(`[Telegram] Upserting bot to database... user_id: ${userId}`);
             const { data, error } = await supabase.from("telegram_bots").upsert({
                 user_id: userId,
                 bot_token: botToken,
@@ -336,14 +308,14 @@ Deno.serve(async (req: Request) => {
                 bot_username: tgRes.result.username,
                 platform_account_id: adAccountId ? parseInt(adAccountId.toString(), 10) : null,
                 is_active: true,
-                updated_at: new Date().toISOString()
+                updated_at: new Date().toISOString(),
+                created_at: new Date().toISOString()
             }, { onConflict: 'bot_token' }).select().single();
 
             if (error) {
-                console.error("[Telegram] Bot Upsert Error:", error);
+                console.error("Bot Upsert Error:", error);
                 return jsonResponse({ success: false, error: error.message, details: error }, 400);
             }
-            console.log(`[Telegram] Bot upserted successfully:`, data.id);
             return jsonResponse({ success: true, bot: data });
         }
 
@@ -402,21 +374,7 @@ Deno.serve(async (req: Request) => {
                 body: JSON.stringify({ url: webhookUrl })
             }).then(r => r.json());
 
-            return jsonResponse({ success: tgRes.ok, message: tgRes.description, url: webhookUrl, details: tgRes });
-        }
-
-        // --- GET /telegram/bots/:id/webhook-info ---
-        if (method === "GET" && botId && path.includes("/webhook-info")) {
-            const { data: bot } = await supabase.from("telegram_bots").select("bot_token").eq("id", botId).single();
-            if (!bot) return jsonResponse({ success: false, error: "Bot not found" }, 404);
-
-            const tgRes = await fetch(`https://api.telegram.org/bot${bot.bot_token}/getWebhookInfo`).then(r => r.json());
-            
-            return jsonResponse({ 
-                success: tgRes.ok, 
-                result: tgRes.result,
-                isRegistered: tgRes.ok && tgRes.result?.url?.includes(supabaseUrl)
-            });
+            return jsonResponse({ success: tgRes.ok, message: tgRes.description, url: webhookUrl });
         }
 
         // --- DELETE /telegram/bots/:id ---
@@ -474,7 +432,7 @@ async function generateDailyReport(userId: number, type: "TODAY" | "YESTERDAY" =
     const { data: insights } = await supabase
         .from("unified_insights")
         .select(`
-            spend, impressions, results, clicks, messaging_total, messaging_new,
+            spend, impressions, results, clicks,
             ad:unified_ads(name, external_id),
             account:platform_accounts(name)
         `)
@@ -490,21 +448,19 @@ async function generateDailyReport(userId: number, type: "TODAY" | "YESTERDAY" =
     const totalImpressions = insights.reduce((sum: number, i: any) => sum + Number(i.impressions || 0), 0);
     const totalClicks = insights.reduce((sum: number, i: any) => sum + Number(i.clicks || 0), 0);
     const totalResults = insights.reduce((sum: number, i: any) => sum + Number(i.results || 0), 0);
-    const totalMsgNew = insights.reduce((sum: number, i: any) => sum + Number(i.messaging_new || 0), 0);
-    const totalMsgTotal = insights.reduce((sum: number, i: any) => sum + Number(i.messaging_total || 0), 0);
 
     const ctr = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0;
-    const cpr = totalMsgNew > 0 ? totalSpend / totalMsgNew : (totalResults > 0 ? totalSpend / totalResults : 0);
+    const cpr = totalResults > 0 ? totalSpend / totalResults : 0;
 
     let msg = `📊 *BÁO CÁO ${type === "TODAY" ? "HÔM NAY" : "HÔM QUA"}*\n`;
     msg += `📅 ${dateStr}\n`;
     msg += `━━━━━━━━━━━━━━━━━━\n\n`;
 
     msg += `💰 Chi tiêu: *${formatNumber(totalSpend)}*\n`;
-    msg += `🎯 Tin nhắn mới: *${formatNumber(totalMsgNew)}* / ${formatNumber(totalMsgTotal)} tổng\n`;
+    msg += `🎯 Kết quả: *${formatNumber(totalResults)}*\n`;
     msg += `💬 CPR: *${formatNumber(cpr)}*\n`;
     msg += `📈 CTR: *${ctr.toFixed(2)}%*\n`;
-    msg += `👁 Hiển thị: ${formatNumber(totalImpressions)}\n`;
+    msg += `👁 Lượt hiển thị: ${formatNumber(totalImpressions)}\n`;
     msg += `👆 Clicks: ${formatNumber(totalClicks)}\n\n`;
 
     msg += `━━━━━━━━━━━━━━━━━━\n`;
@@ -555,7 +511,7 @@ async function generateHourlyReport(userId: number) {
     const { data: hourlyData } = await supabase
         .from("unified_hourly_insights")
         .select(`
-            spend, impressions, clicks, results, messaging_total, messaging_new,
+            spend, impressions, clicks, results, 
             date, hour,
             ad:unified_ads(name, external_id),
             adGroup:unified_ad_groups(name),
@@ -586,8 +542,6 @@ async function generateHourlyReport(userId: number) {
         existing.impressions += Number(curr.impressions || 0);
         existing.clicks += Number(curr.clicks || 0);
         existing.results += Number(curr.results || 0);
-        existing.messaging_total += Number(curr.messaging_total || 0);
-        existing.messaging_new += Number(curr.messaging_new || 0);
         
         // Prefer keeping non-null names if possible
         if (!existing.ad?.name && curr.ad?.name) existing.ad = curr.ad;
@@ -602,12 +556,10 @@ async function generateHourlyReport(userId: number) {
     
     const totalSpend = insights.reduce((s: number, i: any) => s + Number(i.spend || 0), 0);
     const totalResults = insights.reduce((s: number, i: any) => s + Number(i.results || 0), 0);
-    const totalMsgNew = insights.reduce((s: number, i: any) => s + Number(i.messaging_new || 0), 0);
-    const totalMsgTotal = insights.reduce((s: number, i: any) => s + Number(i.messaging_total || 0), 0);
     const totalImpressions = insights.reduce((s: number, i: any) => s + Number(i.impressions || 0), 0);
     const totalClicks = insights.reduce((s: number, i: any) => s + Number(i.clicks || 0), 0);
     
-    const cpr = totalMsgNew > 0 ? totalSpend / totalMsgNew : (totalResults > 0 ? totalSpend / totalResults : 0);
+    const cpr = totalResults > 0 ? totalSpend / totalResults : 0;
     const ctr = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0;
 
     let msg = `⏰ *BÁO CÁO GIỜ: ${reportHour}:00 - ${reportHour + 1}:00*\n`;
@@ -615,7 +567,7 @@ async function generateHourlyReport(userId: number) {
     msg += `━━━━━━━━━━━━━━━━━━\n\n`;
     
     msg += `💰 Tổng chi tiêu: *${formatNumber(totalSpend)} VND*\n`;
-    msg += `🎯 Tin nhắn mới: *${formatNumber(totalMsgNew)}* / ${formatNumber(totalMsgTotal)} tổng\n`;
+    msg += `🎯 Kết quả: *${formatNumber(totalResults)}*\n`;
     msg += `💬 CPR: *${formatNumber(cpr)} VND*\n`;
     msg += `📈 CTR: *${ctr.toFixed(2)}%*\n`;
     msg += `👁 Hiển thị: ${formatNumber(totalImpressions)}\n\n`;
@@ -736,7 +688,7 @@ async function generateBudgetReport(userId: number) {
 async function generateQuickStats(userId: number) {
     const today = getVietnamDate(0);
     const { data: stats } = await supabase.from("branch_daily_stats")
-        .select("totalSpend, totalResults, totalClicks, totalImpressions, totalMessagingTotal, totalMessagingNew, branch:branches(name)")
+        .select("totalSpend, totalResults, totalClicks, totalImpressions, branch:branches(name)")
         .eq("date", today);
 
     if (!stats || stats.length === 0) {
@@ -755,14 +707,14 @@ async function generateQuickStats(userId: number) {
             impressions: s.impressions + Number(i.impressions || 0)
         }), { spend: 0, results: 0, clicks: 0, impressions: 0 });
 
-        const cpr = total.messaging_new > 0 ? total.spend / total.messaging_new : (total.results > 0 ? total.spend / total.results : 0);
+        const cpr = total.results > 0 ? total.spend / total.results : 0;
         const ctr = total.impressions > 0 ? (total.clicks / total.impressions) * 100 : 0;
 
         return `📊 *THỐNG KÊ NHANH*\n` +
             `📅 ${today}\n` +
             `━━━━━━━━━━━━━━━━━━\n\n` +
             `💰 Chi tiêu: *${formatNumber(total.spend)}*\n` +
-            `🎯 Tin nhắn mới: *${formatNumber(total.results)}*\n` +
+            `🎯 Kết quả: *${formatNumber(total.results)}*\n` +
             `💬 CPR: *${formatNumber(cpr)}*\n` +
             `📈 CTR: *${ctr.toFixed(2)}%*`;
     }
@@ -773,13 +725,9 @@ async function generateQuickStats(userId: number) {
 
     for (const s of stats) {
         const branchName = (s.branch as any)?.name || "Chi nhánh";
-        const msgNew = Number(s.totalMessagingNew || 0);
-        const results = Number(s.totalResults || 0);
-        const spend = Number(s.totalSpend || 0);
-        const cpr = msgNew > 0 ? spend / msgNew : (results > 0 ? spend / results : 0);
-        
+        const cpr = Number(s.totalResults) > 0 ? Number(s.totalSpend) / Number(s.totalResults) : 0;
         msg += `🏢 *${branchName}*\n`;
-        msg += `  💰 ${formatNumber(spend)}  ·  🎯 ${formatNumber(msgNew)}  ·  CPR ${formatNumber(cpr)}\n\n`;
+        msg += `  💰 ${formatNumber(Number(s.totalSpend))}  ·  🎯 ${formatNumber(Number(s.totalResults))}  ·  CPR ${formatNumber(cpr)}\n\n`;
     }
 
     return msg;

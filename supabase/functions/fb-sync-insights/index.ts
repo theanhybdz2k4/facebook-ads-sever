@@ -3,12 +3,14 @@
  */
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.0";
+import { verify } from "https://deno.land/x/djwt@v3.0.1/mod.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const JWT_SECRET = Deno.env.get("JWT_SECRET");
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-const FB_BASE_URL = "https://graph.facebook.com/v19.0";
+const FB_BASE_URL = "https://graph.facebook.com/v24.0";
 
 function getVietnamToday(): string {
     const vn = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
@@ -94,25 +96,111 @@ class FacebookApiClient {
 
 function extractResults(raw: any): number {
     if (!raw.actions) return 0;
-    const types = [
-        "onsite_conversion.messaging_conversation_started_7d", 
-        "onsite_conversion.messaging_first_reply", 
-        "lead", 
-        "purchase",
+    // Priority order: pick the FIRST matching type, don't sum all
+    // These action types often overlap (same conversion counted multiple ways)
+    const priorityTypes = [
+        "onsite_conversion.messaging_first_reply",  // Most accurate for messaging
+        "onsite_conversion.messaging_conversation_started_7d",
+        "lead",
         "onsite_conversion.lead",
-        "onsite_conversion.purchase",
         "onsite_web_lead",
+        "purchase",
+        "onsite_conversion.purchase",
         "onsite_web_purchase",
         "offsite_complete_registration_add_meta_leads"
     ];
-    return raw.actions.filter((a: any) => types.includes(a.action_type)).reduce((s: number, a: any) => s + Number(a.value), 0);
+
+    for (const type of priorityTypes) {
+        const action = raw.actions.find((a: any) => a.action_type === type);
+        if (action) {
+            return Number(action.value);
+        }
+    }
+    return 0;
 }
 
-const corsHeaders = { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization" };
+function extractMessagingTotal(raw: any): number {
+    if (!raw.actions) return 0;
+    const action = raw.actions.find((a: any) => a.action_type === "onsite_conversion.total_messaging_connection");
+    return action ? Number(action.value) : 0;
+}
+
+function extractMessagingNew(raw: any): number {
+    if (!raw.actions) return 0;
+    const action = raw.actions.find((a: any) => a.action_type === "onsite_conversion.messaging_first_reply");
+    return action ? Number(action.value) : 0;
+}
+
+const corsHeaders = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-client-info, apikey, x-service-key",
+};
+
+async function verifyAuth(req: Request) {
+    const authHeader = req.headers.get("Authorization");
+    const serviceKeyHeader = req.headers.get("x-service-key");
+    const masterKey = Deno.env.get("MASTER_KEY") || "";
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    const authSecret = Deno.env.get("AUTH_SECRET") || "";
+
+    // 1. Try Service Role Key / x-service-key override
+    if (serviceKeyHeader === serviceKey || serviceKeyHeader === masterKey) {
+        console.log("Auth: Authenticated via service key header");
+        return { userId: 1 };
+    }
+    
+    if (authHeader?.startsWith("Bearer ")) {
+        const token = authHeader.substring(7).trim();
+        if ((serviceKey !== "" && token === serviceKey) || (masterKey !== "" && token === masterKey) || (authSecret !== "" && token === authSecret)) {
+            console.log("Auth: Authenticated via bearer secret token");
+            return { userId: 1 };
+        }
+
+        // 2. Try JWT Verify first (standard path)
+        try {
+            const encoder = new TextEncoder();
+            const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+            const payload = await verify(token, key);
+            
+            // Handle both integer (legacy) and UUID (supabase) sub
+            const sub = payload.sub as string;
+            const userIdNum = parseInt(sub, 10);
+            
+            if (!isNaN(userIdNum)) {
+                console.log(`Auth: Authenticated via custom JWT (id: ${userIdNum})`);
+                return { userId: userIdNum };
+            } else {
+                console.log(`Auth: Authenticated via Supabase JWT (uuid: ${sub})`);
+                return { userId: sub as any }; 
+            }
+        } catch (e: any) {
+            console.log("Auth: JWT verify failed, checking database:", e.message);
+        }
+
+        // 3. Try auth_tokens table (if it exists)
+        try {
+            const { data: tokenData, error } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
+            if (tokenData && !error) {
+                console.log(`Auth: Authenticated via auth_tokens (id: ${tokenData.user_id})`);
+                return { userId: tokenData.user_id };
+            }
+        } catch (e: any) {
+            console.log("Auth: auth_tokens check failed (table might be missing)");
+        }
+    }
+
+    console.log("Auth: Authentication failed");
+    return null;
+}
 const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: corsHeaders });
 
 Deno.serve(async (req: Request) => {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
+
+    const auth = await verifyAuth(req);
+    if (!auth) return jsonResponse({ success: false, error: "Unauthorized" }, 401);
 
     const url = new URL(req.url);
     try {
@@ -122,6 +210,14 @@ Deno.serve(async (req: Request) => {
             const adId = url.searchParams.get("adId");
             const accountId = url.searchParams.get("accountId");
             const branchId = url.searchParams.get("branchId");
+            const platformCode = url.searchParams.get("platformCode");
+
+            // Get platform_id from platforms table if filtering by specific platform
+            let platformId: number | null = null;
+            if (platformCode && platformCode !== "all") {
+                const { data: platform } = await supabase.from("platforms").select("id").eq("code", platformCode).single();
+                platformId = platform?.id || null;
+            }
 
             let selectString = `
                 *,
@@ -129,10 +225,10 @@ Deno.serve(async (req: Request) => {
                 unified_ad_groups(id, name),
                 unified_campaigns(id, name)
             `;
-            
-            // Only add platform_accounts join if we need to filter by branch
-            if (branchId && branchId !== "all") {
-                selectString += `, platform_accounts!inner(id, branch_id)`;
+
+            // Add platform_accounts join if we need to filter by branch or platform
+            if ((branchId && branchId !== "all") || platformId) {
+                selectString += `, platform_accounts!inner(id, branch_id, platform_id)`;
             }
 
             let query = supabase.from("unified_insights").select(selectString);
@@ -142,8 +238,12 @@ Deno.serve(async (req: Request) => {
             if (adId) query = query.eq("unified_ad_id", adId);
             if (accountId) query = query.eq("platform_account_id", accountId);
             if (branchId && branchId !== "all") query = query.eq("platform_accounts.branch_id", branchId);
+            if (platformId) query = query.eq("platform_accounts.platform_id", platformId);
 
-            const { data, error } = await query.order("date", { ascending: false }).limit(1000);
+            // Only return insights that have an ad ID (exclude orphan records)
+            query = query.not("unified_ad_id", "is", null);
+
+            const { data, error } = await query.order("date", { ascending: false }).limit(20000);
             if (error) throw error;
 
             // Map to camelCase for frontend
@@ -230,7 +330,23 @@ Deno.serve(async (req: Request) => {
                         const cid = campaignMap.get(raw.campaign_id) || null;
                         const agid = adGroupMap.get(raw.adset_id) || null;
                         const adid = adMap.get(raw.ad_id) || null;
+
+                        if (!adid) {
+                            console.log(`[InsightSync] Skipping: No local ad found for FB Ad ID ${raw.ad_id} (${raw.ad_name})`);
+                            continue; // Skip insights for ads not in our database
+                        }
+
                         const key = `${targetAccountId}|${cid}|${agid}|${adid}|${raw.date_start}`;
+
+                        function extractRevenue(raw: any): number {
+                            if (!raw.action_values) return 0;
+                            const types = ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase", "offsite_conversion.custom.1234"]; // Standard purchase types
+                            return raw.action_values
+                                .filter((a: any) => types.includes(a.action_type) || a.action_type.includes("purchase"))
+                                .reduce((s: number, a: any) => s + Number(a.value), 0);
+                        }
+
+                        // ... inside Deno.serve ...
 
                         const current = aggregated.get(key) || {
                             platform_account_id: targetAccountId,
@@ -243,6 +359,9 @@ Deno.serve(async (req: Request) => {
                             clicks: 0,
                             reach: 0,
                             results: 0,
+                            messaging_total: 0,
+                            messaging_new: 0,
+                            purchase_value: 0,
                             platform_metrics: { raw_actions: [] }
                         };
 
@@ -251,6 +370,15 @@ Deno.serve(async (req: Request) => {
                         current.clicks += parseInt(raw.clicks || "0", 10);
                         current.reach = Math.max(current.reach, parseInt(raw.reach || "0", 10));
                         current.results += extractResults(raw);
+                        current.messaging_total += extractMessagingTotal(raw);
+                        current.messaging_new += extractMessagingNew(raw);
+                        current.purchase_value += extractRevenue(raw);
+
+                        // Debug Revenue
+                        if (raw.action_values && raw.action_values.length > 0) {
+                            console.log(`[Revenue Debug] Account ${targetAccountId} Date ${raw.date_start}: Found action_values`, JSON.stringify(raw.action_values));
+                        }
+
                         if (raw.actions) {
                             current.platform_metrics.raw_actions.push(...raw.actions);
                         }
@@ -304,7 +432,9 @@ Deno.serve(async (req: Request) => {
                             const fbHourly = await fb.getInsights(ad.external_id, "ad", { start: dateStart, end: dateEnd }, "HOURLY");
 
                             if (fbHourly.length > 0) {
-                                const hUpserts = fbHourly.map(raw => {
+                                const hAggregated = new Map<string, any>();
+
+                                for (const raw of fbHourly) {
                                     const cid = campaignMap.get(raw.campaign_id) || null;
                                     const agid = adGroupMap.get(raw.adset_id) || null;
                                     const adid = ad.id;
@@ -312,22 +442,31 @@ Deno.serve(async (req: Request) => {
                                     const hr = parseInt(hrRaw.split(":")[0], 10);
                                     const key = `${targetAccountId}|${cid}|${agid}|${adid}|${raw.date_start}|${hr}`;
 
-                                    return {
+                                    const current = hAggregated.get(key) || {
                                         platform_account_id: targetAccountId,
                                         unified_campaign_id: cid,
                                         unified_ad_group_id: agid,
                                         unified_ad_id: adid,
                                         date: raw.date_start,
                                         hour: hr,
-                                        spend: parseFloat(raw.spend || "0"),
-                                        impressions: parseInt(raw.impressions || "0", 10),
-                                        clicks: parseInt(raw.clicks || "0", 10),
-                                        results: extractResults(raw),
+                                        spend: 0,
+                                        impressions: 0,
+                                        clicks: 0,
+                                        results: 0,
                                         synced_at: getVietnamTime()
                                     };
-                                });
 
-                                console.log(`[Insights] Upserting ${hUpserts.length} hourly items for ad ${ad.id}`);
+                                    current.spend += parseFloat(raw.spend || "0");
+                                    current.impressions += parseInt(raw.impressions || "0", 10);
+                                    current.clicks += parseInt(raw.clicks || "0", 10);
+                                    current.results += extractResults(raw);
+
+                                    hAggregated.set(key, current);
+                                }
+
+                                const hUpserts = Array.from(hAggregated.values());
+
+                                console.log(`[Insights] Upserting ${hUpserts.length} aggregated hourly items for ad ${ad.id}`);
                                 const { error: hrErr } = await supabase.from("unified_hourly_insights").upsert(hUpserts, {
                                     onConflict: "platform_account_id,unified_campaign_id,unified_ad_group_id,unified_ad_id,date,hour"
                                 });

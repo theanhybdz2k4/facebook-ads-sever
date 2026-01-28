@@ -3,12 +3,14 @@
  */
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.0";
+import { verify } from "https://deno.land/x/djwt@v3.0.1/mod.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const JWT_SECRET = Deno.env.get("JWT_SECRET");
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-const FB_BASE_URL = "https://graph.facebook.com/v19.0";
+const FB_BASE_URL = "https://graph.facebook.com/v24.0";
 
 function getVietnamTime(): string {
     const vn = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
@@ -38,10 +40,8 @@ class FacebookApiClient {
 
     async getAds(accountId: string): Promise<any[]> {
         let allAds: any[] = [];
-        const statusFilter = JSON.stringify(['ACTIVE', 'PENDING_REVIEW', 'IN_PROCESS', 'WITH_ISSUES']);
-        const filtering = JSON.stringify([{ field: 'effective_status', operator: 'IN', value: ['ACTIVE', 'PENDING_REVIEW', 'IN_PROCESS', 'WITH_ISSUES'] }]);
-        
-        let url = `${FB_BASE_URL}/${accountId}/ads?fields=id,adset_id,campaign_id,name,status,effective_status,creative,created_time,updated_time,configured_status&limit=1000&filtering=${encodeURIComponent(filtering)}&access_token=${this.accessToken}`;
+        // Removed status filtering to ensure all ads (including paused/deleted) are synced for insights matching
+        let url = `${FB_BASE_URL}/${accountId}/ads?fields=id,adset_id,campaign_id,name,status,effective_status,creative,created_time,updated_time,configured_status&limit=1000&access_token=${this.accessToken}`;
 
         while (url) {
             const res = await fetch(url);
@@ -65,7 +65,69 @@ class FacebookApiClient {
     }
 }
 
-const corsHeaders = { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization" };
+const corsHeaders = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-client-info, apikey, x-service-key",
+};
+
+async function verifyAuth(req: Request) {
+    const authHeader = req.headers.get("Authorization");
+    const serviceKeyHeader = req.headers.get("x-service-key");
+    const masterKey = Deno.env.get("MASTER_KEY") || "";
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    const authSecret = Deno.env.get("AUTH_SECRET") || "";
+
+    // 1. Try Service Role Key / x-service-key override
+    if (serviceKeyHeader === serviceKey || serviceKeyHeader === masterKey) {
+        console.log("Auth: Authenticated via service key header");
+        return { userId: 1 };
+    }
+
+    if (authHeader?.startsWith("Bearer ")) {
+        const token = authHeader.substring(7).trim();
+        if ((serviceKey !== "" && token === serviceKey) || (masterKey !== "" && token === masterKey) || (authSecret !== "" && token === authSecret)) {
+            console.log("Auth: Authenticated via bearer secret token");
+            return { userId: 1 };
+        }
+
+        // 2. Try JWT Verify first (standard path)
+        try {
+            const encoder = new TextEncoder();
+            const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+            const payload = await verify(token, key);
+
+            // Handle both integer (legacy) and UUID (supabase) sub
+            const sub = payload.sub as string;
+            const userIdNum = parseInt(sub, 10);
+
+            if (!isNaN(userIdNum)) {
+                console.log(`Auth: Authenticated via custom JWT (id: ${userIdNum})`);
+                return { userId: userIdNum };
+            } else {
+                console.log(`Auth: Authenticated via Supabase JWT (uuid: ${sub})`);
+                return { userId: sub as any };
+            }
+        } catch (e: any) {
+            console.log("Auth: JWT verify failed, checking database:", e.message);
+        }
+
+        // 3. Try auth_tokens table (if it exists)
+        try {
+            const { data: tokenData, error } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
+            if (tokenData && !error) {
+                console.log(`Auth: Authenticated via auth_tokens (id: ${tokenData.user_id})`);
+                return { userId: tokenData.user_id };
+            }
+        } catch (e: any) {
+            console.log("Auth: auth_tokens check failed (table might be missing)");
+        }
+    }
+
+    console.log("Auth: Authentication failed");
+    return null;
+}
 const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: corsHeaders });
 
 function mapStatus(fbStatus: string): string {
@@ -74,6 +136,9 @@ function mapStatus(fbStatus: string): string {
 
 Deno.serve(async (req: Request) => {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
+
+    const auth = await verifyAuth(req);
+    if (!auth) return jsonResponse({ success: false, error: "Unauthorized" }, 401);
 
     try {
         const { accountId } = await req.json();
@@ -93,8 +158,8 @@ Deno.serve(async (req: Request) => {
         const fb = new FacebookApiClient(tokenCred.credential_value);
         const result = { ads: 0, creatives: 0, errors: [] as string[] };
 
-        const { data: adGroups } = await supabase.from("unified_ad_groups").select("id, external_id").eq("platform_account_id", accountId).limit(5000);
-        const adGroupMap = new Map((adGroups || []).map((ag: any) => [ag.external_id, ag.id]));
+        const { data: adGroups } = await supabase.from("unified_ad_groups").select("id, external_id, start_time, end_time").eq("platform_account_id", accountId).limit(5000);
+        const adGroupMap = new Map<string, any>((adGroups || []).map((ag: any) => [ag.external_id, ag]));
 
         // BATCH SYNC ADS
         const fbAds = await fb.getAds(account.external_id);
@@ -103,18 +168,19 @@ Deno.serve(async (req: Request) => {
             const adIdMap = new Map((existingAds || []).map(a => [a.external_id, a.id]));
 
             const adUpserts = fbAds.map(ad => {
-                const adGroupId = adGroupMap.get(ad.adset_id);
-                if (!adGroupId) return null;
+                const adGroup = adGroupMap.get(ad.adset_id);
+                if (!adGroup) return null;
                 return {
                     id: adIdMap.get(ad.id) || crypto.randomUUID(),
                     external_id: ad.id,
                     platform_account_id: accountId,
-                    unified_ad_group_id: adGroupId,
-                    campaign_id: ad.campaign_id, // Ensure internal campaign link
+                    unified_ad_group_id: adGroup.id,
                     name: ad.name,
                     status: mapStatus(ad.status),
                     effective_status: ad.effective_status,
-                    platform_data: ad,
+                    start_time: adGroup.start_time,
+                    end_time: adGroup.end_time,
+                    platform_data: ad,  // Contains campaign_id for reference
                     synced_at: getVietnamTime(),
                 };
             }).filter(Boolean);

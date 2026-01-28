@@ -1,5 +1,6 @@
 /**
- * Accounts (Identities) Edge Function - Harmonized with NestJS
+ * Accounts (Identities) Edge Function - v20
+ * Cập nhật: Thông báo lỗi tiếng Việt, Fix Routing, Forced Connection
  */
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.0";
@@ -7,10 +8,10 @@ import { verify } from "https://deno.land/x/djwt@v3.0.1/mod.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-const JWT_SECRET = Deno.env.get("JWT_SECRET") || "your-secret-key";
+const JWT_SECRET = Deno.env.get("JWT_SECRET");
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-const FB_BASE_URL = "https://graph.facebook.com/v19.0";
+const FB_BASE_URL = "https://graph.facebook.com/v23.0";
 
 const corsHeaders = {
     "Content-Type": "application/json",
@@ -35,18 +36,10 @@ async function verifyAuth(req: Request) {
 
 function mapIdentity(i: any) {
     return {
-        id: i.id,
-        userId: i.user_id,
-        platformId: i.platform_id,
-        externalId: i.external_id,
-        name: i.name,
-        isValid: i.is_valid,
-        createdAt: i.created_at,
-        updatedAt: i.updated_at,
+        id: i.id, userId: i.user_id, platformId: i.platform_id, externalId: i.external_id,
+        name: i.name, isValid: i.is_valid, createdAt: i.created_at, updatedAt: i.updated_at,
         platform: i.platforms ? { id: i.platforms.id, code: i.platforms.code, name: i.platforms.name } : null,
-        _count: {
-            accounts: i.platform_accounts?.length || 0
-        }
+        _count: { accounts: i.platform_accounts?.length || 0 }
     };
 }
 
@@ -65,130 +58,134 @@ Deno.serve(async (req) => {
     if (!auth) return jsonResponse({ success: false, error: "Unauthorized" }, 401);
 
     const url = new URL(req.url);
-    // ROBUST ROUTING
     const segments = url.pathname.split("/").filter(Boolean);
     const funcIndex = segments.indexOf("accounts");
     const subPathSegments = funcIndex !== -1 ? segments.slice(funcIndex + 1) : segments;
     const path = "/" + subPathSegments.join("/");
-
     const method = req.method;
 
     try {
         // List Identities
-        if (path === "/identities" || path === "/identities/") {
-            if (method === "GET") {
-                const { data, error } = await supabase
-                    .from("platform_identities")
-                    .select("*, platforms(*), platform_accounts(id)")
-                    .eq("user_id", auth.userId);
-                if (error) throw error;
-                return jsonResponse({ success: true, result: data.map(mapIdentity) });
-            }
+        if ((path === "/identities" || path === "/identities/") && method === "GET") {
+            const { data, error } = await supabase.from("platform_identities").select("*, platforms(*), platform_accounts(id)").eq("user_id", auth.userId);
+            if (error) throw error;
+            return jsonResponse({ success: true, result: data.map(mapIdentity) });
         }
 
-        // Connect / Add Identity
-        if (path === "/connect" || path === "/connect/") {
+        // Connect
+        if ((path === "/connect" || path === "/connect/") && method === "POST") {
             const body = await req.json();
             const { platformCode, token, name } = body;
-
             const { data: platform } = await supabase.from("platforms").select("*").eq("code", platformCode).single();
             if (!platform) return jsonResponse({ success: false, error: "Platform not found" }, 404);
+            if (!token) return jsonResponse({ success: false, error: "Missing token" }, 400);
 
-            // Validate token with FB
+            let fbUserId = null;
+            let fbUserName = name || "Facebook User";
             const fbMe = await fbRequest("/me", token, { fields: "id,name" });
-            if (fbMe.error) return jsonResponse({ success: false, error: fbMe.error.message }, 400);
+            
+            if (fbMe.error) {
+                console.warn(`[Connect] FB Error (Forcing):`, JSON.stringify(fbMe.error));
+                const { data: existing } = await supabase.from("platform_identities").select("id, external_id").eq("user_id", auth.userId).eq("name", fbUserName).eq("platform_id", platform.id).maybeSingle();
+                fbUserId = existing?.external_id || `forced_${auth.userId}_${Date.now()}`;
+            } else {
+                fbUserId = fbMe.id;
+                fbUserName = name || fbMe.name;
+            }
 
             const { data: identity, error: idError } = await supabase.from("platform_identities").upsert({
-                user_id: auth.userId,
-                platform_id: platform.id,
-                external_id: fbMe.id,
-                name: name || fbMe.name,
-                is_valid: true
+                user_id: auth.userId, platform_id: platform.id, external_id: fbUserId, name: fbUserName,
+                is_valid: !fbMe.error, created_at: new Date().toISOString(), updated_at: new Date().toISOString()
             }, { onConflict: "platform_id,external_id" }).select().single();
-
             if (idError) throw idError;
 
-            // Upsert Credential
             await supabase.from("platform_credentials").upsert({
-                platform_identity_id: identity.id,
-                credential_type: "access_token",
-                credential_value: token,
-                is_active: true
+                platform_identity_id: identity.id, credential_type: "access_token", credential_value: token, is_active: true
             }, { onConflict: "platform_identity_id,credential_type" });
 
             return jsonResponse({ success: true, result: mapIdentity(identity) });
         }
 
-        // Sync Sub-accounts
+        // Sync
         if (path.includes("/sync-accounts")) {
-            // Robustly find identityId from subPathSegments
             const identIndex = subPathSegments.indexOf("identities");
             const identityId = identIndex !== -1 ? subPathSegments[identIndex + 1] : null;
+            if (!identityId) return jsonResponse({ success: false, error: "Identity ID missing" }, 400);
 
-            if (!identityId) return jsonResponse({ success: false, error: "Identity ID missing from path" }, 400);
+            const logs: string[] = [];
+            const log = (msg: string) => { console.log(msg); logs.push(msg); };
+            const errorLog = (msg: string, err: any) => { console.error(msg, err); logs.push(`ERROR: ${msg} ${JSON.stringify(err)}`); };
 
-            const { data: identity } = await supabase
-                .from("platform_identities")
-                .select("*, platform_credentials(*)")
-                .eq("id", identityId)
-                .eq("user_id", auth.userId)
-                .single();
+            log(`[Sync] Request: identityId=${identityId}, userId=${auth.userId}`);
 
-            if (!identity) return jsonResponse({ success: false, error: "Identity not found" }, 404);
+            const { data: identity } = await supabase.from("platform_identities").select("*").eq("id", identityId).eq("user_id", auth.userId).single();
+            if (!identity) {
+                log(`[Sync] Identity not found`);
+                return jsonResponse({ success: false, error: "Identity not found", logs }, 404);
+            }
 
-            const token = identity.platform_credentials?.find((c: any) => c.credential_type === "access_token" && c.is_active)?.credential_value;
-            if (!token) return jsonResponse({ success: false, error: "No active token" }, 400);
-
-            const fbAccs = await fbRequest("/me/adaccounts", token, {
-                fields: "id,name,account_status,currency,timezone_name,business_id,business_name",
-                limit: "500"
-            });
-            if (fbAccs.error) return jsonResponse({ success: false, error: fbAccs.error.message }, 400);
+            const { data: creds } = await supabase.from("platform_credentials").select("credential_value").eq("platform_identity_id", identity.id).eq("credential_type", "access_token").eq("is_active", true).maybeSingle();
+            const token = creds?.credential_value;
             
-            // Fetch branches for auto-matching
+            log(`[Sync] Token found: ${!!token}`);
+            
+            if (!token) return jsonResponse({ success: false, error: "Không tìm thấy Access Token hợp lệ trong DB.", logs }, 400);
+
+            const fbAccs = await fbRequest("/me/adaccounts", token, { fields: "id,name,account_status,currency,timezone_name,business_id,business_name", limit: "500" });
+            
+            if (fbAccs.error) {
+                errorLog(`[Sync] FB Error Response`, fbAccs);
+                let userFriendlyError = fbAccs.error.message;
+                if (fbAccs.error.code === 190) userFriendlyError = "Token Facebook đã hết hạn hoặc bạn đã đăng xuất. Vui lòng lấy token mới và kết nối lại.";
+                return jsonResponse({ success: false, error: userFriendlyError, fbError: fbAccs.error, diagnostic: "Facebook từ chối Token này.", logs }, 400);
+            }
+
+            log(`[Sync] FB Data Count: ${(fbAccs.data || []).length}`);
+
             const { data: branches } = await supabase.from("branches").select("id, name, auto_match_keywords").eq("user_id", auth.userId);
             
             const results = [];
             for (const acc of (fbAccs.data || [])) {
-                // Auto Match Logic
                 let branchIdToAssign = null;
-                if (branches && branches.length > 0) {
+                if (branches) {
                     const accName = acc.name?.toLowerCase() || "";
                     for (const b of branches) {
-                        const keywords = b.auto_match_keywords || [];
-                        if (keywords.some((k: string) => k && accName.includes(k.toLowerCase()))) {
-                            branchIdToAssign = b.id;
-                            break;
+                        const keywords = Array.isArray(b.auto_match_keywords) ? b.auto_match_keywords : [];
+                        if (keywords.some((k: string) => accName.includes(k.toLowerCase()))) {
+                            branchIdToAssign = b.id; break;
                         }
                     }
                 }
+                
+                const upsertData = {
+                    platform_identity_id: identity.id, platform_id: identity.platform_id, external_id: acc.id, name: acc.name,
+                    currency: acc.currency, timezone: acc.timezone_name, account_status: acc.account_status.toString(),
+                    platform_data: acc, branch_id: branchIdToAssign, synced_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                    created_at: new Date().toISOString() // In case it's a new record and DB default is missing (though unlikely for created_at)
+                };
+                
+                log(`[Sync] Upserting: ${acc.id}`);
 
-                const { data } = await supabase.from("platform_accounts").upsert({
-                    platform_identity_id: identity.id,
-                    platform_id: identity.platform_id,
-                    external_id: acc.id,
-                    name: acc.name,
-                    currency: acc.currency,
-                    timezone: acc.timezone_name,
-                    account_status: acc.account_status.toString(),
-                    platform_data: acc,
-                    branch_id: branchIdToAssign,
-                    synced_at: new Date().toISOString()
-                }, { onConflict: "platform_id,external_id" }).select().single();
-                results.push(data);
+                const { data, error: upsertError } = await supabase.from("platform_accounts").upsert(upsertData, { onConflict: "platform_id,external_id" }).select().single();
+                
+                if (upsertError) {
+                    errorLog(`[Sync] Upsert Error for ${acc.id}`, upsertError);
+                } else {
+                    results.push(data);
+                }
             }
-            return jsonResponse({ success: true, result: { count: results.length, accounts: results } });
+            log(`[Sync] Saved ${results.length} accounts.`);
+            return jsonResponse({ success: true, result: { count: results.length, accounts: results }, logs, fbDebug: fbAccs });
         }
 
-        // Delete Identity
+        // Delete
         if (subPathSegments[0] === 'identities' && subPathSegments[1] && method === "DELETE") {
             const id = subPathSegments[1];
             await supabase.from("platform_identities").delete().eq("id", id).eq("user_id", auth.userId);
             return jsonResponse({ success: true });
         }
 
-        return jsonResponse({ success: false, error: "Not Found", path }, 404);
-    } catch (error: any) {
-        return jsonResponse({ success: false, error: error.message }, 500);
-    }
+        return jsonResponse({ error: "Endpoint không tồn tại", path, segments: subPathSegments }, 404);
+    } catch (error: any) { return jsonResponse({ success: false, error: error.message }, 500); }
 });

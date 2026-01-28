@@ -8,7 +8,7 @@ import { create, verify } from "https://deno.land/x/djwt@v3.0.1/mod.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-const JWT_SECRET = Deno.env.get("JWT_SECRET") || "your-secret-key";
+const JWT_SECRET = Deno.env.get("JWT_SECRET");
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const corsHeaders = {
@@ -44,23 +44,46 @@ Deno.serve(async (req: Request) => {
 
   try {
     if (path.endsWith("/login") && req.method === "POST") {
-      const { email, password } = await req.json();
-      const { data: user } = await supabase.from("users").select("id, email, password, name, is_active, avatar_url").eq("email", email).single();
+      const body = await req.json();
+      const { email, password } = body;
+      console.log(`[Login] Attempting login for email: ${email}`);
 
-      if (!user || !user.is_active) {
-        return jsonResponse({ success: false, error: "Invalid credentials or account inactive" }, 401);
+      const { data: user, error: fetchError } = await supabase.from("users").select("id, email, password, name, is_active, avatar_url, gemini_api_key").eq("email", email).single();
+
+      if (fetchError) {
+        console.error(`[Login] Database fetch error for ${email}:`, fetchError);
+        return jsonResponse({ success: false, error: "Invalid credentials" }, 401);
       }
 
-      // ESM.sh imports can sometimes have different structures for default exports
+      if (!user) {
+        console.warn(`[Login] User not found in DB: ${email}`);
+        return jsonResponse({ success: false, error: "Invalid credentials" }, 401);
+      }
+      
+      console.log(`[Login] Found user ${user.id}, is_active: ${user.is_active}`);
+
+      if (!user.is_active) {
+        console.warn(`[Login] User inactive: ${email}`);
+        return jsonResponse({ success: false, error: "Account inactive" }, 401);
+      }
+
       const compare = (bcrypt as any).compare || (bcrypt as any).default?.compare;
       if (!compare) {
-        throw new Error("bcrypt.compare is not available in the current import");
+        console.error("[Login] FATAL: bcrypt.compare not found in imports");
+        throw new Error("bcrypt.compare is not available");
       }
 
+      console.log(`[Login] Comparing password for ${email}. Hash from DB length: ${user.password.length}`);
+      
+
+      console.log(`[Login] Proceeding with bcrypt.compare...`);
       const isMatch = await compare(password, user.password);
+      console.log(`[Login] Bcrypt match result for ${email}: ${isMatch ? 'SUCCESS' : 'PASSWORD_FAIL'}`);
+      
       if (!isMatch) {
         return jsonResponse({ success: false, error: "Invalid credentials" }, 401);
       }
+      
       return await generateTokenResponse(user);
     }
 
@@ -69,7 +92,7 @@ Deno.serve(async (req: Request) => {
       if (!payload) return jsonResponse({ success: false, error: "Unauthorized" }, 401);
 
       const { data: user } = await supabase.from("users")
-        .select("id, email, name, is_active, avatar_url")
+        .select("id, email, name, is_active, avatar_url, gemini_api_key")
         .eq("id", payload.sub)
         .single();
 
@@ -81,7 +104,7 @@ Deno.serve(async (req: Request) => {
       const payload = await verifyToken(req.headers.get("Authorization"));
       if (!payload) return jsonResponse({ success: false, error: "Unauthorized" }, 401);
 
-      const { name, email, avatar_url } = await req.json();
+      const { name, email, avatar_url, gemini_api_key } = await req.json();
 
       // If email is changing, check for duplicates
       if (email) {
@@ -92,9 +115,9 @@ Deno.serve(async (req: Request) => {
       }
 
       const { data: updated, error } = await supabase.from("users")
-        .update({ name, email, avatar_url, updated_at: new Date().toISOString() })
+        .update({ name, email, avatar_url, gemini_api_key, updated_at: new Date().toISOString() })
         .eq("id", payload.sub)
-        .select("id, email, name, avatar_url")
+        .select("id, email, name, avatar_url, gemini_api_key")
         .single();
 
       if (error) return jsonResponse({ success: false, error: error.message }, 400);
@@ -187,12 +210,25 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ success: true, url: publicUrl });
     }
 
+    if (path.endsWith("/users") && req.method === "GET") {
+      const payload = await verifyToken(req.headers.get("Authorization"));
+      if (!payload) return jsonResponse({ success: false, error: "Unauthorized" }, 401);
+
+      const { data: users, error } = await supabase.from("users")
+        .select("id, email, name, avatar_url")
+        .eq("is_active", true)
+        .order("name", { ascending: true });
+
+      if (error) return jsonResponse({ success: false, error: error.message }, 400);
+      return jsonResponse({ success: true, result: users });
+    }
+
     if (path.endsWith("/refresh") && req.method === "POST") {
       const { refreshToken } = await req.json();
       const { data: record } = await supabase.from("refresh_tokens").select("id, user_id, expires_at").eq("token", refreshToken).single();
       if (!record || new Date() > new Date(record.expires_at)) return jsonResponse({ success: false, error: "Invalid token" }, 401);
 
-      const { data: user } = await supabase.from("users").select("id, email, name, is_active, avatar_url").eq("id", record.user_id).single();
+      const { data: user } = await supabase.from("users").select("id, email, password, name, is_active, avatar_url, gemini_api_key").eq("id", record.user_id).single();
       await supabase.from("refresh_tokens").delete().eq("id", record.id);
       return await generateTokenResponse(user);
     }
@@ -217,5 +253,5 @@ async function generateTokenResponse(user: any) {
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + 7);
   await supabase.from("refresh_tokens").insert({ user_id: user.id, token: refreshToken, expires_at: expiresAt.toISOString() });
-  return jsonResponse({ success: true, data: { accessToken, refreshToken, expiresIn: 3600, user: { id: user.id, email: user.email, name: user.name, avatarUrl: user.avatar_url } } });
+  return jsonResponse({ success: true, data: { accessToken, refreshToken, expiresIn: 3600, user: { id: user.id, email: user.email, name: user.name, avatarUrl: user.avatar_url, geminiApiKey: user.gemini_api_key } } });
 }

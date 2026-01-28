@@ -37,15 +37,16 @@ enum SyncJobStatus {
 // ============================================================================
 
 model User {
-  id        Int       @id @default(autoincrement())
-  email     String    @unique @map("email")
-  password  String    @map("password")
-  name      String?   @map("name")
-  isActive  Boolean   @default(true) @map("is_active")
-  avatarUrl String?   @map("avatar_url")
-  createdAt DateTime  @default(now()) @map("created_at")
-  updatedAt DateTime? @updatedAt @map("updated_at")
-  deletedAt DateTime? @map("deleted_at")
+  id           Int       @id @default(autoincrement())
+  email        String    @unique @map("email")
+  password     String    @map("password")
+  name         String?   @map("name")
+  isActive     Boolean   @default(true) @map("is_active")
+  avatarUrl    String?   @map("avatar_url")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime? @updatedAt @map("updated_at")
+  deletedAt    DateTime? @map("deleted_at")
+  geminiApiKey String?   @map("gemini_api_key")
 
   identities    PlatformIdentity[]
   refreshTokens RefreshToken[]
@@ -405,13 +406,13 @@ model UnifiedHourlyInsight {
 // ============================================================================
 
 model Branch {
-  id        Int       @id @default(autoincrement())
-  userId    Int       @map("user_id")
-  name      String    @map("name")
-  code      String?   @map("code")
+  id                Int       @id @default(autoincrement())
+  userId            Int       @map("user_id")
+  name              String    @map("name")
+  code              String?   @map("code")
   autoMatchKeywords String[]  @default([]) @map("auto_match_keywords")
-  createdAt DateTime  @default(now()) @map("created_at")
-  deletedAt DateTime? @map("deleted_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  deletedAt         DateTime? @map("deleted_at")
 
   user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   accounts PlatformAccount[]
@@ -438,6 +439,47 @@ model BranchDailyStats {
   @@index([branchId, date])
   @@index([branchId, platformCode])
   @@map("branch_daily_stats")
+}
+
+// ============================================================================
+// LEAD MANAGEMENT (LAYER 5)
+// ============================================================================
+
+model Lead {
+  id                String          @id @default(cuid())
+  platformAccountId Int             @map("platform_account_id")
+  externalId        String          @map("external_id")
+  customerName      String?         @map("customer_name")
+  customerAvatar    String?         @map("customer_avatar")
+  lastMessageAt     DateTime?       @map("last_message_at")
+  sourceCampaignId  String?         @map("source_campaign_id")
+  isQualified       Boolean         @default(false) @map("is_qualified")
+  assignedUserId    Int?            @map("assigned_user_id")
+  platformData      Json?           @map("platform_data")
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+
+  account           PlatformAccount @relation(fields: [platformAccountId], references: [id], onDelete: Cascade)
+  messages          LeadMessage[]
+
+  @@unique([platformAccountId, externalId])
+  @@map("leads")
+}
+
+model LeadMessage {
+  id             String   @id @default(cuid())
+  leadId         String   @map("lead_id")
+  fbMessageId    String   @unique @map("fb_message_id")
+  senderId       String   @map("sender_id")
+  senderName     String?  @map("sender_name")
+  messageContent String?  @map("message_content")
+  sentAt         DateTime @map("sent_at")
+  isFromCustomer Boolean  @default(true) @map("is_from_customer")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@map("lead_messages")
 }
 
 model SyncJob {

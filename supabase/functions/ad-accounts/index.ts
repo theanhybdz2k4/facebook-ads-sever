@@ -7,7 +7,7 @@ import { verify } from "https://deno.land/x/djwt@v3.0.1/mod.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-const JWT_SECRET = Deno.env.get("JWT_SECRET") || "your-secret-key";
+const JWT_SECRET = Deno.env.get("JWT_SECRET");
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const corsHeaders = {
@@ -31,6 +31,19 @@ async function verifyAuth(req: Request) {
     } catch { return null; }
 }
 
+// Normalize raw FB status codes to standard names
+function normalizeStatus(rawStatus: string): string {
+    switch (rawStatus) {
+        case '1': return 'ACTIVE';
+        case '2': return 'DISABLED';
+        case '100': return 'PENDING';
+        case '101': return 'CLOSED';
+        case '201': return 'PENDING';
+        case '202': return 'DISABLED';
+        default: return rawStatus;
+    }
+}
+
 function mapAccount(a: any) {
     return {
         id: a.id,
@@ -40,7 +53,7 @@ function mapAccount(a: any) {
         name: a.name,
         currency: a.currency,
         timezone: a.timezone,
-        accountStatus: a.account_status,
+        accountStatus: normalizeStatus(a.account_status || ''),
         amountSpent: a.amount_spent,
         syncedAt: a.synced_at,
         branchId: a.branch_id,
@@ -61,7 +74,7 @@ Deno.serve(async (req) => {
     const funcIndex = segments.indexOf("ad-accounts");
     const subPathSegments = funcIndex !== -1 ? segments.slice(funcIndex + 1) : segments;
     const path = "/" + subPathSegments.join("/");
-    
+
     const method = req.method;
 
     try {
@@ -80,7 +93,20 @@ Deno.serve(async (req) => {
                 .eq("platform_identities.user_id", auth.userId);
 
             if (branchId && branchId !== "all") query = query.eq("branch_id", parseInt(branchId));
-            if (status) query = query.eq("account_status", status);
+
+            // Normalize status filter: Map user-friendly names to raw FB status codes
+            // FB status: 1=ACTIVE, 2=DISABLED, 101=CLOSED, etc.
+            if (status) {
+                if (status.toUpperCase() === "ACTIVE") {
+                    query = query.eq("account_status", "1");
+                } else if (status.toUpperCase() === "DISABLED" || status.toUpperCase() === "CLOSED") {
+                    query = query.in("account_status", ["2", "101", "100"]);
+                } else {
+                    // Pass through raw numeric status if provided
+                    query = query.eq("account_status", status);
+                }
+            }
+
             if (search) query = query.or(`name.ilike.%${search}%,external_id.ilike.%${search}%`);
 
             const { data, error } = await query.order("name", { ascending: true });

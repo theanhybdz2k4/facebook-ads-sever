@@ -8,7 +8,7 @@ import { verify } from "https://deno.land/x/djwt@v3.0.1/mod.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-const JWT_SECRET = Deno.env.get("JWT_SECRET") || "your-secret-key";
+const JWT_SECRET = Deno.env.get("JWT_SECRET");
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const corsHeaders = {
@@ -61,7 +61,7 @@ Deno.serve(async (req) => {
   const segments = path.split("/").filter(Boolean);
   if (segments[0] === "worker") segments.shift();
   path = "/" + segments.join("/");
-  
+
   const method = req.method;
 
   try {

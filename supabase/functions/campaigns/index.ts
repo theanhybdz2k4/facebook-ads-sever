@@ -7,8 +7,13 @@ import { verify } from "https://deno.land/x/djwt@v3.0.1/mod.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-const JWT_SECRET = Deno.env.get("JWT_SECRET") || "your-secret-key";
+const JWT_SECRET = Deno.env.get("JWT_SECRET");
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+function getVietnamNowISO(): string {
+    const vn = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
+    return vn.toISOString().replace('T', ' ').slice(0, 19);
+}
 
 const corsHeaders = {
   "Content-Type": "application/json",
@@ -20,16 +25,25 @@ const corsHeaders = {
 const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: corsHeaders });
 
 async function verifyAuth(req: Request) {
-  const authHeader = req.headers.get("Authorization");
-  if (!authHeader?.startsWith("Bearer ")) return null;
-  const token = authHeader.substring(7);
-  try {
-    const encoder = new TextEncoder();
-    const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-    const payload = await verify(token, key);
-    const userId = parseInt(payload.sub as string, 10);
-    return isNaN(userId) ? null : { userId };
-  } catch { return null; }
+    const authHeader = req.headers.get("Authorization");
+    const serviceKey = req.headers.get("x-service-key");
+
+    if (serviceKey === supabaseKey) return { userId: 1 };
+    if (!authHeader?.startsWith("Bearer ")) return null;
+
+    const token = authHeader.substring(7);
+    if (token === Deno.env.get("AUTH_SECRET")) return { userId: 1 };
+
+    const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
+    if (tokenData) return { userId: tokenData.user_id };
+
+    try {
+        const encoder = new TextEncoder();
+        const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+        const payload = await verify(token, key);
+        const userId = typeof payload.sub === 'string' ? parseInt(payload.sub, 10) : payload.sub;
+        return isNaN(userId as any) ? null : { userId: userId as number };
+    } catch { return null; }
 }
 
 Deno.serve(async (req) => {
@@ -55,7 +69,7 @@ Deno.serve(async (req) => {
       let query = supabase
         .from("unified_campaigns")
         .select(`
-          id, external_id, name, status, effective_status, daily_budget, synced_at, platform_account_id,
+          id, external_id, name, status, effective_status, daily_budget, start_time, end_time, synced_at, platform_account_id,
           platform_accounts!inner(id, name, branch_id, platforms(code), platform_identities!inner(user_id))
         `)
         .eq("platform_accounts.platform_identities.user_id", auth.userId);
@@ -64,6 +78,10 @@ Deno.serve(async (req) => {
       if (status) query = query.eq("effective_status", status);
       if (search) query = query.or(`name.ilike.%${search}%,external_id.ilike.%${search}%`);
       if (branchId && branchId !== "all") query = query.eq("platform_accounts.branch_id", parseInt(branchId));
+
+      // Filter out expired campaigns (end_time in the past)
+      const nowVN = getVietnamNowISO();
+      query = query.or(`end_time.is.null,end_time.gte.${nowVN}`);
 
       const { data, error } = await query
         .order("effective_status", { ascending: true })
@@ -108,6 +126,8 @@ Deno.serve(async (req) => {
         status: c.status,
         effectiveStatus: c.effective_status,
         dailyBudget: c.daily_budget,
+        startTime: c.start_time,
+        endTime: c.end_time,
         syncedAt: c.synced_at,
         account: {
           id: c.platform_accounts.id,
@@ -148,7 +168,7 @@ Deno.serve(async (req) => {
       const { data, error } = await supabase
         .from("unified_campaigns")
         .select(`
-          id, external_id, name, status, effective_status, daily_budget, synced_at, platform_account_id,
+          id, external_id, name, status, effective_status, daily_budget, start_time, end_time, synced_at, platform_account_id,
           platform_accounts(id, name, platforms(code))
         `)
         .eq("id", campaignId)
@@ -163,6 +183,9 @@ Deno.serve(async (req) => {
         name: data.name,
         status: data.status,
         effectiveStatus: data.effective_status,
+        startTime: data.start_time,
+        endTime: data.end_time,
+        syncedAt: data.synced_at,
         account: {
           id: data.platform_accounts.id,
           name: data.platform_accounts.name,
