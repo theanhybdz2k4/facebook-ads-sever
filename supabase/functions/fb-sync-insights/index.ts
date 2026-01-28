@@ -92,6 +92,17 @@ class FacebookApiClient {
         }
         return allData;
     }
+
+    async getAdCreatives(adIds: string[]): Promise<any[]> {
+        const url = new URL(`${FB_BASE_URL}/`);
+        url.searchParams.set("access_token", this.accessToken);
+        url.searchParams.set("ids", adIds.join(","));
+        url.searchParams.set("fields", "id,creative{id,object_story_spec,thumbnail_url,name}");
+        const response = await fetch(url.toString());
+        const data = await response.json();
+        if (data.error) throw new Error(`Facebook API Error: ${data.error.message}`);
+        return Object.values(data);
+    }
 }
 
 function extractResults(raw: any): number {
@@ -150,7 +161,7 @@ async function verifyAuth(req: Request) {
         console.log("Auth: Authenticated via service key header");
         return { userId: 1 };
     }
-    
+
     if (authHeader?.startsWith("Bearer ")) {
         const token = authHeader.substring(7).trim();
         if ((serviceKey !== "" && token === serviceKey) || (masterKey !== "" && token === masterKey) || (authSecret !== "" && token === authSecret)) {
@@ -163,17 +174,17 @@ async function verifyAuth(req: Request) {
             const encoder = new TextEncoder();
             const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
             const payload = await verify(token, key);
-            
+
             // Handle both integer (legacy) and UUID (supabase) sub
             const sub = payload.sub as string;
             const userIdNum = parseInt(sub, 10);
-            
+
             if (!isNaN(userIdNum)) {
                 console.log(`Auth: Authenticated via custom JWT (id: ${userIdNum})`);
                 return { userId: userIdNum };
             } else {
                 console.log(`Auth: Authenticated via Supabase JWT (uuid: ${sub})`);
-                return { userId: sub as any }; 
+                return { userId: sub as any };
             }
         } catch (e: any) {
             console.log("Auth: JWT verify failed, checking database:", e.message);
@@ -269,7 +280,14 @@ Deno.serve(async (req: Request) => {
 
         if (req.method === "POST") {
             const body = await req.json();
-            const { accountId: bodyAccountId, adId: bodyAdId, dateStart = getVietnamYesterday(), dateEnd = getVietnamToday(), granularity = "BOTH", breakdown } = body;
+            const {
+                accountId: bodyAccountId,
+                adId: bodyAdId,
+                dateStart = getVietnamYesterday(),
+                dateEnd = getVietnamToday(),
+                granularity = "BOTH",
+                breakdown
+            } = body;
 
             let targetAccountId = bodyAccountId;
             let fbEntityId: string | null = null;
@@ -315,7 +333,7 @@ Deno.serve(async (req: Request) => {
 
             const { data: campaigns } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", targetAccountId).limit(2000);
             const { data: adGroups } = await supabase.from("unified_ad_groups").select("id, external_id").eq("platform_account_id", targetAccountId).limit(5000);
-            const { data: ads } = await supabase.from("unified_ads").select("id, external_id").eq("platform_account_id", targetAccountId).limit(10000);
+            const { data: ads } = await supabase.from("unified_ads").select("id, external_id, effective_status").eq("platform_account_id", targetAccountId).limit(10000);
 
             const campaignMap = new Map(campaigns?.map((c: any) => [c.external_id, c.id]));
             const adGroupMap = new Map(adGroups?.map((ag: any) => [ag.external_id, ag.id]));
@@ -488,30 +506,36 @@ Deno.serve(async (req: Request) => {
                 const fbBreakdowns = await fb.getInsights(fbEntityId as string, "ad", { start: dateStart, end: dateEnd }, "DAILY", breakdown);
                 result.debug.fbBreakdownsCount = fbBreakdowns.length;
                 if (fbBreakdowns.length > 0) {
-                    const parentUpserts = Array.from(new Set(fbBreakdowns.map(r => `${r.date_start}|${r.ad_id}`))).map(key => {
-                        const [date, ad_id] = key.split("|");
-                        const raw = fbBreakdowns.find(r => r.ad_id === ad_id && r.date_start === date);
+                    const parentUpserts = Array.from(new Map(fbBreakdowns.map(raw => {
                         const cid = campaignMap.get(raw?.campaign_id) || null;
                         const agid = adGroupMap.get(raw?.adset_id) || null;
-                        const adid = adMap.get(ad_id) || null;
-                        const pKey = `${targetAccountId}|${cid}|${agid}|${adid}|${date}`;
-                        return {
+                        const adid = adMap.get(raw.ad_id) || null;
+                        const key = `${targetAccountId}|${cid}|${agid}|${adid}|${raw.date_start}`;
+                        return [key, {
                             platform_account_id: targetAccountId,
                             unified_campaign_id: cid,
                             unified_ad_group_id: agid,
                             unified_ad_id: adid,
-                            date: date, synced_at: getVietnamTime()
-                        };
-                    });
+                            date: raw.date_start,
+                            synced_at: getVietnamTime()
+                        }];
+                    })).values());
 
                     const { data: parents, error: pErr } = await supabase.from("unified_insights").upsert(parentUpserts, { onConflict: "platform_account_id,unified_campaign_id,unified_ad_group_id,unified_ad_id,date" }).select("id, date, unified_ad_id");
                     result.debug.parentsCount = parents?.length || 0;
-                    if (pErr) result.debug.parentError = pErr.message;
+                    if (pErr) {
+                        console.error("[Insights] Parent upsert error:", pErr);
+                        result.debug.parentError = pErr.message;
+                    }
 
                     if (parents) {
                         const getParentId = (raw: any) => {
                             const dbAdId = adMap.get(raw.ad_id);
+                            // Find match by date and ad UUID
                             const match = parents.find((p: any) => p.date === raw.date_start && (p.unified_ad_id === dbAdId));
+                            if (!match) {
+                                console.log(`[Insights] No parent match found for ad ${raw.ad_id} (local: ${dbAdId}) on ${raw.date_start} in ${parents.length} parents`);
+                            }
                             return match?.id;
                         };
 
@@ -554,6 +578,60 @@ Deno.serve(async (req: Request) => {
                         }
                     }
                 }
+            }
+
+            // NEW: Batch Sync Creatives for Active Ads or specific target ad
+            try {
+                const adsToSyncCreative = bodyAdId 
+                    ? ads?.filter((a: any) => a.id === bodyAdId) 
+                    : ads?.filter((a: any) => ["ACTIVE", "IN_PROCESS", "WITH_ISSUES"].includes(a.effective_status));
+
+                if (adsToSyncCreative && adsToSyncCreative.length > 0) {
+                    const extIds = adsToSyncCreative.map((a: any) => a.external_id).filter(Boolean);
+                    const chunks = [];
+                    for (let i = 0; i < extIds.length; i += 50) chunks.push(extIds.slice(i, i + 50));
+
+                    for (const chunk of chunks) {
+                        const creativeData = await fb.getAdCreatives(chunk);
+                        const creativeToAdMap = new Map<string, string>();
+
+                        const creativeUpserts = creativeData.map(item => {
+                            const c = item.creative;
+                            if (!c) return null;
+                            creativeToAdMap.set(c.id, item.id);
+                            return {
+                                external_id: c.id,
+                                platform_account_id: targetAccountId,
+                                name: c.name || `Creative ${c.id}`,
+                                thumbnail_url: c.thumbnail_url || null,
+                                platform_data: c,
+                                synced_at: getVietnamTime(),
+                            };
+                        }).filter(Boolean);
+
+                        if (creativeUpserts.length > 0) {
+                            const { data: upserted, error: creErr } = await supabase
+                                .from("unified_ad_creatives")
+                                .upsert(creativeUpserts as any[], { onConflict: "platform_account_id,external_id" })
+                                .select("id, external_id");
+
+                            if (!creErr && upserted) {
+                                result.creatives = (result.creatives || 0) + upserted.length;
+                                const adLinks = upserted.map((c: any) => {
+                                    const adExtId = creativeToAdMap.get(c.external_id);
+                                    if (!adExtId) return null;
+                                    return { platform_account_id: targetAccountId, external_id: adExtId, unified_ad_creative_id: c.id };
+                                }).filter(Boolean);
+                                if (adLinks.length > 0) {
+                                    await supabase.from("unified_ads").upsert(adLinks as any[], { onConflict: "platform_account_id,external_id" });
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (ce: any) {
+                console.error("[Insights] Creative sync failed:", ce.message);
+                result.debug.creativeError = ce.message;
             }
 
             // Update account sync timestamp

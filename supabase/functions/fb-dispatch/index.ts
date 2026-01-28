@@ -84,6 +84,7 @@ Deno.serve(async (req: Request) => {
         const doAds = syncAll || types.has("ads") || types.has("creative");
         const doInsightDaily = syncAll || syncQuick || types.has("insight_daily");
         const doInsightHourly = syncQuick || types.has("insight_hourly") || types.has("insight_hour");
+        const doLeads = syncAll || types.has("leads");
 
         // Granularity logic
         let granularity: "DAILY" | "HOURLY" | "BOTH" = "DAILY";
@@ -97,7 +98,7 @@ Deno.serve(async (req: Request) => {
         const shouldReport = syncAll || syncQuick || types.has("insight_daily") || types.has("insight_hourly") || types.has("insight_hour");
 
         console.log(`[Dispatch] User ${userId}, types: ${Array.from(types).join(", ")}`);
-        if (!doCampaigns && !doAds && !doInsightDaily && !doInsightHourly && !hasBreakdowns) {
+        if (!doCampaigns && !doAds && !doInsightDaily && !doInsightHourly && !hasBreakdowns && !doLeads) {
           console.log(`[Dispatch] User ${userId} nothing to do`);
           continue;
         }
@@ -150,6 +151,15 @@ Deno.serve(async (req: Request) => {
 
             await Promise.allSettled(tasks);
             const secondaryTasks = [];
+
+            // 1.5 Sync Leads (Only once per account or just trigger for any active account)
+            if (doLeads) {
+              // Note: fb-sync-leads fetches its own token, but we call it with system auth
+              secondaryTasks.push((async () => {
+                const res = await callEdgeFunction("fb-sync-leads", { accountId: account.id });
+                summary.items += (res?.result?.leadsSynced || 0);
+              })());
+            }
 
             // 2. Sync Insights (with skipAggregation)
             if (doInsightDaily || doInsightHourly) {

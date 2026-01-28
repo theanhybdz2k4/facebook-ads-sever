@@ -121,7 +121,7 @@ export class CreativeSyncService {
             spec.link_data?.picture ||
             spec.video_data?.image_url ||
             (assetFeed.images && assetFeed.images[0]?.url) ||
-            (creative.image_hash ? `https://graph.facebook.com/v19.0/${creative.image_hash}/thumbnails` : null);
+            (creative.image_hash ? `https://graph.facebook.com/v24.0/${creative.image_hash}/thumbnails` : null);
 
           rawCreativesToUpsert.push({
             id: 'cr' + Math.random().toString(36).substring(2, 25), // Generate simple ID to avoid null constraint

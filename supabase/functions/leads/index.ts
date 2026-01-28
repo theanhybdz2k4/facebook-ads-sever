@@ -1,9 +1,11 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.4";
+import { verify } from "https://deno.land/x/djwt@v3.0.1/mod.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const JWT_SECRET = Deno.env.get("JWT_SECRET") || "";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const corsHeaders = {
@@ -15,8 +17,23 @@ const corsHeaders = {
 
 const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: corsHeaders });
 
+async function verifyAuth(req: Request) {
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader?.startsWith("Bearer ")) return null;
+    const token = authHeader.substring(7);
+    try {
+        const encoder = new TextEncoder();
+        const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+        const payload = await verify(token, key);
+        return { userId: parseInt(payload.sub as string, 10) };
+    } catch { return null; }
+}
+
 Deno.serve(async (req: any) => {
     if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+    const auth = await verifyAuth(req);
+    if (!auth) return jsonResponse({ success: false, error: "Unauthorized" }, 401);
 
     try {
         const url = new URL(req.url);
@@ -29,28 +46,27 @@ Deno.serve(async (req: any) => {
             const accountIdParam = url.searchParams.get("accountId");
             const pageIdParam = url.searchParams.get("pageId");
 
-            let adsQuery = supabase.from("unified_insights").select("spend, date, purchase_value");
+            let adsQuery = supabase
+                .from("unified_insights")
+                .select("spend, date, purchase_value, platform_accounts!inner(id, platform_identities!inner(user_id))")
+                .eq("platform_accounts.platform_identities.user_id", auth.userId);
 
             // Filter Ads Data
             if (branchIdParam !== "all") {
-                adsQuery = adsQuery.eq("platform_accounts.branch_id", parseInt(branchIdParam));
-                // We need to join platform_accounts if filtering by branch
-                adsQuery = supabase.from("unified_insights").select("spend, date, purchase_value, platform_accounts!inner(branch_id)");
                 adsQuery = adsQuery.eq("platform_accounts.branch_id", parseInt(branchIdParam));
             }
             if (accountIdParam && accountIdParam !== "all") {
                 adsQuery = adsQuery.eq("platform_account_id", parseInt(accountIdParam));
             }
-            // Page filter for ads is complex because ads are not directly linked to page in unified_insights easily without join.
-            // But we can approximate or ignore page filter for Ads Spend/Revenue if needed, or filter by account (usually 1:1 or 1:N). 
-            // For now, let's skip page filter for Ads Data unless we assume accountId is passed.
 
             const { data: adsData } = await adsQuery.order("date", { ascending: false }).limit(20000);
 
-            let leadsQuery = supabase.from("leads").select("id, created_at, is_qualified, platform_account_id, platform_data");
+            let leadsQuery = supabase
+                .from("leads")
+                .select("id, created_at, is_qualified, platform_account_id, platform_data, platform_accounts!inner(id, platform_identities!inner(user_id))")
+                .eq("platform_accounts.platform_identities.user_id", auth.userId);
+
             if (branchIdParam !== "all") {
-                leadsQuery = leadsQuery.eq("platform_accounts.branch_id", parseInt(branchIdParam));
-                leadsQuery = supabase.from("leads").select("id, created_at, is_qualified, platform_account_id, platform_data, platform_accounts!inner(branch_id)");
                 leadsQuery = leadsQuery.eq("platform_accounts.branch_id", parseInt(branchIdParam));
             }
             if (accountIdParam && accountIdParam !== "all") {
@@ -101,7 +117,8 @@ Deno.serve(async (req: any) => {
 
             let query = supabase
                 .from("leads")
-                .select("*, platform_account:platform_accounts(id, name, branch_id)")
+                .select("*, platform_accounts!inner(id, name, branch_id, platform_identities!inner(user_id))")
+                .eq("platform_accounts.platform_identities.user_id", auth.userId)
                 .order("last_message_at", { ascending: false });
 
             if (branchIdParam !== "all") {
@@ -150,6 +167,17 @@ Deno.serve(async (req: any) => {
         if (method === "GET" && pathParts.includes("messages")) {
             const idx = pathParts.indexOf("messages");
             const leadId = pathParts[idx - 1];
+
+            // Verify lead ownership before showing messages
+            const { data: leadCheck } = await supabase
+                .from("leads")
+                .select("id, platform_accounts!inner(platform_identities!inner(user_id))")
+                .eq("id", leadId)
+                .eq("platform_accounts.platform_identities.user_id", auth.userId)
+                .single();
+
+            if (!leadCheck) return jsonResponse({ success: false, error: "Lead not found or unauthorized" }, 404);
+
             const { data, error } = await supabase.from("lead_messages").select("*").eq("lead_id", leadId).order("sent_at", { ascending: true });
             if (error) return jsonResponse({ success: false, error: error.message }, 400);
             return jsonResponse({ success: true, result: data });
@@ -159,6 +187,17 @@ Deno.serve(async (req: any) => {
             const idx = pathParts.indexOf("assign");
             const leadId = pathParts[idx - 1];
             const { userId } = await req.json();
+
+            // Verify lead ownership before assigning
+            const { data: leadCheck } = await supabase
+                .from("leads")
+                .select("id, platform_accounts!inner(platform_identities!inner(user_id))")
+                .eq("id", leadId)
+                .eq("platform_accounts.platform_identities.user_id", auth.userId)
+                .single();
+
+            if (!leadCheck) return jsonResponse({ success: false, error: "Lead not found or unauthorized" }, 404);
+
             const { data, error } = await supabase.from("leads").update({ assigned_user_id: userId }).eq("id", leadId).select().single();
             if (error) return jsonResponse({ success: false, error: error.message }, 400);
             return jsonResponse({ success: true, result: data });

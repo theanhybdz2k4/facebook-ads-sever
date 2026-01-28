@@ -77,6 +77,8 @@ export class CronSettingsService {
         callsPerExecution = adAccountCount;
       } else if (setting.cronType === 'campaign' || setting.cronType === 'ads' || setting.cronType === 'adset' || setting.cronType === 'creative') {
         callsPerExecution = adAccountCount;
+      } else if (setting.cronType === 'leads') {
+        callsPerExecution = adAccountCount * 2; // Conversations + Messages
       } else if (setting.cronType === 'full') {
         callsPerExecution = adAccountCount * 3 + adAccountCount; // Entities + Insights
       } else {
@@ -110,5 +112,5 @@ export class CronSettingsService {
     return { success: false, message: 'Deprecated' };
   }
 
-  
+
 }

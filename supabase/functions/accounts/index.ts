@@ -83,7 +83,7 @@ Deno.serve(async (req) => {
             let fbUserId = null;
             let fbUserName = name || "Facebook User";
             const fbMe = await fbRequest("/me", token, { fields: "id,name" });
-            
+
             if (fbMe.error) {
                 console.warn(`[Connect] FB Error (Forcing):`, JSON.stringify(fbMe.error));
                 const { data: existing } = await supabase.from("platform_identities").select("id, external_id").eq("user_id", auth.userId).eq("name", fbUserName).eq("platform_id", platform.id).maybeSingle();
@@ -106,7 +106,7 @@ Deno.serve(async (req) => {
             return jsonResponse({ success: true, result: mapIdentity(identity) });
         }
 
-        // Sync
+        // Sync Sub-Accounts
         if (path.includes("/sync-accounts")) {
             const identIndex = subPathSegments.indexOf("identities");
             const identityId = identIndex !== -1 ? subPathSegments[identIndex + 1] : null;
@@ -126,13 +126,13 @@ Deno.serve(async (req) => {
 
             const { data: creds } = await supabase.from("platform_credentials").select("credential_value").eq("platform_identity_id", identity.id).eq("credential_type", "access_token").eq("is_active", true).maybeSingle();
             const token = creds?.credential_value;
-            
+
             log(`[Sync] Token found: ${!!token}`);
-            
+
             if (!token) return jsonResponse({ success: false, error: "Không tìm thấy Access Token hợp lệ trong DB.", logs }, 400);
 
             const fbAccs = await fbRequest("/me/adaccounts", token, { fields: "id,name,account_status,currency,timezone_name,business_id,business_name", limit: "500" });
-            
+
             if (fbAccs.error) {
                 errorLog(`[Sync] FB Error Response`, fbAccs);
                 let userFriendlyError = fbAccs.error.message;
@@ -143,11 +143,21 @@ Deno.serve(async (req) => {
             log(`[Sync] FB Data Count: ${(fbAccs.data || []).length}`);
 
             const { data: branches } = await supabase.from("branches").select("id, name, auto_match_keywords").eq("user_id", auth.userId);
-            
+
+            // Get existing accounts to PRESERVE branch_id
+            const { data: existingAccounts } = await supabase
+                .from("platform_accounts")
+                .select("external_id, branch_id")
+                .eq("platform_identity_id", identity.id);
+            const existingBranchMap = new Map(existingAccounts?.map(a => [a.external_id, a.branch_id]));
+
             const results = [];
             for (const acc of (fbAccs.data || [])) {
-                let branchIdToAssign = null;
-                if (branches) {
+                // Priority: 1. Existing branch_id, 2. Keyword matching
+                const existingBranchId = existingBranchMap.get(acc.id);
+                let branchIdToAssign = existingBranchId || null;
+
+                if (!branchIdToAssign && branches) {
                     const accName = acc.name?.toLowerCase() || "";
                     for (const b of branches) {
                         const keywords = Array.isArray(b.auto_match_keywords) ? b.auto_match_keywords : [];
@@ -156,19 +166,18 @@ Deno.serve(async (req) => {
                         }
                     }
                 }
-                
+
                 const upsertData = {
                     platform_identity_id: identity.id, platform_id: identity.platform_id, external_id: acc.id, name: acc.name,
                     currency: acc.currency, timezone: acc.timezone_name, account_status: acc.account_status.toString(),
                     platform_data: acc, branch_id: branchIdToAssign, synced_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString(),
-                    created_at: new Date().toISOString() // In case it's a new record and DB default is missing (though unlikely for created_at)
+                    updated_at: new Date().toISOString()
                 };
-                
+
                 log(`[Sync] Upserting: ${acc.id}`);
 
                 const { data, error: upsertError } = await supabase.from("platform_accounts").upsert(upsertData, { onConflict: "platform_id,external_id" }).select().single();
-                
+
                 if (upsertError) {
                     errorLog(`[Sync] Upsert Error for ${acc.id}`, upsertError);
                 } else {
@@ -177,6 +186,36 @@ Deno.serve(async (req) => {
             }
             log(`[Sync] Saved ${results.length} accounts.`);
             return jsonResponse({ success: true, result: { count: results.length, accounts: results }, logs, fbDebug: fbAccs });
+        }
+
+        // Update Token (Change Token mechanism)
+        if (path.includes("/update-token") && method === "POST") {
+            const identIndex = subPathSegments.indexOf("identities");
+            const identityId = identIndex !== -1 ? subPathSegments[identIndex + 1] : null;
+            if (!identityId) return jsonResponse({ success: false, error: "Identity ID missing" }, 400);
+
+            const body = await req.json();
+            const { token } = body;
+            if (!token) return jsonResponse({ success: false, error: "Token is required" }, 400);
+
+            // Verify identity ownership
+            const { data: identity } = await supabase.from("platform_identities").select("id").eq("id", identityId).eq("user_id", auth.userId).single();
+            if (!identity) return jsonResponse({ success: false, error: "Identity not found or unauthorized" }, 404);
+
+            // Update credential
+            const { error: credError } = await supabase.from("platform_credentials").upsert({
+                platform_identity_id: identity.id,
+                credential_type: "access_token",
+                credential_value: token,
+                is_active: true
+            }, { onConflict: "platform_identity_id,credential_type" });
+
+            if (credError) throw credError;
+
+            // Optional: Mark identity as valid again since we have a new token
+            await supabase.from("platform_identities").update({ is_valid: true, updated_at: new Date().toISOString() }).eq("id", identity.id);
+
+            return jsonResponse({ success: true, message: "Token updated successfully" });
         }
 
         // Delete

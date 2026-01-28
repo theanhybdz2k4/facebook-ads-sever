@@ -6,7 +6,7 @@ import { firstValueFrom } from 'rxjs';
 @Injectable()
 export class FacebookApiService {
   private readonly logger = new Logger(FacebookApiService.name);
-  private readonly baseUrl = 'https://graph.facebook.com/v19.0';
+  private readonly baseUrl = 'https://graph.facebook.com/v24.0';
 
   constructor(
     private readonly http: HttpService,
