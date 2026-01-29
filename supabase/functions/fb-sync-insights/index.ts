@@ -500,6 +500,8 @@ Deno.serve(async (req: Request) => {
                                         impressions: 0,
                                         clicks: 0,
                                         results: 0,
+                                        messaging_total: 0,
+                                        messaging_new: 0,
                                         synced_at: getVietnamTime()
                                     };
 
@@ -507,6 +509,8 @@ Deno.serve(async (req: Request) => {
                                     current.impressions += parseInt(raw.impressions || "0", 10);
                                     current.clicks += parseInt(raw.clicks || "0", 10);
                                     current.results += extractResults(raw);
+                                    current.messaging_total += extractMessagingTotal(raw);
+                                    current.messaging_new += extractMessagingNew(raw);
 
                                     hAggregated.set(key, current);
                                 }
@@ -515,7 +519,7 @@ Deno.serve(async (req: Request) => {
 
                                 console.log(`[Insights] Upserting ${hUpserts.length} aggregated hourly items for ad ${ad.id}`);
                                 const { error: hrErr } = await supabase.from("unified_hourly_insights").upsert(hUpserts, {
-                                    onConflict: "platform_account_id,unified_campaign_id,unified_ad_group_id,unified_ad_id,date,hour"
+                                    onConflict: "platform_account_id,unified_ad_id,date,hour"
                                 });
 
                                 if (hrErr) {

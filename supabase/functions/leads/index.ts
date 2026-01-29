@@ -74,6 +74,51 @@ Deno.serve(async (req: any) => {
         const method = req.method;
         const pathParts = url.pathname.split("/").filter(Boolean);
 
+        // GET /leads/pages - Fetch available Facebook Pages from FB API
+        if (method === "GET" && pathParts.includes("pages")) {
+            const FB_BASE_URL = "https://graph.facebook.com/v24.0";
+            
+            // Get user's FB credentials
+            const { data: credentials } = await supabase
+                .from("platform_credentials")
+                .select(`
+                    credential_value,
+                    platform_identity_id,
+                    platform_identities!inner(id, user_id)
+                `)
+                .eq("is_active", true)
+                .eq("credential_type", "access_token")
+                .eq("platform_identities.user_id", auth.userId);
+            
+            if (!credentials || credentials.length === 0) {
+                return jsonResponse({ success: true, result: [] });
+            }
+            
+            const allPages: { id: string; name: string }[] = [];
+            const seenPageIds = new Set<string>();
+            
+            for (const cred of credentials) {
+                const token = cred.credential_value;
+                try {
+                    const pagesRes = await fetch(`${FB_BASE_URL}/me/accounts?fields=id,name&access_token=${token}`);
+                    const pagesData = await pagesRes.json();
+                    
+                    if (pagesData.data) {
+                        for (const page of pagesData.data) {
+                            if (!seenPageIds.has(page.id)) {
+                                seenPageIds.add(page.id);
+                                allPages.push({ id: page.id, name: page.name });
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.warn(`[Leads] Failed to fetch pages for credential`, e);
+                }
+            }
+            
+            return jsonResponse({ success: true, result: allPages });
+        }
+
         // GET /leads/stats
         if (method === "GET" && pathParts.includes("stats")) {
             const branchIdParam = url.searchParams.get("branchId") || "all";
@@ -257,6 +302,25 @@ Deno.serve(async (req: any) => {
             if (!leadCheck) return jsonResponse({ success: false, error: "Lead not found or unauthorized" }, 404);
 
             const { data, error } = await supabase.from("leads").update({ assigned_user_id: userId }).eq("id", leadId).select().single();
+            if (error) return jsonResponse({ success: false, error: error.message }, 400);
+            return jsonResponse({ success: true, result: data });
+        }
+
+        if (method === "PATCH" && pathParts.length === 2 && pathParts[0] === "leads") {
+            const leadId = pathParts[1];
+            const updates = await req.json();
+            
+            // Verify ownership
+            const { data: leadCheck } = await supabase
+                .from("leads")
+                .select("id")
+                .eq("id", leadId)
+                .eq("platform_accounts.platform_identities.user_id", auth.userId)
+                .single();
+            
+            if (!leadCheck) return jsonResponse({ success: false, error: "Lead not found or unauthorized" }, 404);
+
+            const { data, error } = await supabase.from("leads").update(updates).eq("id", leadId).select().single();
             if (error) return jsonResponse({ success: false, error: error.message }, 400);
             return jsonResponse({ success: true, result: data });
         }

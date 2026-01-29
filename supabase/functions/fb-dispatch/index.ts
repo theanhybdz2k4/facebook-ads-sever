@@ -288,7 +288,7 @@ Deno.serve(async (req: Request) => {
             const { data: hourlyData } = await supabase
               .from("unified_hourly_insights")
               .select(`
-                    spend, impressions, clicks, results, 
+                    spend, impressions, clicks, results, messaging_total, messaging_new,
                     date, hour,
                     ad:unified_ads(name, external_id),
                     adGroup:unified_ad_groups(name),
@@ -323,6 +323,38 @@ Deno.serve(async (req: Request) => {
                 const fmt = (n: number) => new Intl.NumberFormat('vi-VN').format(Math.round(n));
                 const fmtCur = (n: number) => `${fmt(n)} ${currency}`;
 
+                // Aggregate by Ad ID to consolidate split records and fix "Chi tiêu" accuracy
+                // Initialize aggregation (or skip if already unique after db fix, but this is safer)
+                if (!result.aggregatedHourly) result.aggregatedHourly = new Map();
+                const adKey = `${accountName}|${externalId}`;
+                const existing = result.aggregatedHourly.get(adKey);
+                
+                if (existing) {
+                  existing.spend += spend;
+                  existing.impressions += impressions;
+                  existing.clicks += clicks;
+                  existing.results += results;
+                  existing.messaging_new += Number(item.messaging_new || 0);
+                } else {
+                  result.aggregatedHourly.set(adKey, {
+                    accountName, campaignName, adsetName, adName, spend, impressions, clicks, results,
+                    messaging_new: Number(item.messaging_new || 0),
+                    currency, externalId, accountId: item.account?.id
+                  });
+                }
+            }
+
+            for (const item of result.aggregatedHourly.values()) {
+                const { accountName, campaignName, adsetName, adName, spend, impressions, clicks, results, messaging_new, currency, externalId, accountId } = item;
+                
+                const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
+                const cpc = clicks > 0 ? spend / clicks : 0;
+                const cpm = impressions > 0 ? (spend / impressions) * 1000 : 0;
+                const cpr = results > 0 ? spend / results : (messaging_new > 0 ? spend / messaging_new : 0);
+
+                const fmt = (n: number) => new Intl.NumberFormat('vi-VN').format(Math.round(n));
+                const fmtCur = (n: number) => `${fmt(n)} ${currency}`;
+
                 let msg = `📊 *CHI TIẾT ADS - ${reportDate} ${reportHour}:00*\n\n`;
                 msg += `📈 Tài khoản: ${accountName}\n`;
                 msg += `📁 Chiến dịch: ${campaignName}\n`;
@@ -334,14 +366,14 @@ Deno.serve(async (req: Request) => {
                 msg += `├── 👁 Hiển thị: ${fmt(impressions)}\n`;
                 msg += `├── 👆 Lượt click: ${fmt(clicks)}\n`;
                 msg += `├── 🎯 Kết quả: ${fmt(results)}\n`;
-                msg += `├── 💬 Tin nhắn mới: 0\n`;
+                msg += `├── 💬 Tin nhắn mới: ${fmt(messaging_new)}\n`;
                 msg += `├── 📊 CTR: ${ctr.toFixed(2)}%\n`;
                 msg += `├── 💳 CPC: ${fmtCur(cpc)}\n`;
                 msg += `├── 📈 CPM: ${fmtCur(cpm)}\n`;
                 msg += `└── 🎯 CPR: ${fmtCur(cpr)}`;
 
                 if (externalId) {
-                  msg += `\n\n🔗 [Xem QC](https://facebook.com/ads/manage/prediction?act=${item.account?.id}&ad_id=${externalId})`;
+                  msg += `\n\n🔗 [Xem QC](https://facebook.com/ads/manage/prediction?act=${accountId}&adid=${externalId})`;
                 }
 
                 for (const bot of bots || []) {
