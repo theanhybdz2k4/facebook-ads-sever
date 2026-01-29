@@ -37,6 +37,15 @@ function getVietnamTime(): string {
 class FacebookApiClient {
     constructor(private accessToken: string) { }
 
+    // Public method to fetch any FB API endpoint
+    async request<T>(endpoint: string): Promise<T> {
+        const url = `${FB_BASE_URL}${endpoint}${endpoint.includes('?') ? '&' : '?'}access_token=${this.accessToken}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.error) throw new Error(`FB API: ${data.error.message}`);
+        return data;
+    }
+
     async getInsights(entityId: string, level: string, dateRange: { start: string; end: string }, granularity: "DAILY" | "HOURLY" = "DAILY", breakdowns?: string): Promise<any[]> {
         if (granularity === "HOURLY" && dateRange.start !== dateRange.end) {
             const arr = [];
@@ -319,7 +328,7 @@ Deno.serve(async (req: Request) => {
 
             const { data: campaigns } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", targetAccountId).limit(2000);
             const { data: adGroups } = await supabase.from("unified_ad_groups").select("id, external_id").eq("platform_account_id", targetAccountId).limit(5000);
-            const { data: ads } = await supabase.from("unified_ads").select("id, external_id, effective_status").eq("platform_account_id", targetAccountId).limit(10000);
+            const { data: ads } = await supabase.from("unified_ads").select("id, external_id, status, effective_status, end_time").eq("platform_account_id", targetAccountId).limit(10000);
 
             const campaignMap = new Map(campaigns?.map((c: any) => [c.external_id, c.id]));
             const adGroupMap = new Map(adGroups?.map((ag: any) => [ag.external_id, ag.id]));
@@ -333,11 +342,40 @@ Deno.serve(async (req: Request) => {
                     for (const raw of fbInsights) {
                         const cid = campaignMap.get(raw.campaign_id) || null;
                         const agid = adGroupMap.get(raw.adset_id) || null;
-                        const adid = adMap.get(raw.ad_id) || null;
+                        let adid = adMap.get(raw.ad_id) || null;
 
+                        // If ad doesn't exist, fetch real ad data from FB API and insert it
+                        if (!adid && raw.ad_id) {
+                            try {
+                                const adRes = await fb.request<any>(`/${raw.ad_id}?fields=id,adset_id,campaign_id,name,status,effective_status,created_time,updated_time`);
+                                if (adRes && adRes.id) {
+                                    const newAdId = crypto.randomUUID();
+                                    const { error } = await supabase.from("unified_ads").insert({
+                                        id: newAdId,
+                                        external_id: adRes.id,
+                                        platform_account_id: targetAccountId,
+                                        unified_ad_group_id: adGroupMap.get(adRes.adset_id) || null,
+                                        name: adRes.name || raw.ad_name,
+                                        status: adRes.status || "UNKNOWN",
+                                        effective_status: adRes.effective_status || "UNKNOWN",
+                                        synced_at: getVietnamTime()
+                                    });
+                                    if (!error) {
+                                        adid = newAdId;
+                                        adMap.set(raw.ad_id, newAdId);
+                                        console.log(`[InsightSync] Inline synced ad ${raw.ad_id} (${adRes.name})`);
+                                    } else {
+                                        console.log(`[InsightSync] Failed to insert ad ${raw.ad_id}: ${error.message}`);
+                                    }
+                                }
+                            } catch (e: any) {
+                                console.log(`[InsightSync] Failed to fetch ad ${raw.ad_id}: ${e.message}`);
+                            }
+                        }
+                        
                         if (!adid) {
-                            console.log(`[InsightSync] Skipping: No local ad found for FB Ad ID ${raw.ad_id} (${raw.ad_name})`);
-                            continue; // Skip insights for ads not in our database
+                            console.log(`[InsightSync] Skipping insight for unknown ad ${raw.ad_id}`);
+                            continue;
                         }
 
                         const key = `${targetAccountId}|${cid}|${agid}|${adid}|${raw.date_start}`;
@@ -395,7 +433,8 @@ Deno.serve(async (req: Request) => {
                         synced_at: getVietnamTime()
                     }));
 
-                    const { data: saved, error: insErr } = await supabase.from("unified_insights").upsert(upserts, { onConflict: "platform_account_id,unified_campaign_id,unified_ad_group_id,unified_ad_id,date" }).select("id, platform_account_id, unified_campaign_id, unified_ad_group_id, unified_ad_id, date");
+                    // FIXED: Use simpler unique constraint to prevent duplicates when campaign_id/adgroup_id vary
+                    const { data: saved, error: insErr } = await supabase.from("unified_insights").upsert(upserts, { onConflict: "platform_account_id,unified_ad_id,date" }).select("id, platform_account_id, unified_campaign_id, unified_ad_group_id, unified_ad_id, date");
                     if (insErr) {
                         console.error("Insight Upsert Error:", insErr);
                         result.debug.insightError = insErr.message;
@@ -407,12 +446,16 @@ Deno.serve(async (req: Request) => {
             }
 
             if (granularity === "HOURLY" || granularity === "BOTH") {
-                // For hourly sync, prioritize active ads to reduce overhead unless a specific adId is requested or force=true
+                // For hourly sync, only sync truly active ads:
+                // status='ACTIVE' AND effective_status='ACTIVE' AND (end_time IS NULL OR end_time > NOW())
+                const nowStr = new Date().toISOString();
                 const { data: activeAdsForHourly } = await supabase
                     .from("unified_ads")
                     .select("id, external_id")
                     .eq("platform_account_id", targetAccountId)
-                    .in("effective_status", ["ACTIVE", "IN_PROCESS", "WITH_ISSUES"]);
+                    .eq("status", "ACTIVE")
+                    .eq("effective_status", "ACTIVE")
+                    .or(`end_time.is.null,end_time.gt.${nowStr}`);
 
                 let adList = bodyAdId ? ads : (activeAdsForHourly || ads || []);
                 if (bodyAdId) {
@@ -507,7 +550,7 @@ Deno.serve(async (req: Request) => {
                         }];
                     })).values());
 
-                    const { data: parents, error: pErr } = await supabase.from("unified_insights").upsert(parentUpserts, { onConflict: "platform_account_id,unified_campaign_id,unified_ad_group_id,unified_ad_id,date" }).select("id, date, unified_ad_id");
+                    const { data: parents, error: pErr } = await supabase.from("unified_insights").upsert(parentUpserts, { onConflict: "platform_account_id,unified_ad_id,date" }).select("id, date, unified_ad_id");
                     result.debug.parentsCount = parents?.length || 0;
                     if (pErr) {
                         console.error("[Insights] Parent upsert error:", pErr);
@@ -568,9 +611,17 @@ Deno.serve(async (req: Request) => {
 
             // NEW: Batch Sync Creatives for Active Ads or specific target ad
             try {
+                // Only sync creatives for truly active ads
+                const nowDate = new Date();
                 const adsToSyncCreative = bodyAdId 
                     ? ads?.filter((a: any) => a.id === bodyAdId) 
-                    : ads?.filter((a: any) => ["ACTIVE", "IN_PROCESS", "WITH_ISSUES"].includes(a.effective_status));
+                    : ads?.filter((a: any) => {
+                        const isStatusActive = a.status === "ACTIVE";
+                        const isEffectiveActive = a.effective_status === "ACTIVE";
+                        const endTime = a.end_time ? new Date(a.end_time) : null;
+                        const isNotExpired = !endTime || endTime > nowDate;
+                        return isStatusActive && isEffectiveActive && isNotExpired;
+                    });
 
                 if (adsToSyncCreative && adsToSyncCreative.length > 0) {
                     const extIds = adsToSyncCreative.map((a: any) => a.external_id).filter(Boolean);

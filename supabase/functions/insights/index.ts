@@ -14,7 +14,7 @@ const corsHeaders = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-client-info, apikey, x-service-key",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
 const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: corsHeaders });
@@ -28,15 +28,7 @@ async function verifyAuth(req: Request) {
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
     const authSecret = Deno.env.get("AUTH_SECRET") || "";
 
-    // Service key header or override
     if (serviceKeyHeader === serviceKey || serviceKeyHeader === masterKey) {
-        return { userId: 1 };
-    }
-
-    // Manual anon key bypass for manual triggers
-    const apikeyHeader = req.headers.get("apikey");
-    const anonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxuY2dtYXh0cWpmYmN5cG5jZm9lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjczNDc0MTMsImV4cCI6MjA4MjkyMzQxM30.7eEK0WF_K9msIcdIVgUpwNfLdjzRqvgSMf0ow17KkMk";
-    if (apikeyHeader === anonKey || authHeader?.includes(anonKey)) {
         return { userId: 1 };
     }
 
@@ -51,11 +43,12 @@ async function verifyAuth(req: Request) {
             const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
             if (tokenData) return { userId: tokenData.user_id };
         } catch (e) {
-            // Not found in auth_tokens, fallback to JWT
+            // Fallback to JWT
         }
 
         // FALLBACK: JWT verification
         try {
+            console.log("DEBUG: JWT_SECRET length:", JWT_SECRET?.length || 0);
             const encoder = new TextEncoder();
             const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
             const payload = await verify(token, key);
@@ -74,7 +67,17 @@ Deno.serve(async (req: Request) => {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
 
     const auth = await verifyAuth(req);
-    if (!auth) return jsonResponse({ success: false, error: "Unauthorized" }, 401);
+    if (!auth) {
+        return jsonResponse({ 
+            success: false, 
+            error: "Unauthorized",
+            debug: {
+                hasSecret: !!Deno.env.get("JWT_SECRET"),
+                secretLen: Deno.env.get("JWT_SECRET")?.length || 0,
+                tokenPrefix: req.headers.get("Authorization")?.substring(0, 15)
+            }
+        }, 401);
+    }
 
     const url = new URL(req.url);
     const segments = url.pathname.split("/").filter(Boolean);

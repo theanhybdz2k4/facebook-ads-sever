@@ -178,6 +178,38 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    // --- POST /trigger - Trigger immediate sync ---
+    if (req.method === "POST" && url.pathname.endsWith('/trigger')) {
+      const body = await req.json();
+      const { cronType } = body;
+      
+      if (!cronType) return jsonResponse({ error: "Missing cronType" }, 400);
+      
+      // Call fb-dispatch directly with the user's cron type
+      try {
+        const dispatchRes = await fetch(`${supabaseUrl}/functions/v1/fb-dispatch`, {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${supabaseKey}` 
+          },
+          body: JSON.stringify({ 
+            cronType,
+            userId,
+            force: true, // Bypass hour check for manual trigger
+            // Use today's date for immediate sync
+            dateStart: new Date().toISOString().split('T')[0],
+            dateEnd: new Date().toISOString().split('T')[0]
+          })
+        });
+        
+        const dispatchData = await dispatchRes.json();
+        return jsonResponse({ success: true, data: dispatchData });
+      } catch (e: any) {
+        return jsonResponse({ success: false, error: e.message }, 500);
+      }
+    }
+
     // --- POST / (Upsert) ---
     if (req.method === "POST") {
       const body = await req.json();

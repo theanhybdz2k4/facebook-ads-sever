@@ -184,6 +184,7 @@ Deno.serve(async (req) => {
                                 customer_name: customerName,
                                 customer_avatar: customerAvatar,
                                 last_message_at: new Date(timestamp).toISOString(),
+                                is_read: isFromPage, // If from page, keep as read. If from customer, mark as unread.
                                 platform_data: { 
                                     fb_page_id: pageId, 
                                     fb_page_name: pageName, 
@@ -206,6 +207,7 @@ Deno.serve(async (req) => {
                                 customer_avatar: customerAvatar,
                                 last_message_at: new Date(timestamp).toISOString(),
                                 source_campaign_id: referral?.ad_id || null,
+                                is_read: isFromPage,
                                 platform_data: { 
                                     fb_page_id: pageId, 
                                     fb_page_name: pageName, 

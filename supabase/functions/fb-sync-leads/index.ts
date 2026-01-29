@@ -19,8 +19,7 @@ const corsHeaders = {
 
 const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: corsHeaders });
 
-// CRITICAL: DO NOT REMOVE THIS AUTH LOGIC. 
-// IT PRIORITIZES auth_tokens TABLE FOR CUSTOM AUTHENTICATION.
+// Unified Auth Logic
 async function verifyAuth(req: Request) {
     const authHeader = req.headers.get("Authorization");
     const serviceKeyHeader = req.headers.get("x-service-key") || req.headers.get("x-master-key");
@@ -38,15 +37,13 @@ async function verifyAuth(req: Request) {
             return { userId: 1, isSystem: true };
         }
 
-        // PRIORITY: Check custom auth_tokens table first
+        // Check custom auth_tokens table
         try {
             const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
             if (tokenData) return { userId: tokenData.user_id, isSystem: false };
-        } catch (e) {
-            // Not found in auth_tokens, fallback to JWT
-        }
+        } catch (e) { }
 
-        // FALLBACK: JWT verification
+        // Fallback to JWT
         try {
             const encoder = new TextEncoder();
             const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
@@ -56,10 +53,25 @@ async function verifyAuth(req: Request) {
             if (!isNaN(userIdNum)) return { userId: userIdNum, isSystem: false };
             return { userId: sub as any, isSystem: false };
         } catch (e: any) {
-            console.log("Auth: JWT verify failed:", e.message);
+            console.log("Auth error:", e.message);
         }
     }
     return null;
+}
+
+// Helper to fetch all pages of a Facebook Graph API edge
+async function fetchAll(url: string) {
+    let results: any[] = [];
+    let nextUrl = url;
+
+    while (nextUrl) {
+        const res = await fetch(nextUrl);
+        const data = await res.json();
+        if (data.error) throw new Error(data.error.message);
+        if (data.data) results = results.concat(data.data);
+        nextUrl = data.paging?.next || null;
+    }
+    return results;
 }
 
 Deno.serve(async (req) => {
@@ -70,60 +82,44 @@ Deno.serve(async (req) => {
 
     try {
         const body = await req.json().catch(() => ({}));
-        const { accountId: forcedAccountId, userId: forcedUserId } = body;
-
-        // Determine the target userId
+        const { userId: forcedUserId } = body;
         const targetUserId = auth.isSystem ? forcedUserId : auth.userId;
         if (!targetUserId) return jsonResponse({ success: false, error: "Missing Target User ID" }, 400);
 
-        console.log(`[FB-Sync-Leads] Triggered. Target User: ${targetUserId}. System Call: ${auth.isSystem}`);
+        console.log(`[FB-Sync-Leads] Crawling data for user: ${targetUserId}`);
 
-        // 1. Build Page -> AdAccount Map and Ad -> Account Map from DB (Filtered by User)
-        const { data: creativeMappingData } = await supabase
-            .from("unified_ad_creatives")
-            .select("platform_account_id, platform_data->object_story_spec->>page_id, platform_accounts!inner(platform_identities!inner(user_id))")
-            .eq("platform_accounts.platform_identities.user_id", targetUserId)
-            .not("platform_data->object_story_spec->>page_id", "is", null);
-
-        const pageToAccountMap: Record<string, number> = {};
-        creativeMappingData?.forEach((row: any) => {
-            const pageId = row.page_id;
-            if (pageId && !pageToAccountMap[pageId]) {
-                pageToAccountMap[pageId] = row.platform_account_id;
-            }
-        });
-
-        const { data: adsData } = await supabase
-            .from("unified_ads")
-            .select("external_id, platform_account_id");
-
+        // 1. Get Ad Account Map
+        const { data: adsData } = await supabase.from("unified_ads").select("external_id, platform_account_id");
         const adToAccountMap: Record<string, number> = {};
-        adsData?.forEach((a: any) => {
-            adToAccountMap[a.external_id] = a.platform_account_id;
+        adsData?.forEach((a: any) => adToAccountMap[a.external_id] = a.platform_account_id);
+
+        const { data: creativesData } = await supabase
+            .from("unified_ad_creatives")
+            .select("platform_account_id, platform_data->object_story_spec->>page_id")
+            .not("platform_data->object_story_spec->>page_id", "is", null);
+        
+        const pageToAccountMap: Record<string, number> = {};
+        creativesData?.forEach((c: any) => {
+            const pageId = c.page_id;
+            if (pageId && !pageToAccountMap[pageId]) pageToAccountMap[pageId] = c.platform_account_id;
         });
 
-        // 2. Get User Token (Filtered by User)
-        const { data: credentials, error: credError } = await supabase
+        // 2. Get User Token
+        const { data: credentials } = await supabase
             .from("platform_credentials")
-            .select("credential_value, platform_identities!inner(user_id)")
-            .eq("is_active", true)
+            .select("credential_value")
             .eq("credential_type", "access_token")
-            .eq("platform_identities.user_id", targetUserId)
+            .eq("is_active", true)
             .limit(1);
 
-        if (credError || !credentials?.length) return jsonResponse({ success: false, error: "No valid FB credentials found for this user" }, 401);
+        if (!credentials?.length) throw new Error("No active Facebook credentials found");
         const userToken = credentials[0].credential_value;
 
         // 3. Fetch Pages
-        const pagesRes = await fetch(`${FB_BASE_URL}/me/accounts?access_token=${userToken}`);
-        const pagesData = await pagesRes.json();
-        if (pagesData.error) throw new Error(`FB Pages: ${pagesData.error.message}`);
-
-        const pages = pagesData.data || [];
+        const pages = await fetchAll(`${FB_BASE_URL}/me/accounts?fields=id,name,access_token&access_token=${userToken}`);
+        
         let leadCount = 0;
         let msgCount = 0;
-
-        const errors: string[] = [];
 
         for (const page of pages) {
             const pageToken = page.access_token;
@@ -132,61 +128,39 @@ Deno.serve(async (req) => {
 
             console.log(`[FB-Sync-Leads] Syncing Page: ${pageName} (${pageId})`);
 
-            // 4. Fetch Conversations with participant profile pics
-            const convRes = await fetch(`${FB_BASE_URL}/${pageId}/conversations?fields=id,participants{id,name,email},updated_time,snippet,labels&access_token=${pageToken}`);
-            const convData = await convRes.json();
-            if (convData.error) {
-                const errMsg = `${pageName}: ${convData.error.message} (code: ${convData.error.code})`;
-                console.error(`[FB-Sync-Leads] Error fetching convs:`, errMsg);
-                errors.push(errMsg);
-                continue;
-            }
+            // 4. Fetch All Conversations
+            const conversations = await fetchAll(`${FB_BASE_URL}/${pageId}/conversations?fields=id,participants,updated_time,snippet,labels&access_token=${pageToken}`);
 
-            const convCount = convData.data?.length || 0;
-            console.log(`[FB-Sync-Leads] Found ${convCount} conversations for ${pageName}`);
-
-            for (const conv of convData.data || []) {
+            for (const conv of conversations) {
                 const customer = conv.participants?.data?.find((p: any) => p.id !== pageId);
                 if (!customer) continue;
 
-                const mappedAccountId = forcedAccountId || pageToAccountMap[pageId] || 5;
+                const defaultAccountId = pageToAccountMap[pageId] || 40; // Fallback to 40 if not mapped
 
-                // 5. Fetch Messages & Avatar
-                const msgRes = await fetch(`${FB_BASE_URL}/${conv.id}/messages?fields=id,message,from,created_time,referral&limit=20&access_token=${pageToken}`);
-                const msgData = await msgRes.json();
+                // 5. Fetch All Messages for this conversation
+                const messages = await fetchAll(`${FB_BASE_URL}/${conv.id}/messages?fields=id,message,from,created_time,referral&access_token=${pageToken}`);
 
-                // Fetch Avatar (PSID-based)
+                // Try to get customer picture
                 let avatarUrl = null;
                 try {
                     const picRes = await fetch(`${FB_BASE_URL}/${customer.id}/picture?redirect=false&type=normal&access_token=${pageToken}`);
                     const picData = await picRes.json();
-                    if (picData.data?.url) {
-                        avatarUrl = picData.data.url;
-                    }
-                } catch (e) {
-                    console.warn(`[FB-Sync-Leads] Failed to fetch avatar for ${customer.id}`, e);
-                }
+                    avatarUrl = picData.data?.url;
+                } catch (e) {}
 
+                // Look for source campaign from referral
                 let sourceCampaignId = null;
-                let lastStaffName = null;
-                let finalAccountId = mappedAccountId;
+                const referralMsg = messages.find((m: any) => m.referral?.ad_id);
+                if (referralMsg) sourceCampaignId = referralMsg.referral.ad_id;
 
-                if (msgData.data) {
-                    // Look for referral (Ad ID)
-                    const referralMsg = msgData.data.find((m: any) => m.referral?.ad_id);
-                    if (referralMsg) sourceCampaignId = referralMsg.referral.ad_id;
-
-                    // Resolve the specific ad account for this ad if possible
-                    if (sourceCampaignId && adToAccountMap[sourceCampaignId]) {
-                        finalAccountId = adToAccountMap[sourceCampaignId];
-                    }
-
-                    // Identify latest Page responder (staff)
-                    const pageMsgs = msgData.data.filter((m: any) => m.from.id === pageId);
-                    if (pageMsgs.length > 0) {
-                        lastStaffName = pageMsgs[0].from.name;
-                    }
+                let finalAccountId = defaultAccountId;
+                if (sourceCampaignId && adToAccountMap[sourceCampaignId]) {
+                    finalAccountId = adToAccountMap[sourceCampaignId];
                 }
+
+                // Identify latest staff
+                const pageMsgs = messages.filter((m: any) => m.from.id === pageId);
+                const lastStaffName = pageMsgs.length > 0 ? pageMsgs[0].from.name : null;
 
                 // 6. Upsert Lead
                 const { data: lead, error: leadError } = await supabase
@@ -211,14 +185,14 @@ Deno.serve(async (req) => {
                     .single();
 
                 if (leadError) {
-                    console.error(`[FB-Sync-Leads] Error upserting lead:`, leadError);
+                    console.error(`[FB-Sync-Leads] Lead upsert failed: ${leadError.message}`);
                     continue;
                 }
                 leadCount++;
 
-                // 7. Upsert Messages
-                if (msgData.data) {
-                    const messages = msgData.data.map((m: any) => ({
+                // 7. Upsert All Messages
+                if (messages.length > 0) {
+                    const dbMessages = messages.map((m: any) => ({
                         lead_id: lead.id,
                         fb_message_id: m.id,
                         sender_id: m.from.id,
@@ -228,8 +202,9 @@ Deno.serve(async (req) => {
                         is_from_customer: m.from.id !== pageId
                     }));
 
-                    const { error: msgError } = await supabase.from("lead_messages").upsert(messages, { onConflict: "fb_message_id" });
-                    if (!msgError) msgCount += messages.length;
+                    const { error: msgError } = await supabase.from("lead_messages").upsert(dbMessages, { onConflict: "fb_message_id" });
+                    if (!msgError) msgCount += dbMessages.length;
+                    else console.error(`[FB-Sync-Leads] Message upsert failed: ${msgError.message}`);
                 }
             }
         }
@@ -239,13 +214,12 @@ Deno.serve(async (req) => {
             result: {
                 pagesSynced: pages.length,
                 leadsSynced: leadCount,
-                messagesSynced: msgCount,
-                errors: errors.length > 0 ? errors : undefined
+                messagesSynced: msgCount
             }
         });
 
     } catch (err: any) {
-        console.error(`[FB-Sync-Leads] Fatal Error:`, err);
+        console.error(`[FB-Sync-Leads] Fatal:`, err);
         return jsonResponse({ success: false, error: err.message }, 500);
     }
 });

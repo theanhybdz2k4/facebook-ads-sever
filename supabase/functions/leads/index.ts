@@ -1,11 +1,13 @@
-
+/**
+ * Leads Edge Function - Integrated Stats and List
+ */
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.4";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.0";
 import { verify } from "https://deno.land/x/djwt@v3.0.1/mod.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-const JWT_SECRET = Deno.env.get("JWT_SECRET") || "";
+const JWT_SECRET = Deno.env.get("JWT_SECRET");
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const corsHeaders = {
@@ -41,11 +43,12 @@ async function verifyAuth(req: Request) {
             const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
             if (tokenData) return { userId: tokenData.user_id };
         } catch (e) {
-            // Not found in auth_tokens, fallback to JWT
+            // Fallback to JWT
         }
 
         // FALLBACK: JWT verification
         try {
+            console.log("DEBUG: JWT_SECRET length:", JWT_SECRET?.length || 0);
             const encoder = new TextEncoder();
             const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
             const payload = await verify(token, key);
@@ -76,66 +79,90 @@ Deno.serve(async (req: any) => {
             const branchIdParam = url.searchParams.get("branchId") || "all";
             const accountIdParam = url.searchParams.get("accountId");
             const pageIdParam = url.searchParams.get("pageId");
+            const dateStart = url.searchParams.get("dateStart");
+            const dateEnd = url.searchParams.get("dateEnd");
+            const platformCode = url.searchParams.get("platformCode") || "all";
 
-            let adsQuery = supabase
-                .from("unified_insights")
-                .select("spend, date, purchase_value, platform_accounts!inner(id, platform_identities!inner(user_id))")
-                .eq("platform_accounts.platform_identities.user_id", auth.userId);
+            const nowVN = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
+            const todayStr = nowVN.toISOString().split('T')[0];
+            const yesterdayStr = new Date(nowVN.getTime() - 86400000).toISOString().split('T')[0];
 
-            // Filter Ads Data
-            if (branchIdParam !== "all") {
-                adsQuery = adsQuery.eq("platform_accounts.branch_id", parseInt(branchIdParam));
+            // 1. Get user's account IDs first (simpler approach for accuracy)
+            let accountQuery = supabase
+                .from("platform_accounts")
+                .select("id, branch_id, platform_id, platform_identities!inner(user_id)")
+                .eq("platform_identities.user_id", auth.userId);
+
+            if (branchIdParam !== "all") accountQuery = accountQuery.eq("branch_id", parseInt(branchIdParam));
+            if (accountIdParam && accountIdParam !== "all") accountQuery = accountQuery.eq("id", parseInt(accountIdParam));
+
+            if (platformCode !== "all") {
+                const { data: platform } = await supabase.from("platforms").select("id").eq("code", platformCode).single();
+                if (platform) accountQuery = accountQuery.eq("platform_id", platform.id);
             }
-            if (accountIdParam && accountIdParam !== "all") {
-                adsQuery = adsQuery.eq("platform_account_id", parseInt(accountIdParam));
+
+            const { data: userAccounts } = await accountQuery;
+            const accountIds = userAccounts?.map((a: any) => a.id) || [];
+
+            // 2. STATS FROM UNIFIED_INSIGHTS (SPEND, REVENUE) - query by account IDs
+            let spendTotal = 0, spendToday = 0, yesterdaySpend = 0, revenueTotal = 0;
+
+            if (accountIds.length > 0) {
+                let insightsQuery = supabase
+                    .from("unified_insights")
+                    .select("spend, date, purchase_value")
+                    .in("platform_account_id", accountIds);
+
+                if (dateStart) insightsQuery = insightsQuery.gte("date", dateStart);
+                if (dateEnd) insightsQuery = insightsQuery.lte("date", dateEnd);
+
+                const { data: adsData } = await insightsQuery.limit(100000);
+
+                adsData?.forEach((d: any) => {
+                    const sp = parseFloat(d.spend || "0");
+                    const rev = parseFloat(d.purchase_value || "0");
+                    spendTotal += sp;
+                    revenueTotal += rev;
+                    if (d.date === todayStr) spendToday += sp;
+                    if (d.date === yesterdayStr) yesterdaySpend += sp;
+                });
             }
 
-            const { data: adsData } = await adsQuery.order("date", { ascending: false }).limit(20000);
-
-            let leadsQuery = supabase
+            // 2. STATS FROM LEADS TABLE (COUNT)
+            let leadsBaseQuery = supabase
                 .from("leads")
-                .select("id, created_at, is_qualified, platform_account_id, platform_data, platform_accounts!inner(id, platform_identities!inner(user_id))")
+                .select("id, created_at, is_qualified, platform_accounts!inner(id, branch_id, platform_identities!inner(user_id))")
                 .eq("platform_accounts.platform_identities.user_id", auth.userId);
 
-            if (branchIdParam !== "all") {
-                leadsQuery = leadsQuery.eq("platform_accounts.branch_id", parseInt(branchIdParam));
+            if (dateStart) leadsBaseQuery = leadsBaseQuery.gte("created_at", `${dateStart}T00:00:00`);
+            if (dateEnd) leadsBaseQuery = leadsBaseQuery.lte("created_at", `${dateEnd}T23:59:59`);
+            if (branchIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("platform_accounts.branch_id", parseInt(branchIdParam));
+            if (accountIdParam && accountIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("platform_account_id", parseInt(accountIdParam));
+            if (pageIdParam && pageIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("platform_data->>fb_page_id", pageIdParam);
+
+            const { data: leadsData } = await leadsBaseQuery;
+
+            const periodLeads = leadsData?.length || 0;
+            const todayLeads = leadsData?.filter((l: any) => l.created_at.startsWith(todayStr)).length || 0;
+            const todayQualified = leadsData?.filter((l: any) => l.created_at.startsWith(todayStr) && l.is_qualified).length || 0;
+
+            // 3. CALC DAYS FOR AVERAGE
+            let days = 30;
+            if (dateStart && dateEnd) {
+                const s = new Date(dateStart).getTime();
+                const e = new Date(dateEnd).getTime();
+                days = Math.max(1, Math.ceil((e - s) / (1000 * 60 * 60 * 24)));
+                if (dateStart === dateEnd) days = 1;
             }
-            if (accountIdParam && accountIdParam !== "all") {
-                leadsQuery = leadsQuery.eq("platform_account_id", parseInt(accountIdParam));
-            }
-            if (pageIdParam && pageIdParam !== "all") {
-                leadsQuery = leadsQuery.eq("platform_data->>fb_page_id", pageIdParam);
-            }
-
-            const { data: leadsData } = await leadsQuery;
-
-            const today = new Date().toISOString().split('T')[0];
-            const yesterday = new Date(new Date().getTime() - 86400000).toISOString().split('T')[0];
-
-            let spendTotal = 0, spendToday = 0, yesterdaySpend = 0;
-            let revenueTotal = 0;
-
-            adsData?.forEach((d: any) => {
-                const amount = parseFloat(d.spend || "0");
-                const revenue = parseFloat(d.purchase_value || "0");
-                spendTotal += amount;
-                revenueTotal += revenue;
-                if (d.date === today) spendToday += amount;
-                if (d.date === yesterday) yesterdaySpend += amount;
-            });
-
-            const todayLeads = leadsData?.filter((l: any) => l.created_at.startsWith(today)).length || 0;
-            const todayQualified = leadsData?.filter((l: any) => l.created_at.startsWith(today) && l.is_qualified).length || 0;
-
-            const roas = spendTotal > 0 ? (revenueTotal / spendTotal) : 0;
 
             return jsonResponse({
                 success: true,
                 result: {
-                    spendTotal, spendToday, yesterdaySpend, todayLeads, todayQualified,
+                    spendTotal, spendToday, yesterdaySpend,
+                    todayLeads, todayQualified, totalLeads: periodLeads,
                     revenue: revenueTotal,
-                    avgDailySpend: spendTotal / 30,
-                    roas: parseFloat(roas.toFixed(2))
+                    avgDailySpend: spendTotal / days,
+                    roas: spendTotal > 0 ? parseFloat((revenueTotal / spendTotal).toFixed(2)) : 0
                 }
             });
         }

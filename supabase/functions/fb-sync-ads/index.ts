@@ -40,28 +40,52 @@ class FacebookApiClient {
 
     async getAds(accountId: string): Promise<any[]> {
         let allAds: any[] = [];
-        // Removed status filtering to ensure all ads (including paused/deleted) are synced for insights matching
-        let url = `${FB_BASE_URL}/${accountId}/ads?fields=id,adset_id,campaign_id,name,status,effective_status,creative,created_time,updated_time,configured_status&limit=1000&access_token=${this.accessToken}`;
-
+        // Use smaller batch size to avoid rate limits
+        let url: string | null = `${FB_BASE_URL}/${accountId}/ads?fields=id,adset_id,campaign_id,name,status,effective_status,creative{id,name,thumbnail_url,image_url},created_time,updated_time,configured_status&limit=200&access_token=${this.accessToken}`;
+        
+        let retryCount = 0;
+        const maxRetries = 3;
+        
         while (url) {
-            const res = await fetch(url);
-            const data = await res.json();
-            if (data.error) throw new Error(`Facebook API Error: ${data.error.message}`);
-            if (data.data) allAds = allAds.concat(data.data);
-            url = data.paging?.next || null;
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+                
+                if (data.error) {
+                    // Rate limit error - wait and retry
+                    if (data.error.code === 17 || data.error.code === 4 || data.error.message?.includes("reduce the amount of data")) {
+                        if (retryCount < maxRetries) {
+                            retryCount++;
+                            const waitMs = Math.pow(2, retryCount) * 1000; // Exponential backoff: 2s, 4s, 8s
+                            console.log(`[AdsSync] Rate limited, waiting ${waitMs}ms before retry ${retryCount}/${maxRetries}`);
+                            await new Promise(r => setTimeout(r, waitMs));
+                            continue; // Retry same URL
+                        }
+                    }
+                    throw new Error(`Facebook API Error: ${data.error.message}`);
+                }
+                
+                retryCount = 0; // Reset retry count on success
+                if (data.data) allAds = allAds.concat(data.data);
+                url = data.paging?.next || null;
+                
+                // Add small delay between pages to avoid rate limits
+                if (url) await new Promise(r => setTimeout(r, 100));
+                
+            } catch (e: any) {
+                if (retryCount < maxRetries) {
+                    retryCount++;
+                    const waitMs = Math.pow(2, retryCount) * 1000;
+                    console.log(`[AdsSync] Error, waiting ${waitMs}ms before retry: ${e.message}`);
+                    await new Promise(r => setTimeout(r, waitMs));
+                    continue;
+                }
+                throw e;
+            }
         }
+        
+        console.log(`[AdsSync] Fetched ${allAds.length} ads total`);
         return allAds;
-    }
-
-    async getAdCreatives(adIds: string[]): Promise<any[]> {
-        const url = new URL(`${FB_BASE_URL}/`);
-        url.searchParams.set("access_token", this.accessToken);
-        url.searchParams.set("ids", adIds.join(","));
-        url.searchParams.set("fields", "id,creative{id,object_story_spec,thumbnail_url,name}");
-        const response = await fetch(url.toString());
-        const data = await response.json();
-        if (data.error) throw new Error(`Facebook API Error: ${data.error.message}`);
-        return Object.values(data);
     }
 }
 
@@ -147,91 +171,96 @@ Deno.serve(async (req: Request) => {
         const { data: adGroups } = await supabase.from("unified_ad_groups").select("id, external_id, start_time, end_time").eq("platform_account_id", accountId).limit(5000);
         const adGroupMap = new Map<string, any>((adGroups || []).map((ag: any) => [ag.external_id, ag]));
 
-        // BATCH SYNC ADS
+        // BATCH SYNC ADS & CREATIVES
         const fbAds = await fb.getAds(account.external_id);
         if (fbAds.length > 0) {
+            // 1. EXTRACT & SYNC UNIQUE CREATIVES FIRST
+            const creativeMap = new Map<string, any>();
+            fbAds.forEach(ad => {
+                if (ad.creative && ad.creative.id) {
+                    creativeMap.set(ad.creative.id, ad.creative);
+                }
+            });
+
+            const uniqueCreatives = Array.from(creativeMap.values());
+            const creativeIdMapping = new Map<string, string>(); // External ID -> Internal UUID
+            
+            console.log(`[AdsSync] Found ${uniqueCreatives.length} unique creatives from ${fbAds.length} ads`);
+
+            // First fetch existing creatives to preserve IDs for upsert
+            const externalIds = uniqueCreatives.map(c => c.id);
+            const { data: existingCreatives } = await supabase
+                .from("unified_ad_creatives")
+                .select("id, external_id")
+                .eq("platform_account_id", accountId)
+                .in("external_id", externalIds);
+            
+            const existingCreativeMap = new Map((existingCreatives || []).map(c => [c.external_id, c.id]));
+            
+            if (uniqueCreatives.length > 0) {
+                const creativeUpserts = uniqueCreatives.map(c => ({
+                    id: existingCreativeMap.get(c.id) || crypto.randomUUID(),
+                    external_id: c.id,
+                    platform_account_id: accountId,
+                    name: c.name || `Creative ${c.id}`,
+                    thumbnail_url: c.thumbnail_url || c.image_url || null,
+                    image_url: c.image_url || null,
+                    platform_data: c,
+                    synced_at: getVietnamTime(),
+                }));
+
+                console.log(`[AdsSync] Upserting ${creativeUpserts.length} creatives to DB...`);
+                const { data: upsertedCreatives, error: creErr } = await supabase
+                    .from("unified_ad_creatives")
+                    .upsert(creativeUpserts, { onConflict: "platform_account_id,external_id" })
+                    .select("id, external_id");
+
+                if (creErr) {
+                    console.error(`[AdsSync] Creative Batch Error: ${creErr.message}`);
+                    result.errors.push(`Creative Batch Error: ${creErr.message}`);
+                } else if (upsertedCreatives) {
+                    console.log(`[AdsSync] Successfully upserted ${upsertedCreatives.length} creatives`);
+                    upsertedCreatives.forEach(c => creativeIdMapping.set(c.external_id, c.id));
+                    result.creatives = upsertedCreatives.length;
+                }
+            }
+
+            // 2. SYNC ADS (now with linked creative IDs)
             const { data: existingAds } = await supabase.from("unified_ads").select("id, external_id").eq("platform_account_id", accountId).limit(10000);
             const adIdMap = new Map((existingAds || []).map(a => [a.external_id, a.id]));
 
             const adUpserts = fbAds.map(ad => {
                 const adGroup = adGroupMap.get(ad.adset_id);
                 if (!adGroup) return null;
+                
+                const internalCreativeId = ad.creative?.id ? creativeIdMapping.get(ad.creative.id) : null;
+
                 return {
                     id: adIdMap.get(ad.id) || crypto.randomUUID(),
                     external_id: ad.id,
                     platform_account_id: accountId,
                     unified_ad_group_id: adGroup.id,
+                    unified_ad_creative_id: internalCreativeId,
                     name: ad.name,
                     status: mapStatus(ad.status),
                     effective_status: ad.effective_status,
                     start_time: adGroup.start_time,
                     end_time: adGroup.end_time,
-                    platform_data: ad,  // Contains campaign_id for reference
+                    platform_data: ad,
                     synced_at: getVietnamTime(),
                 };
             }).filter(Boolean);
 
             if (adUpserts.length > 0) {
+                console.log(`[AdsSync] Upserting ${adUpserts.length} ads to DB...`);
                 const { error: adErr } = await supabase.from("unified_ads").upsert(adUpserts as any[], { onConflict: "platform_account_id,external_id" });
-                if (adErr) result.errors.push(`Ad Batch Error: ${adErr.message}`);
-                else result.ads = adUpserts.length;
-            }
-        }
-
-        // BATCH SYNC CREATIVES & LINK TO ADS
-        const adExternalIds = fbAds.map(a => a.id);
-        if (adExternalIds.length > 0) {
-            const chunks = [];
-            for (let i = 0; i < adExternalIds.length; i += 50) chunks.push(adExternalIds.slice(i, i + 50));
-
-            const creativeToAdMap = new Map<string, string>(); // external_creative_id -> external_ad_id
-
-            for (const chunk of chunks) {
-                try {
-                    const creativeData = await fb.getAdCreatives(chunk);
-                    const creativeUpserts = creativeData.map(item => {
-                        const c = item.creative;
-                        if (!c) return null;
-
-                        // Link this creative back to the ad for indexing
-                        creativeToAdMap.set(c.id, item.id); // item.id is the adExternalId
-
-                        return {
-                            external_id: c.id,
-                            platform_account_id: accountId,
-                            name: c.name || `Creative ${c.id}`,
-                            thumbnail_url: c.thumbnail_url || null,
-                            platform_data: c,
-                            synced_at: getVietnamTime(),
-                        };
-                    }).filter(Boolean);
-
-                    if (creativeUpserts.length > 0) {
-                        const { data: upsertedCreatives, error: creErr } = await supabase
-                            .from("unified_ad_creatives")
-                            .upsert(creativeUpserts as any[], { onConflict: "platform_account_id,external_id" })
-                            .select("id, external_id");
-
-                        if (!creErr && upsertedCreatives) {
-                            result.creatives += creativeUpserts.length;
-
-                            // Update ads with their creative IDs
-                            const adLinkUpserts = upsertedCreatives.map(c => {
-                                const adExtId = creativeToAdMap.get(c.external_id);
-                                if (!adExtId) return null;
-                                return {
-                                    platform_account_id: accountId,
-                                    external_id: adExtId,
-                                    unified_ad_creative_id: c.id
-                                };
-                            }).filter(Boolean);
-
-                            if (adLinkUpserts.length > 0) {
-                                await supabase.from("unified_ads").upsert(adLinkUpserts as any[], { onConflict: "platform_account_id,external_id" });
-                            }
-                        }
-                    }
-                } catch (e: any) { console.error("Creative error", e); }
+                if (adErr) {
+                    console.error(`[AdsSync] Ad Batch Error: ${adErr.message}`);
+                    result.errors.push(`Ad Batch Error: ${adErr.message}`);
+                } else {
+                    console.log(`[AdsSync] Successfully upserted ${adUpserts.length} ads`);
+                    result.ads = adUpserts.length;
+                }
             }
         }
 

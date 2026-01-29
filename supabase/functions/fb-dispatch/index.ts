@@ -104,15 +104,19 @@ Deno.serve(async (req: Request) => {
 
     try {
         const body = await req.json().catch(() => ({}));
-        const { dateStart = getVietnamYesterday(), dateEnd = getVietnamToday(), cronType, userId: forcedUserId } = body;
+        const { dateStart = getVietnamYesterday(), dateEnd = getVietnamToday(), cronType, userId: forcedUserId, force = false } = body;
         
         // Use either the forced user ID (system call) or the authenticated user's ID
         const targetUserId = forcedUserId || auth.userId;
         const currentHour = getVietnamHour();
 
-    console.log(`[Dispatch] Hour ${currentHour}, range: ${dateStart} - ${dateEnd}`);
+    console.log(`[Dispatch] Hour ${currentHour}, range: ${dateStart} - ${dateEnd}, force: ${force}`);
 
-    let query = supabase.from("cron_settings").select("id, user_id, cron_type, allowed_hours, enabled").eq("enabled", true).contains("allowed_hours", [currentHour]);
+    // Build query - skip hour check if force=true (manual trigger)
+    let query = supabase.from("cron_settings").select("id, user_id, cron_type, allowed_hours, enabled").eq("enabled", true);
+    if (!force) {
+      query = query.contains("allowed_hours", [currentHour]);
+    }
     if (cronType) query = query.eq("cron_type", cronType);
     if (targetUserId) query = query.eq("user_id", targetUserId);
 
@@ -162,7 +166,7 @@ Deno.serve(async (req: Request) => {
           .from("platform_accounts")
           .select("id, name, external_id, branch_id, platform_identities!inner (user_id)")
           .eq("platform_identities.user_id", userId)
-          .eq("account_status", "ACTIVE")
+          .eq("account_status", "1")  // 1 = ACTIVE in Facebook API
           .limit(2000);
 
         console.log(`[Dispatch] User ${userId} found ${accounts?.length || 0} active accounts`);

@@ -125,15 +125,12 @@ Deno.serve(async (req) => {
 
             if (branchId && branchId !== "all") query = query.eq("branch_id", parseInt(branchId));
 
-            // Normalize status filter: Map user-friendly names to raw FB status codes
-            // FB status: 1=ACTIVE, 2=DISABLED, 101=CLOSED, etc.
             if (status) {
                 if (status.toUpperCase() === "ACTIVE") {
                     query = query.eq("account_status", "1");
                 } else if (status.toUpperCase() === "DISABLED" || status.toUpperCase() === "CLOSED") {
                     query = query.in("account_status", ["2", "101", "100"]);
                 } else {
-                    // Pass through raw numeric status if provided
                     query = query.eq("account_status", status);
                 }
             }
