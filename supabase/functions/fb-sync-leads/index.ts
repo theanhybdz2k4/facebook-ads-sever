@@ -151,6 +151,14 @@ Deno.serve(async (req) => {
             const pageToken = page.access_token;
             log(`Syncing Page: ${pageName}`);
 
+            // Update centralized page info
+            await supabase.from("platform_pages").upsert({
+                id: pageId,
+                name: pageName,
+                access_token: pageToken,
+                last_synced_at: new Date().toISOString()
+            });
+
             const startOfMonth = new Date();
             startOfMonth.setDate(1);
             const since = Math.floor(startOfMonth.getTime() / 1000);
@@ -166,7 +174,7 @@ Deno.serve(async (req) => {
                         if (!customer) continue;
 
                         const customerId = String(customer.id);
-                        
+
                         // 1. Fetch messages to get referral info (ad_id)
                         const msgData = await fetchWithRetry(`${FB_BASE_URL}/${conv.id}/messages?fields=id,message,from,created_time,referral&limit=50&access_token=${pageToken}`);
                         const fbMsgs = msgData.data || [];
@@ -181,6 +189,7 @@ Deno.serve(async (req) => {
                             .select("id, customer_name, customer_avatar")
                             .eq("platform_account_id", accId)
                             .eq("external_id", customerId)
+                            .eq("fb_page_id", pageId)
                             .maybeSingle();
 
                         let customerName = existingLead?.customer_name || null;
@@ -207,21 +216,22 @@ Deno.serve(async (req) => {
                         const leadUpsertData: any = {
                             platform_account_id: accId,
                             external_id: customerId,
+                            fb_page_id: pageId,
                             customer_name: customerName,
                             customer_avatar: customerAvatar,
                             last_message_at: toVietnamTimestamp(conv.updated_time),
                             is_read: true,
-                            platform_data: { 
-                                fb_conv_id: conv.id, 
-                                fb_page_id: pageId, 
+                            platform_data: {
+                                fb_conv_id: conv.id,
+                                fb_page_id: pageId,
                                 fb_page_name: pageName,
-                                snippet: conv.snippet 
+                                snippet: conv.snippet
                             }
                         };
-                        
+
                         const { data: leadRows, error: lErr } = await supabase
                             .from("leads")
-                            .upsert(leadUpsertData, { onConflict: "platform_account_id,external_id" })
+                            .upsert(leadUpsertData, { onConflict: "platform_account_id,external_id,fb_page_id" })
                             .select("id");
 
                         if (lErr || !leadRows?.length) {

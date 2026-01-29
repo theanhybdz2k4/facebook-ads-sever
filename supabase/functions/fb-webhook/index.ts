@@ -165,13 +165,14 @@ Deno.serve(async (req) => {
 
                     console.log(`[FB-Webhook] Processing message from ${isFromPage ? 'PAGE' : 'CUSTOMER'} ${customerId} on Page ${pageId}`);
 
-                    // Check if lead already exists with valid customer info
+                    // Check if lead already exists for this specific (account, customer, page) combination
                     const { data: existingLead } = await supabase
                         .from("leads")
                         .select("id, customer_name, customer_avatar")
                         .eq("platform_account_id", accountId)
                         .eq("external_id", customerId)
-                        .single();
+                        .eq("fb_page_id", pageId)
+                        .maybeSingle();
 
                     let customerName = existingLead?.customer_name || null;
                     let customerAvatar = existingLead?.customer_avatar || null;
@@ -218,11 +219,19 @@ Deno.serve(async (req) => {
                             }
                         }
                         
-                        // Fetch page name
+                        // Fetch page name and update centralized info
                         try {
                             const pageInfoRes = await fetch(`${FB_BASE_URL}/${pageId}?fields=name&access_token=${pageToken}`);
                             const pageInfoData = await pageInfoRes.json();
-                            if (pageInfoData.name) pageName = pageInfoData.name;
+                            if (pageInfoData.name) {
+                                pageName = pageInfoData.name;
+                                // Update centralized page info
+                                await supabase.from("platform_pages").upsert({
+                                    id: pageId,
+                                    name: pageName,
+                                    last_synced_at: new Date().toISOString()
+                                });
+                            }
                         } catch (e) {
                             console.error(`[FB-Webhook] Failed to fetch page info`);
                         }
@@ -232,6 +241,7 @@ Deno.serve(async (req) => {
 
                     // Build lead data - only include fields that should always be updated
                     const leadBaseData: any = {
+                        fb_page_id: pageId,
                         last_message_at: toVietnamTimestamp(timestamp),
                         is_read: isFromPage,
                         platform_data: {
@@ -267,6 +277,7 @@ Deno.serve(async (req) => {
                             id: crypto.randomUUID(),
                             platform_account_id: accountId,
                             external_id: customerId,
+                            fb_page_id: pageId,
                             source_campaign_id: referral?.ad_id || null,
                             customer_name: customerName || "Khách hàng",
                             customer_avatar: customerAvatar,

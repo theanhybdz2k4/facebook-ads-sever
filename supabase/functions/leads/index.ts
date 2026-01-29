@@ -138,8 +138,8 @@ Deno.serve(async (req: any) => {
                 .select("id, branch_id, platform_id, platform_identities!inner(user_id)")
                 .eq("platform_identities.user_id", auth.userId);
 
-            if (branchIdParam !== "all") accountQuery = accountQuery.eq("branch_id", parseInt(branchIdParam));
-            if (accountIdParam && accountIdParam !== "all") accountQuery = accountQuery.eq("id", parseInt(accountIdParam));
+            if (branchIdParam !== "all") accountQuery = accountQuery.eq("branch_id", branchIdParam);
+            if (accountIdParam && accountIdParam !== "all") accountQuery = accountQuery.eq("id", accountIdParam);
 
             if (platformCode !== "all") {
                 const { data: platform } = await supabase.from("platforms").select("id").eq("code", platformCode).single();
@@ -181,9 +181,9 @@ Deno.serve(async (req: any) => {
 
             if (dateStart) leadsBaseQuery = leadsBaseQuery.gte("created_at", `${dateStart}T00:00:00`);
             if (dateEnd) leadsBaseQuery = leadsBaseQuery.lte("created_at", `${dateEnd}T23:59:59`);
-            if (branchIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("platform_accounts.branch_id", parseInt(branchIdParam));
-            if (accountIdParam && accountIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("platform_account_id", parseInt(accountIdParam));
-            if (pageIdParam && pageIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("platform_data->>fb_page_id", pageIdParam);
+            if (branchIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("platform_accounts.branch_id", branchIdParam);
+            if (accountIdParam && accountIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("platform_account_id", accountIdParam);
+            if (pageIdParam && pageIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("fb_page_id", pageIdParam);
 
             const { data: leadsData } = await leadsBaseQuery;
 
@@ -220,20 +220,20 @@ Deno.serve(async (req: any) => {
 
             let query = supabase
                 .from("leads")
-                .select("*, platform_accounts!inner(id, name, branch_id, platform_identities!inner(user_id))")
+                .select("*, platform_pages(name), platform_accounts!inner(id, name, branch_id, platform_identities!inner(user_id))")
                 .eq("platform_accounts.platform_identities.user_id", auth.userId)
                 .order("last_message_at", { ascending: false });
 
             if (branchIdParam !== "all") {
-                query = query.eq("platform_accounts.branch_id", parseInt(branchIdParam));
+                query = query.eq("platform_accounts.branch_id", branchIdParam);
             }
 
             if (accountIdParam && accountIdParam !== "all") {
-                query = query.eq("platform_account_id", parseInt(accountIdParam));
+                query = query.eq("platform_account_id", accountIdParam);
             }
 
             if (pageIdParam && pageIdParam !== "all") {
-                query = query.eq("platform_data->>fb_page_id", pageIdParam);
+                query = query.eq("fb_page_id", pageIdParam);
             }
 
             const { data: leads, error } = await query;
