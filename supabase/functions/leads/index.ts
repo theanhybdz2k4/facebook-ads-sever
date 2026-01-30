@@ -82,6 +82,60 @@ async function verifyAuth(req: Request) {
     return null;
 }
 
+// Gemini AI helper function to analyze conversation
+async function analyzeWithGemini(apiKey: string, messages: Array<{ sender: string, content: string, isFromCustomer: boolean }>): Promise<{ analysis: string, isPotential: boolean } | null> {
+    if (!apiKey || messages.length === 0) return null;
+    try {
+        const conversationText = messages.map(m =>
+            `${m.isFromCustomer ? '👤 Khách hàng' : '📄 Page'}: ${m.content}`
+        ).join('\n');
+
+        const prompt = `Bạn là chuyên gia phân tích hội thoại bán hàng. Hãy phân tích cuộc hội thoại sau và trả lời theo đúng format này:
+
+Đánh giá: [TIỀM NĂNG hoặc KHÔNG TIỀM NĂNG]
+(Tiềm năng = khách hỏi chi tiết về khóa học/sản phẩm, hẹn đóng tiền, quan tâm ưu đãi, hỏi lịch học, để lại SĐT hoặc có dấu hiệu muốn mua hàng)
+(Không tiềm năng = chỉ hỏi qua loa rồi im lặng, từ chối rõ ràng, hoặc chỉ là tin nhắn rác/spam)
+
+Tóm tắt: [Nội dung chính của cuộc hội thoại, 1-2 câu ngắn gọn]
+
+Nhu cầu khách hàng: [Khách đang thực sự muốn giải quyết vấn đề gì?]
+
+Mức độ quan tâm: [Cao / Trung bình / Thấp. Giải thích ngắn nhất có thể]
+
+Gợi ý follow-up:
+[Liệt kê các bước nên làm tiếp theo, mỗi bước một dòng]
+
+---
+${conversationText}
+---
+
+Trả lời bằng tiếng Việt, cực kỳ súc tích. QUAN TRỌNG: Dòng đầu tiên PHẢI là "Đánh giá: TIỀM NĂNG" hoặc "Đánh giá: KHÔNG TIỀM NĂNG"`;
+
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        });
+
+        const data = await response.json();
+        if (data.error) return null;
+
+        const analysis = data.candidates?.[0]?.content?.parts?.[0]?.text || null;
+        if (analysis) {
+            const lines = analysis.split('\n');
+            const firstLine = lines[0].toLowerCase();
+            const isPotential = firstLine.includes('tiềm năng') && !firstLine.includes('không tiềm năng');
+
+            // Remove the evaluation line
+            const cleanedAnalysis = lines.slice(1).join('\n').trim();
+            return { analysis: cleanedAnalysis, isPotential };
+        }
+        return null;
+    } catch (e) {
+        return null;
+    }
+}
+
 Deno.serve(async (req) => {
     if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
@@ -442,6 +496,33 @@ Deno.serve(async (req) => {
                     .single();
 
                 if (!leadCheck) return jsonResponse({ success: false, error: "Lead not found or unauthorized" }, 404);
+
+                if (updates.reanalyze) {
+                    delete updates.reanalyze;
+                    console.log(`[Leads] Re-analyzing lead ${leadId}...`);
+
+                    const { data: messages } = await supabase
+                        .from("lead_messages")
+                        .select("sender_name, message_content, is_from_customer, sent_at")
+                        .eq("lead_id", leadId)
+                        .order("sent_at", { ascending: false })
+                        .limit(50);
+
+                    if (messages && messages.length > 0) {
+                        const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
+                        const messagesForAnalysis = messages.map(m => ({
+                            sender: m.sender_name,
+                            content: m.message_content,
+                            isFromCustomer: m.is_from_customer
+                        })).reverse();
+
+                        const geminiResult = await analyzeWithGemini(geminiApiKey!, messagesForAnalysis);
+                        if (geminiResult) {
+                            updates.ai_analysis = geminiResult.analysis;
+                            updates.is_potential = geminiResult.isPotential;
+                        }
+                    }
+                }
 
                 const { data, error } = await supabase.from("leads").update(updates).eq("id", leadId).select().single();
                 if (error) return jsonResponse({ success: false, error: error.message }, 400);

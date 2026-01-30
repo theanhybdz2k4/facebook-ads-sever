@@ -38,26 +38,26 @@ async function analyzeWithGemini(apiKey: string, messages: Array<{sender: string
             `${m.isFromCustomer ? '👤 Khách hàng' : '📄 Page'}: ${m.content}`
         ).join('\n');
 
-        const prompt = `Bạn là chuyên gia phân tích hội thoại bán hàng. Hãy phân tích cuộc hội thoại sau và trả lời theo đúng format này (KHÔNG thêm tiêu đề, số thứ tự, hay dấu * vào):
+const prompt = `Bạn là chuyên gia phân tích hội thoại bán hàng. Hãy phân tích cuộc hội thoại sau và trả lời theo đúng format này:
 
 Đánh giá: [TIỀM NĂNG hoặc KHÔNG TIỀM NĂNG]
-(Tiềm năng = khách hỏi chi tiết về khóa học/sản phẩm, hẹn đóng tiền, quan tâm ưu đãi, hỏi lịch học, để lại SĐT...)
-(Không tiềm năng = chỉ hỏi qua loa, không phản hồi, từ chối, hoặc hội thoại quá ngắn)
+(Tiềm năng = khách hỏi chi tiết về khóa học/sản phẩm, hẹn đóng tiền, quan tâm ưu đãi, hỏi lịch học, để lại SĐT hoặc có dấu hiệu muốn mua hàng)
+(Không tiềm năng = chỉ hỏi qua loa rồi im lặng, từ chối rõ ràng, hoặc chỉ là tin nhắn rác/spam)
 
-Tóm tắt: [Nội dung chính của cuộc hội thoại, 1-2 câu]
+Tóm tắt: [Nội dung chính của cuộc hội thoại, 1-2 câu ngắn gọn]
 
-Nhu cầu khách hàng: [Khách đang quan tâm điều gì?]
+Nhu cầu khách hàng: [Khách đang thực sự muốn giải quyết vấn đề gì?]
 
-Mức độ quan tâm: [Cao / Trung bình / Thấp. Giải thích ngắn gọn]
+Mức độ quan tâm: [Cao / Trung bình / Thấp. Giải thích ngắn nhất có thể]
 
 Gợi ý follow-up:
-[Liệt kê các bước nên làm tiếp theo, mỗi bước một dòng, không dùng số hay dấu đầu dòng]
+[Liệt kê các bước nên làm tiếp theo, mỗi bước một dòng]
 
 ---
 ${conversationText}
 ---
 
-Trả lời bằng tiếng Việt, theo đúng format trên. QUAN TRỌNG: Dòng đầu tiên PHẢI là "Đánh giá: TIỀM NĂNG" hoặc "Đánh giá: KHÔNG TIỀM NĂNG"`;
+Trả lời bằng tiếng Việt, cực kỳ súc tích. QUAN TRỌNG: Dòng đầu tiên PHẢI là "Đánh giá: TIỀM NĂNG" hoặc "Đánh giá: KHÔNG TIỀM NĂNG"`;
 
         console.log(`[FB-Webhook] Calling Gemini API to analyze ${messages.length} messages...`);
         
@@ -80,12 +80,16 @@ Trả lời bằng tiếng Việt, theo đúng format trên. QUAN TRỌNG: Dòng
         if (analysis) {
             console.log(`[FB-Webhook] Gemini analysis received: ${analysis.substring(0, 100)}...`);
             
-            // Parse isPotential from analysis
-            const firstLine = analysis.split('\n')[0].toLowerCase();
+            // Parse isPotential from analysis and strip the evaluation line
+            const lines = analysis.split('\n');
+            const firstLine = lines[0].toLowerCase();
             const isPotential = firstLine.includes('tiềm năng') && !firstLine.includes('không tiềm năng');
+            
+            // Remove the evaluation line (the first line typically starts with "Đánh giá:")
+            const cleanedAnalysis = lines.slice(1).join('\n').trim();
             console.log(`[FB-Webhook] Lead classification: isPotential = ${isPotential}`);
             
-            return { analysis, isPotential };
+            return { analysis: cleanedAnalysis, isPotential };
         }
         return null;
     } catch (e: any) {
@@ -154,14 +158,15 @@ Deno.serve(async (req) => {
 
             console.log(`[FB-Webhook] Authorized pages (from cache): ${Object.keys(authorizedPages).join(", ")}`);
 
-            // Get default account ID for leads (will be mapped by page later)
+            // Get default account IDs to map pages to accounts
             const { data: accountsData } = await supabase
                 .from("platform_accounts")
-                .select("id")
+                .select("id, name")
                 .eq("platform_id", 1) // Facebook
-                .limit(1);
+                .order("id", { ascending: true });
             
-            const defaultAccountId = accountsData?.[0]?.id || 40;
+            const availableAccountIds = accountsData?.map((a: any) => a.id) || [40];
+            const defaultAccountId = availableAccountIds[0];
 
             // Get Gemini API key from users table
             const { data: userData } = await supabase
@@ -197,7 +202,22 @@ Deno.serve(async (req) => {
                 console.log(`[FB-Webhook] ACCEPTED: Page ${pageId} (${pageAuth.name}) with cached token`);
 
                 const pageToken = pageAuth.token;
-                const accountId = defaultAccountId;
+                
+                // STABLE ACCOUNT MAPPING: Try to find which account this page belongs to based on existing leads
+                let accountId = defaultAccountId;
+                const { data: pageLeadSample } = await supabase
+                    .from("leads")
+                    .select("platform_account_id")
+                    .eq("fb_page_id", pageId)
+                    .limit(1)
+                    .maybeSingle();
+                
+                if (pageLeadSample?.platform_account_id) {
+                    accountId = pageLeadSample.platform_account_id;
+                    console.log(`[FB-Webhook] Using stable accountId ${accountId} for Page ${pageId}`);
+                } else {
+                    console.log(`[FB-Webhook] No existing leads for Page ${pageId}, using default accountId ${accountId}`);
+                }
 
                 // Process messaging events
                 for (const messaging of entry.messaging || []) {
@@ -217,13 +237,14 @@ Deno.serve(async (req) => {
                     console.log(`[FB-Webhook] Processing message from ${isFromPage ? 'PAGE' : 'CUSTOMER'} ${customerId} on Page ${pageId}`);
                     console.log(`[FB-Webhook] Event details: message=${!!message}, mid=${message?.mid}, text=${message?.text?.substring(0, 50)}, attachments=${message?.attachments?.length || 0}, reaction=${!!messaging.reaction}, read=${!!messaging.read}, postback=${!!messaging.postback}`);
 
-                    // Check if lead already exists for this specific (account, customer, page) combination
+                    // Check if lead already exists for this specific (customer, page) combination
+                    // STRICT LOOKUP: ONLY external_id + fb_page_id
                     const { data: existingLead } = await supabase
                         .from("leads")
-                        .select("id, customer_name, customer_avatar")
-                        .eq("platform_account_id", accountId)
+                        .select("id, customer_name, customer_avatar, is_potential, ai_analysis, is_manual_potential")
                         .eq("external_id", customerId)
                         .eq("fb_page_id", pageId)
+                        .limit(1)
                         .maybeSingle();
 
                     let customerName = existingLead?.customer_name || null;
@@ -232,11 +253,12 @@ Deno.serve(async (req) => {
 
                     // Check if we have valid existing data
                     const hasValidName = customerName && customerName !== "Khách hàng" && customerName !== customerId;
-
+                    const needsAIAnalysis = existingLead && existingLead.is_potential === null && (!existingLead.ai_analysis || existingLead.ai_analysis === "NULL");
+                    
                     if (pageToken) {
-                        // Fetch customer profile (only if we don't have valid info and message is from customer)
-                        if (!isFromPage && (!hasValidName || !customerAvatar)) {
-                            console.log(`[FB-Webhook] Need to fetch customer info. hasValidName=${hasValidName}, hasAvatar=${!!customerAvatar}`);
+                        // Fetch customer profile (only if we don't have valid info OR we need AI analysis and message is from customer)
+                        if (!isFromPage && (!hasValidName || needsAIAnalysis || !customerAvatar)) {
+                            console.log(`[FB-Webhook] Need to fetch or re-analyze. hasName=${hasValidName}, needsAI=${needsAIAnalysis}, hasAvatar=${!!customerAvatar}`);
                             
                             // METHOD 1: Get from conversation participants (MOST RELIABLE for Facebook Messenger)
                             // Facebook allows access to participant names in conversations the page owns
@@ -309,7 +331,7 @@ Deno.serve(async (req) => {
                         }
                     }
 
-                    let lead, leadError;
+                    let dbLead, leadError;
 
                     // Build lead data - only include fields that should always be updated
                     const leadBaseData: any = {
@@ -340,9 +362,9 @@ Deno.serve(async (req) => {
                             .eq("id", existingLead.id)
                             .select()
                             .single();
-                        lead = result.data;
+                        dbLead = result.data;
                         leadError = result.error;
-                        console.log(`[FB-Webhook] Updated existing lead: ${lead?.id}`);
+                        console.log(`[FB-Webhook] Updated existing lead: ${dbLead?.id}`);
                     } else {
                         // New lead - set defaults for required fields
                         const insertData = {
@@ -361,9 +383,9 @@ Deno.serve(async (req) => {
                             .insert(insertData)
                             .select()
                             .single();
-                        lead = result.data;
+                        dbLead = result.data;
                         leadError = result.error;
-                        console.log(`[FB-Webhook] Created new lead: ${lead?.id}`);
+                        console.log(`[FB-Webhook] Created new lead: ${dbLead?.id}`);
                     }
 
                     if (leadError) {
@@ -372,11 +394,11 @@ Deno.serve(async (req) => {
                     }
                     leadsUpdated++;
 
-                    // Use lead.customer_name as final source of truth for all messages
-                    const finalCustomerName = lead?.customer_name || customerName || "Khách hàng";
+                    // FINAL LEAD OBJECT FOR NEXT STEPS
+                    const finalCustomerName = dbLead?.customer_name || customerName || "Khách hàng";
 
                     // 1. Insert current message
-                    if (message && lead) {
+                    if (message && dbLead) {
                         // Build message content - handle text and attachments
                         let messageContent = message.text || "";
                         
@@ -408,7 +430,7 @@ Deno.serve(async (req) => {
                                 .from("lead_messages")
                                 .upsert({
                                     id: crypto.randomUUID(),
-                                    lead_id: lead.id,
+                                    lead_id: dbLead.id,
                                     fb_message_id: message.mid,
                                     sender_id: senderId,
                                     sender_name: isFromPage ? pageName : finalCustomerName,
@@ -424,7 +446,7 @@ Deno.serve(async (req) => {
                                 console.error(`[FB-Webhook] Message insert error for mid=${message.mid}:`, msgError);
                             }
                         }
-                    } else if (!message && lead) {
+                    } else if (!message && dbLead) {
                         // Handle read receipts, reactions, postbacks
                         if (messaging.read) {
                             console.log(`[FB-Webhook] Read receipt from ${customerId} - skipping`);
@@ -438,11 +460,11 @@ Deno.serve(async (req) => {
                     }
 
                     // 2. CRAWL ENTIRE CONVERSATION (like pancake.vn)
-                    if (lead && pageToken) {
+                    if (dbLead && pageToken) {
                         try {
                             console.log(`[FB-Webhook] Triggering full conversation crawl for customer ${customerId}...`);
-                            // Fetch conversations to find the ID AND participants (for name)
-                            const convsRes = await fetch(`${FB_BASE_URL}/${pageId}/conversations?user_id=${customerId}&fields=id,updated_time,snippet,participants&access_token=${pageToken}`);
+                            // Fetch conversations to find the ID, participants, and labels
+                            const convsRes = await fetch(`${FB_BASE_URL}/${pageId}/conversations?user_id=${customerId}&fields=id,updated_time,snippet,participants,labels&access_token=${pageToken}`);
                             const convsData = await convsRes.json();
 
                             const conv = convsData.data?.[0];
@@ -459,7 +481,18 @@ Deno.serve(async (req) => {
                                     }
                                 }
                                 
-                                // Fetch messages for this conversation
+                                // TRY TO GET LABELS FOR MANUAL POTENTIAL
+                                let isManualPotential = false;
+                                if (conv.labels?.data) {
+                                    isManualPotential = conv.labels.data.some((l: any) => 
+                                        l.name.toLowerCase().includes("tiềm năng") || 
+                                        l.name.toLowerCase().includes("potential") ||
+                                        l.name.toLowerCase().includes("hot")
+                                    );
+                                    if (isManualPotential) {
+                                        console.log(`[FB-Webhook] Manual potential detected via FB label: ${conv.labels.data.map((l: any) => l.name).join(", ")}`);
+                                    }
+                                }
                                 const msgsRes = await fetch(`${FB_BASE_URL}/${conv.id}/messages?fields=id,message,from,created_time&limit=50&access_token=${pageToken}`);
                                 const msgsData = await msgsRes.json();
 
@@ -476,22 +509,31 @@ Deno.serve(async (req) => {
                                         }
                                     }
                                     
-                                    // UPDATE LEAD if we got a name and lead still has default name
-                                    if (extractedCustomerName && lead.customer_name === "Khách hàng") {
+                                    // UPDATE LEAD if we got a name or labels
+                                    const updateData: any = {};
+                                    if (extractedCustomerName && dbLead.customer_name === "Khách hàng") {
+                                        updateData.customer_name = extractedCustomerName;
+                                    }
+                                    if (isManualPotential) {
+                                        updateData.is_manual_potential = true;
+                                    }
+
+                                    if (Object.keys(updateData).length > 0) {
                                         const { error: updateErr } = await supabase
                                             .from("leads")
-                                            .update({ customer_name: extractedCustomerName })
-                                            .eq("id", lead.id);
+                                            .update(updateData)
+                                            .eq("id", dbLead.id);
                                         if (!updateErr) {
-                                            console.log(`[FB-Webhook] Updated lead ${lead.id} with extracted name: "${extractedCustomerName}"`);
-                                            lead.customer_name = extractedCustomerName;
+                                            console.log(`[FB-Webhook] Updated lead ${dbLead.id} with:`, updateData);
+                                            if (updateData.customer_name) dbLead.customer_name = updateData.customer_name;
+                                            if (updateData.is_manual_potential) dbLead.is_manual_potential = true;
                                         } else {
-                                            console.error(`[FB-Webhook] Failed to update lead with extracted name:`, updateErr);
+                                            console.error(`[FB-Webhook] Failed to update lead with extracted data:`, updateErr);
                                         }
                                     }
                                     
                                     // Use the best available name for messages
-                                    const bestCustomerName = lead.customer_name !== "Khách hàng" ? lead.customer_name : (extractedCustomerName || finalCustomerName);
+                                    const bestCustomerName = dbLead.customer_name !== "Khách hàng" ? dbLead.customer_name : (extractedCustomerName || finalCustomerName);
                                     
                                     const dbMessages = msgsData.data.map((m: any) => {
                                         const msgSenderId = String(m.from?.id || "");
@@ -503,12 +545,12 @@ Deno.serve(async (req) => {
                                         }
                                         return {
                                             id: crypto.randomUUID(),
-                                            lead_id: lead.id,
+                                            lead_id: dbLead.id,
                                             fb_message_id: m.id,
                                             sender_id: msgSenderId,
                                             sender_name: senderName,
                                             message_content: m.message || "",
-                                            sent_at: m.created_time,
+                                            sent_at: toVietnamTimestamp(m.created_time),
                                             is_from_customer: !isMsgFromPage
                                         };
                                     });
@@ -533,6 +575,7 @@ Deno.serve(async (req) => {
                                                 .reverse(); // Oldest first for context
                                             
                                             if (messagesForAnalysis.length > 0) {
+                                                console.log(`[FB-Webhook] Analyzing ${messagesForAnalysis.length} messages with Gemini...`);
                                                 const geminiResult = await analyzeWithGemini(geminiApiKey, messagesForAnalysis);
                                                 
                                                 if (geminiResult) {
@@ -540,17 +583,22 @@ Deno.serve(async (req) => {
                                                         .from("leads")
                                                         .update({ 
                                                             ai_analysis: geminiResult.analysis,
-                                                            is_potential: geminiResult.isPotential
+                                                            is_potential: geminiResult.isPotential,
+                                                            last_analysis_at: new Date().toISOString()
                                                         })
-                                                        .eq("id", lead.id);
+                                                        .eq("id", dbLead.id);
                                                     
                                                     if (!analysisErr) {
-                                                        console.log(`[FB-Webhook] Updated lead ${lead.id} with AI analysis, isPotential=${geminiResult.isPotential}`);
+                                                        console.log(`[FB-Webhook] Updated lead ${dbLead.id} with AI analysis, isPotential=${geminiResult.isPotential}`);
                                                     } else {
                                                         console.error(`[FB-Webhook] Failed to save AI analysis:`, analysisErr);
                                                     }
+                                                } else {
+                                                    console.warn(`[FB-Webhook] Gemini returned null result for lead ${dbLead.id}`);
                                                 }
                                             }
+                                        } else {
+                                            console.log(`[FB-Webhook] Skipping AI analysis: geminiApiKey=${!!geminiApiKey}, msgCount=${dbMessages.length}`);
                                         }
                                     } else {
                                         console.error(`[FB-Webhook] Crawl upsert error:`, crawlError);
