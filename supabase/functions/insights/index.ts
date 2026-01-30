@@ -47,15 +47,23 @@ async function verifyAuth(req: Request) {
         }
 
         // FALLBACK: JWT verification
+        // FALLBACK: JWT verification
         try {
-            console.log("DEBUG: JWT_SECRET length:", JWT_SECRET?.length || 0);
             const encoder = new TextEncoder();
             const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
             const payload = await verify(token, key);
+
+            // service_role tokens don't have a 'sub' but have 'role'
+            if (payload.role === "service_role") {
+                return { userId: 1 };
+            }
+
             const sub = payload.sub as string;
-            const userIdNum = parseInt(sub, 10);
-            if (!isNaN(userIdNum)) return { userId: userIdNum };
-            return { userId: sub as any };
+            if (sub) {
+                const userIdNum = parseInt(sub, 10);
+                if (!isNaN(userIdNum)) return { userId: userIdNum };
+                return { userId: sub as any };
+            }
         } catch (e: any) {
             console.log("Auth: JWT verify failed:", e.message);
         }

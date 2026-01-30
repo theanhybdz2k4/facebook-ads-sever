@@ -1,0 +1,48 @@
+Note: Unnecessary use of -X or --request, GET is already inferred.
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0* Host lncgmaxtqjfbcypncfoe.supabase.co:443 was resolved.
+* IPv6: (none)
+* IPv4: 172.64.149.246, 104.18.38.10
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0*   Trying 172.64.149.246:443...
+* schannel: disabled automatic use of client certificate
+* ALPN: curl offers http/1.1
+* ALPN: server accepted http/1.1
+* Established connection to lncgmaxtqjfbcypncfoe.supabase.co (172.64.149.246 port 443) from 192.168.1.130 port 58124 
+* using HTTP/1.x
+> GET /functions/v1/branches/stats/dashboard?userId=1&platformCode=facebook&branchId=all&dateStart=2026-01-01&dateEnd=2026-01-26 HTTP/1.1
+> Host: lncgmaxtqjfbcypncfoe.supabase.co
+> User-Agent: curl/8.16.0
+> Accept: */*
+> Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxuY2dtYXh0cWpmYmN5cG5jZm9lIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NzM0NzQxMywiZXhwIjoyMDgyOTIzNDEzfQ.zalV6mnyd1Iit0KbHnqLxemnBKFPbKz2159tkHtodJY
+> 
+* Request completely sent off
+* schannel: remote party requests renegotiation
+* schannel: renegotiating SSL/TLS connection
+* schannel: SSL/TLS connection renegotiated
+< HTTP/1.1 401 Unauthorized
+< Date: Fri, 30 Jan 2026 04:10:52 GMT
+< Content-Type: application/json
+< Transfer-Encoding: chunked
+< Connection: keep-alive
+< Server: cloudflare
+< CF-Ray: 9c5e1f3a9db70ee8-HKG
+< CF-Cache-Status: DYNAMIC
+< Access-Control-Allow-Origin: *
+< Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+< Vary: Accept-Encoding
+< X-Content-Type-Options: nosniff
+< access-control-allow-headers: Content-Type, Authorization, x-client-info, apikey
+< access-control-allow-methods: GET, POST, PUT, DELETE, OPTIONS
+< sb-gateway-version: 1
+< sb-project-ref: lncgmaxtqjfbcypncfoe
+< sb-request-id: 019c0d18-c0ae-77f0-b5b7-de9d60bbda39
+< x-deno-execution-id: e69f8824-1782-4694-80cc-0f6618c8c14b
+< x-sb-edge-region: ap-northeast-2
+< x-served-by: supabase-edge-runtime
+< Set-Cookie: __cf_bm=x_oOM2bjxyKx4S9F7C6q34f4gpEJR3EHCH_s_e6NKX8-1769746252-1.0.1.1-QNOu8kbMNknEnVXhWcr8o1vZvTyWJ1FQ8Z0uw3XHuxysXoeM0sIVrFELvDvxfE6ToH58hVQYf9eU0qtcRPXY1ev0f8mq_Jb3A85wO4bxJ8U; path=/; expires=Fri, 30-Jan-26 04:40:52 GMT; domain=.supabase.co; HttpOnly; Secure; SameSite=None
+< alt-svc: h3=":443"; ma=86400
+< 
+{ [294 bytes data]
+100   282    0   282    0     0    478      0 --:--:-- --:--:-- --:--:--   478{"success":false,"error":"Unauthorized","debug":{"hasJwtSecret":true,"hasServiceKey":true,"lengths":{"token":219,"serviceKeyEnv":41},"matches":{"serviceKey":false},"headers":{"auth":true,"authPrefix":"Bearer eyJhbGci","serviceKeyPrefix":"sb_secret_iWDUB","serviceKeyHeader":false}}}
+* Connection #0 to host lncgmaxtqjfbcypncfoe.supabase.co:443 left intact

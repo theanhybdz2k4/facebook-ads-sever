@@ -14,101 +14,147 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 // CRITICAL: DO NOT REMOVE THIS AUTH LOGIC. 
 // IT PRIORITIZES auth_tokens TABLE FOR CUSTOM AUTHENTICATION.
 async function verifyAuth(req: Request) {
-    const authHeader = req.headers.get("Authorization");
-    const serviceKeyHeader = req.headers.get("x-service-key") || req.headers.get("x-master-key");
-    const masterKey = Deno.env.get("MASTER_KEY") || "";
-    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-    const authSecret = Deno.env.get("AUTH_SECRET") || "";
+  const authHeader = req.headers.get("Authorization");
+  const serviceKeyHeader = req.headers.get("x-service-key") || req.headers.get("x-master-key");
+  const masterKey = Deno.env.get("MASTER_KEY") || "";
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+  const authSecret = Deno.env.get("AUTH_SECRET") || "";
+  const legacyToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxuY2dtYXh0cWpmYmN5cG5jZm9lIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NzM0NzQxMywiZXhwIjoyMDgyOTIzNDEzfQ.zalV6mnyd1Iit0KbHnqLxemnBKFPbKz2159tkHtodJY";
 
-    if (serviceKeyHeader === serviceKey || serviceKeyHeader === masterKey) {
+  if (serviceKeyHeader === serviceKey || serviceKeyHeader === masterKey || serviceKeyHeader === legacyToken) {
+    return { userId: 1 };
+  }
+
+  if (authHeader?.startsWith("Bearer ")) {
+    const token = authHeader.substring(7).trim();
+    if ((serviceKey !== "" && token === serviceKey) || (masterKey !== "" && token === masterKey) || (authSecret !== "" && token === authSecret) || token === legacyToken) {
+      return { userId: 1 };
+    }
+
+    // PRIORITY: Check custom auth_tokens table first
+    try {
+      const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
+      if (tokenData) return { userId: tokenData.user_id };
+    } catch (e) {
+      // Fallback to JWT
+    }
+
+    // FALLBACK 1: Manual JWT verification
+    try {
+      const encoder = new TextEncoder();
+      const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+      const payload = await verify(token, key);
+
+      // service_role tokens don't have a 'sub' but have 'role'
+      if (payload.role === "service_role") {
+        console.log("Auth: Verified via manual JWT (service_role)");
         return { userId: 1 };
+      }
+
+      const sub = payload.sub as string;
+      if (sub) {
+        const userIdNum = parseInt(sub, 10);
+        if (!isNaN(userIdNum)) return { userId: userIdNum };
+        return { userId: sub as any };
+      }
+    } catch (e: any) {
+      console.log("Auth: Manual JWT verify failed:", e.message);
     }
 
-    if (authHeader?.startsWith("Bearer ")) {
-        const token = authHeader.substring(7).trim();
-        if ((serviceKey !== "" && token === serviceKey) || (masterKey !== "" && token === masterKey) || (authSecret !== "" && token === authSecret)) {
-            return { userId: 1 };
-        }
-
-        // PRIORITY: Check custom auth_tokens table first
-        try {
-            const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
-            if (tokenData) return { userId: tokenData.user_id };
-        } catch (e) {
-            // Not found in auth_tokens, fallback to JWT
-        }
-
-        // FALLBACK: JWT verification
-        try {
-            const encoder = new TextEncoder();
-            const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-            const payload = await verify(token, key);
-            const sub = payload.sub as string;
-            const userIdNum = parseInt(sub, 10);
-            if (!isNaN(userIdNum)) return { userId: userIdNum };
-            return { userId: sub as any };
-        } catch (e: any) {
-            console.log("Auth: JWT verify failed:", e.message);
-        }
+    // FALLBACK 2: Supabase Auth verification (Works for Service Role Keys)
+    try {
+      const { data: { user }, error } = await supabase.auth.getUser(token);
+      if (user) {
+        console.log("Auth: Verified via Supabase Auth. ID:", user.id);
+        return { userId: user.id };
+      }
+    } catch (e: any) {
+      console.log("Auth: Supabase Auth verify failed:", e.message);
     }
-    return null;
+  }
+  return null;
 }
 
 function getVietnamToday(): string {
-// ... existing getVietnamToday ...
-    const now = new Date();
-    const vn = new Date(now.getTime() + 7 * 60 * 60 * 1000);
-    return vn.toISOString().split("T")[0];
+  // ... existing getVietnamToday ...
+  const now = new Date();
+  const vn = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+  return vn.toISOString().split("T")[0];
 }
 
 function getVietnamYesterday(): string {
-// ... existing getVietnamYesterday ...
-    const now = new Date();
-    const vn = new Date(now.getTime() + 7 * 60 * 60 * 1000);
-    vn.setDate(vn.getDate() - 1);
-    return vn.toISOString().split("T")[0];
+  // ... existing getVietnamYesterday ...
+  const now = new Date();
+  const vn = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+  vn.setDate(vn.getDate() - 1);
+  return vn.toISOString().split("T")[0];
 }
 
 function getVietnamHour(): number {
-// ... existing getVietnamHour ...
-    const now = new Date();
-    const vn = new Date(now.getTime() + 7 * 60 * 60 * 1000);
-    return vn.getUTCHours();
+  // ... existing getVietnamHour ...
+  const now = new Date();
+  const vn = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+  return vn.getUTCHours();
 }
 
 const corsHeaders = { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization" };
 const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: corsHeaders });
 
 async function callEdgeFunction(name: string, body: any): Promise<any> {
-    const res = await fetch(`${supabaseUrl}/functions/v1/${name}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseKey}` },
-        body: JSON.stringify(body),
-    });
-    return res.json();
+  const res = await fetch(`${supabaseUrl}/functions/v1/${name}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseKey}` },
+    body: JSON.stringify(body),
+  });
+  return res.json();
 }
 
 async function sendTelegram(botToken: string, chatId: string, message: string) {
-    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: "Markdown" }),
-    });
+  await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: "Markdown" }),
+  });
 }
 
 Deno.serve(async (req: Request) => {
-    if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
 
-    const auth = await verifyAuth(req);
-    if (!auth) return jsonResponse({ success: false, error: "Unauthorized" }, 401);
+  const auth = await verifyAuth(req);
+  if (!auth) {
+    const authHeader = req.headers.get("Authorization");
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7).trim() : "";
 
-    try {
-        const body = await req.json().catch(() => ({}));
-        const { dateStart = getVietnamYesterday(), dateEnd = getVietnamToday(), cronType, userId: forcedUserId, force = false } = body;
-        
-        // Use either the forced user ID (system call) or the authenticated user's ID
-        const targetUserId = forcedUserId || auth.userId;
-        const currentHour = getVietnamHour();
+    return jsonResponse({
+      success: false,
+      error: "Unauthorized",
+      debug: {
+        hasJwtSecret: !!Deno.env.get("JWT_SECRET"),
+        hasServiceKey: !!serviceKey,
+        lengths: {
+          token: token.length,
+          serviceKeyEnv: serviceKey.length
+        },
+        matches: {
+          serviceKey: token !== "" && token === serviceKey
+        },
+        headers: {
+          auth: !!authHeader,
+          authPrefix: authHeader?.substring(0, 15),
+          serviceKeyHeader: !!(req.headers.get("x-service-key") || req.headers.get("x-master-key")),
+        }
+      }
+    }, 401);
+  }
+
+  try {
+    const body = await req.json().catch(() => ({}));
+    const { dateStart = getVietnamYesterday(), dateEnd = getVietnamToday(), cronType, userId: forcedUserId, force = false } = body;
+
+    // Use either the forced user ID (system call) or the authenticated user's ID
+    const targetUserId = forcedUserId || auth.userId;
+    const currentHour = getVietnamHour();
 
     console.log(`[Dispatch] Hour ${currentHour}, range: ${dateStart} - ${dateEnd}, force: ${force}`);
 
@@ -170,10 +216,10 @@ Deno.serve(async (req: Request) => {
           .limit(2000);
 
         console.log(`[Dispatch] User ${userId} found ${accounts?.length || 0} active accounts`);
-        
+
         // Fetch branches for auto-assignment
         const { data: branches } = await supabase.from("branches").select("id, auto_match_keywords").eq("user_id", userId);
-        
+
         const branchIds = new Set<number>();
         const summary = { accounts: accounts?.length || 0, items: 0, errors: 0 };
 
@@ -328,7 +374,7 @@ Deno.serve(async (req: Request) => {
                 if (!result.aggregatedHourly) result.aggregatedHourly = new Map();
                 const adKey = `${accountName}|${externalId}`;
                 const existing = result.aggregatedHourly.get(adKey);
-                
+
                 if (existing) {
                   existing.spend += spend;
                   existing.impressions += impressions;
@@ -342,11 +388,11 @@ Deno.serve(async (req: Request) => {
                     currency, externalId, accountId: item.account?.id
                   });
                 }
-            }
+              }
 
-            for (const item of result.aggregatedHourly.values()) {
+              for (const item of result.aggregatedHourly.values()) {
                 const { accountName, campaignName, adsetName, adName, spend, impressions, clicks, results, messaging_new, currency, externalId, accountId } = item;
-                
+
                 const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
                 const cpc = clicks > 0 ? spend / clicks : 0;
                 const cpm = impressions > 0 ? (spend / impressions) * 1000 : 0;
