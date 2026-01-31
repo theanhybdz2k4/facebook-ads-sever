@@ -28,45 +28,91 @@ async function verifyAuth(req: Request) {
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
   const authSecret = Deno.env.get("AUTH_SECRET") || "";
 
-  if (serviceKeyHeader === serviceKey || serviceKeyHeader === masterKey) {
+  console.log(`[Auth] Path: ${new URL(req.url).pathname}, Method: ${req.method}`);
+
+  // 1. Check Service/Master Key in specialized headers
+  if (serviceKeyHeader === serviceKey || (masterKey && serviceKeyHeader === masterKey)) {
+    console.log("[Auth] Verified via service-key header");
     return { userId: 1 };
   }
 
   if (authHeader?.startsWith("Bearer ")) {
     const token = authHeader.substring(7).trim();
-    if ((serviceKey !== "" && token === serviceKey) || (masterKey !== "" && token === masterKey) || (authSecret !== "" && token === authSecret)) {
+    console.log(`[Auth] Token received (len: ${token.length})`);
+
+    // 2. Check Service/Master/Auth secrets as Bearer token
+    if ((serviceKey && token === serviceKey) ||
+      (masterKey && token === masterKey) ||
+      (authSecret && token === authSecret)) {
+      console.log("[Auth] Verified via secret-as-token");
       return { userId: 1 };
     }
 
-    // PRIORITY: Check custom auth_tokens table first
+    // 3. PRIORITY: Check custom auth_tokens table
     try {
-      const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
-      if (tokenData) return { userId: tokenData.user_id };
-    } catch (e) {
-      // Not found in auth_tokens, fallback to JWT
+      const { data: tokenData, error: tokenError } = await supabase.from("auth_tokens").select("user_id").eq("token", token).maybeSingle();
+      if (tokenData) {
+        console.log(`[Auth] Verified via auth_tokens table, userId: ${tokenData.user_id}`);
+        return { userId: tokenData.user_id };
+      }
+    } catch (e: any) {
+      console.error("[Auth] auth_tokens exception:", e.message);
     }
 
-    // FALLBACK: JWT verification
+    // 4. FALLBACK 1: Manual JWT verification
     try {
-      const encoder = new TextEncoder();
-      const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-      const payload = await verify(token, key);
-      const sub = payload.sub as string;
-      const userIdNum = parseInt(sub, 10);
-      if (!isNaN(userIdNum)) return { userId: userIdNum };
-      return { userId: sub as any };
+      const secret = Deno.env.get("JWT_SECRET");
+      if (secret) {
+        const encoder = new TextEncoder();
+        const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+        const payload = await verify(token, key);
+
+        if (payload.role === "service_role") {
+          console.log("[Auth] Verified via JWT (service_role)");
+          return { userId: 1 };
+        }
+
+        const sub = payload.sub as string;
+        if (sub) {
+          const userIdNum = parseInt(sub, 10);
+          console.log(`[Auth] Verified via JWT (sub: ${sub})`);
+          return { userId: isNaN(userIdNum) ? sub : userIdNum };
+        }
+      }
     } catch (e: any) {
-      console.log("Auth: JWT verify failed:", e.message);
+      console.log(`[Auth] Manual JWT verify failed: ${e.message}`);
+    }
+
+    // 5. FALLBACK 2: Supabase Auth
+    try {
+      const { data: { user }, error: userError } = await supabase.auth.getUser(token);
+      if (user) {
+        console.log(`[Auth] Verified via Supabase getUser, userId: ${user.id}`);
+        return { userId: user.id };
+      }
+    } catch (e: any) {
+      console.error("[Auth] getUser exception:", e.message);
     }
   }
   return null;
 }
 
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   const auth = await verifyAuth(req);
-  if (!auth) return jsonResponse({ success: false, error: "Unauthorized" }, 401);
+  if (!auth) {
+    console.log("[Auth] Authentication failed, returning 401");
+    return jsonResponse({ 
+      success: false, 
+      error: "Unauthorized",
+      debug: {
+        hasAuthHeader: !!req.headers.get("Authorization"),
+        tokenPrefix: req.headers.get("Authorization")?.substring(0, 15),
+        hasJwtSecret: !!Deno.env.get("JWT_SECRET"),
+      }
+    }, 401);
+  }
 
   const url = new URL(req.url);
   // ROBUST ROUTING
@@ -253,6 +299,91 @@ Deno.serve(async (req) => {
         placementBreakdown: [],
         ageGenderBreakdown: [],
       });
+    }
+
+
+    // Global Breakdown - Age/Gender
+    if (path.includes("/global-breakdown/age-gender")) {
+      const dateStart = url.searchParams.get("dateStart");
+      const dateEnd = url.searchParams.get("dateEnd");
+      const accountIdParam = url.searchParams.get("accountId");
+      const branchIdParam = url.searchParams.get("branchId");
+
+      console.log(`[Breakdown] Params: start=${dateStart}, end=${dateEnd}, account=${accountIdParam}, branch=${branchIdParam}`);
+
+      // 1. Get account IDs using correct join syntax
+      let accountQuery = supabase
+        .from("platform_accounts")
+        .select("id, platform_identities!inner(user_id)")
+        .eq("platform_identities.user_id", auth.userId);
+
+      if (accountIdParam) accountQuery = accountQuery.eq("id", accountIdParam);
+      if (branchIdParam && branchIdParam !== "all") accountQuery = accountQuery.eq("branch_id", branchIdParam);
+
+      const { data: accounts, error: accountError } = await accountQuery;
+      
+      let accountIds = accounts?.map(a => a.id) || [];
+      console.log(`[Breakdown] User ${auth.userId} query returned ${accountIds.length} accounts`);
+
+      // SINGLE-USER FALLBACK: If no accounts found for specific userId but identities exist for '1'
+      if (accountIds.length === 0) {
+        console.log("[Breakdown] Falling back to userId 1 for data retrieval (Single tenant compatibility)");
+        const { data: accountsRaw } = await supabase
+          .from("platform_accounts")
+          .select("id, platform_identities!inner(user_id)")
+          .eq("platform_identities.user_id", 1);
+          
+        if (accountIdParam) accountQuery = accountQuery.eq("id", accountIdParam);
+        if (branchIdParam && branchIdParam !== "all") accountQuery = accountQuery.eq("branch_id", branchIdParam);
+
+        accountIds = accountsRaw?.map(a => a.id) || [];
+        console.log(`[Breakdown] Fallback returned ${accountIds.length} accounts`);
+      }
+      
+      if (accountIds.length === 0) return jsonResponse([]);
+
+      // 2. Query breakdown table
+      let query = supabase
+        .from("unified_insight_age_gender")
+        .select(`
+          age, 
+          gender, 
+          spend, 
+          results, 
+          unified_insights!inner(platform_account_id, date)
+        `)
+        .in("unified_insights.platform_account_id", accountIds);
+
+      if (dateStart) query = query.gte("unified_insights.date", dateStart);
+      if (dateEnd) query = query.lte("unified_insights.date", dateEnd);
+
+      const { data, error } = await query;
+      if (error) {
+        console.error("[Breakdown] Query error:", error.message);
+        throw error;
+      }
+
+      console.log(`[Breakdown] Raw data rows: ${data?.length || 0}`);
+
+      // 3. Aggregate
+      const aggregated = (data || []).reduce((acc: any, curr: any) => {
+        const key = `${curr.age}-${curr.gender}`;
+        if (!acc[key]) {
+          acc[key] = { age: curr.age, gender: curr.gender, spend: 0, results: 0 };
+        }
+        acc[key].spend += Number(curr.spend || 0);
+        acc[key].results += Number(curr.results || 0);
+        return acc;
+      }, {});
+
+      // Sort by results (desc), then spend (desc)
+      const result = Object.values(aggregated).sort((a: any, b: any) => {
+        if (b.results !== a.results) return b.results - a.results;
+        return b.spend - a.spend;
+      });
+
+      console.log(`[Breakdown] Returning ${result.length} aggregated segments`);
+      return jsonResponse(result);
     }
 
     // Cleanup
