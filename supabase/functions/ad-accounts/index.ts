@@ -28,35 +28,55 @@ async function verifyAuth(req: Request) {
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
     const authSecret = Deno.env.get("AUTH_SECRET") || "";
 
-    if (serviceKeyHeader === serviceKey || serviceKeyHeader === masterKey) {
+    // 1. Check Service/Master Key in specialized headers
+    if (serviceKeyHeader === serviceKey || (masterKey && serviceKeyHeader === masterKey)) {
         return { userId: 1 };
     }
 
     if (authHeader?.startsWith("Bearer ")) {
         const token = authHeader.substring(7).trim();
-        if ((serviceKey !== "" && token === serviceKey) || (masterKey !== "" && token === masterKey) || (authSecret !== "" && token === authSecret)) {
+
+        // 2. Check Service/Master/Auth secrets as Bearer token
+        if ((serviceKey && token === serviceKey) ||
+            (masterKey && token === masterKey) ||
+            (authSecret && token === authSecret)) {
             return { userId: 1 };
         }
 
-        // PRIORITY: Check custom auth_tokens table first
+        // 3. PRIORITY: Check custom auth_tokens table
         try {
-            const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
+            const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).maybeSingle();
             if (tokenData) return { userId: tokenData.user_id };
         } catch (e) {
-            // Not found in auth_tokens, fallback to JWT
+            // Fallback
         }
 
-        // FALLBACK: JWT verification
+        // 4. FALLBACK 1: Manual JWT verification
         try {
-            const encoder = new TextEncoder();
-            const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-            const payload = await verify(token, key);
-            const sub = payload.sub as string;
-            const userIdNum = parseInt(sub, 10);
-            if (!isNaN(userIdNum)) return { userId: userIdNum };
-            return { userId: sub as any };
-        } catch (e: any) {
-            console.log("Auth: JWT verify failed:", e.message);
+            const secret = Deno.env.get("JWT_SECRET");
+            if (secret) {
+                const encoder = new TextEncoder();
+                const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+                const payload = await verify(token, key);
+
+                if (payload.role === "service_role") return { userId: 1 };
+
+                const sub = payload.sub as string;
+                if (sub) {
+                    const userIdNum = parseInt(sub, 10);
+                    return { userId: isNaN(userIdNum) ? sub : userIdNum };
+                }
+            }
+        } catch (e) {
+            // Fallback
+        }
+
+        // 5. FALLBACK 2: Supabase Auth (for valid Supabase JWTs)
+        try {
+            const { data: { user } } = await supabase.auth.getUser(token);
+            if (user) return { userId: user.id };
+        } catch (e) {
+            // Final fail
         }
     }
     return null;

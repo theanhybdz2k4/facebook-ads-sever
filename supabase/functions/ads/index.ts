@@ -135,7 +135,7 @@ Deno.serve(async (req: Request) => {
                 .from("unified_ads")
                 .select(`
                     id, name, status, effective_status, external_id, start_time, end_time, synced_at, unified_ad_group_id, platform_account_id,
-                    platform_accounts!inner(id, branch_id, platform_identity_id),
+                    platform_accounts!inner(id, branch_id, synced_at, platform_identity_id),
                     unified_ad_creatives(thumbnail_url, image_url),
                     unified_insights(spend, impressions, clicks, results, date)
                 `)
@@ -188,6 +188,10 @@ Deno.serve(async (req: Request) => {
                     status: a.status,
                     effectiveStatus: a.effective_status,
                     accountId: a.platform_account_id,
+                    account: {
+                        id: a.platform_accounts.id,
+                        syncedAt: a.platform_accounts.synced_at
+                    },
                     thumbnailUrl: creative?.thumbnail_url || creative?.image_url || null,
                     startTime: a.start_time,
                     endTime: a.end_time,

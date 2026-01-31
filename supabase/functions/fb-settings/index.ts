@@ -31,44 +31,64 @@ async function getKey(): Promise<CryptoKey> {
 // CRITICAL: DO NOT REMOVE THIS AUTH LOGIC. 
 // IT PRIORITIZES auth_tokens TABLE FOR CUSTOM AUTHENTICATION.
 async function verifyAuth(req: Request) {
-    const authHeader = req.headers.get("Authorization");
-    const serviceKeyHeader = req.headers.get("x-service-key") || req.headers.get("x-master-key");
-    const masterKey = Deno.env.get("MASTER_KEY") || "";
-    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-    const authSecret = Deno.env.get("AUTH_SECRET") || "";
+  const authHeader = req.headers.get("Authorization");
+  const serviceKeyHeader = req.headers.get("x-service-key") || req.headers.get("x-master-key");
+  const masterKey = Deno.env.get("MASTER_KEY") || "";
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+  const authSecret = Deno.env.get("AUTH_SECRET") || "";
 
-    if (serviceKeyHeader === serviceKey || serviceKeyHeader === masterKey) {
-        return { userId: 1 };
+  // 1. Check Service/Master Key in specialized headers
+  if (serviceKeyHeader === serviceKey || (masterKey && serviceKeyHeader === masterKey)) {
+    return { userId: 1 };
+  }
+
+  if (authHeader?.startsWith("Bearer ")) {
+    const token = authHeader.substring(7).trim();
+
+    // 2. Check Service/Master/Auth secrets as Bearer token
+    if ((serviceKey && token === serviceKey) ||
+      (masterKey && token === masterKey) ||
+      (authSecret && token === authSecret)) {
+      return { userId: 1 };
     }
 
-    if (authHeader?.startsWith("Bearer ")) {
-        const token = authHeader.substring(7).trim();
-        if ((serviceKey !== "" && token === serviceKey) || (masterKey !== "" && token === masterKey) || (authSecret !== "" && token === authSecret)) {
-            return { userId: 1 };
-        }
-
-        // PRIORITY: Check custom auth_tokens table first
-        try {
-            const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
-            if (tokenData) return { userId: tokenData.user_id };
-        } catch (e) {
-            // Not found in auth_tokens, fallback to JWT
-        }
-
-        // FALLBACK: JWT verification
-        try {
-            const encoder = new TextEncoder();
-            const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-            const payload = await verify(token, key);
-            const sub = payload.sub as string;
-            const userIdNum = parseInt(sub, 10);
-            if (!isNaN(userIdNum)) return { userId: userIdNum };
-            return { userId: sub as any };
-        } catch (e: any) {
-            console.log("Auth: JWT verify failed:", e.message);
-        }
+    // 3. PRIORITY: Check custom auth_tokens table
+    try {
+      const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).maybeSingle();
+      if (tokenData) return { userId: tokenData.user_id };
+    } catch (e) {
+      // Fallback
     }
-    return null;
+
+    // 4. FALLBACK 1: Manual JWT verification
+    try {
+      const secret = Deno.env.get("JWT_SECRET");
+      if (secret) {
+        const encoder = new TextEncoder();
+        const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+        const payload = await verify(token, key);
+
+        if (payload.role === "service_role") return { userId: 1 };
+
+        const sub = payload.sub as string;
+        if (sub) {
+          const userIdNum = parseInt(sub, 10);
+          return { userId: isNaN(userIdNum) ? sub : userIdNum };
+        }
+      }
+    } catch (e) {
+      // Fallback
+    }
+
+    // 5. FALLBACK 2: Supabase Auth (for valid Supabase JWTs)
+    try {
+      const { data: { user } } = await supabase.auth.getUser(token);
+      if (user) return { userId: user.id };
+    } catch (e) {
+      // Final fail
+    }
+  }
+  return null;
 }
 
 Deno.serve(async (req: Request) => {
@@ -120,6 +140,33 @@ Deno.serve(async (req: Request) => {
         result: {
           settings: mappedSettings,
           adAccountCount: accountCount
+        }
+      });
+    }
+
+    // --- GET /cookie - Get current crawler cookie status ---
+    if (req.method === "GET" && url.pathname.endsWith('/cookie')) {
+      const { data: credential } = await supabase
+        .from("platform_credentials")
+        .select("credential_value, updated_at")
+        .eq("credential_type", "fb_crawler_cookie")
+        .eq("is_active", true)
+        .limit(1)
+        .maybeSingle();
+
+      if (!credential) {
+        return jsonResponse({ result: { hasCookie: false } });
+      }
+
+      // Return a masked version for safety
+      const val = credential.credential_value || "";
+      const masked = val.length > 20 ? `${val.substring(0, 10)}...${val.substring(val.length - 10)}` : "***";
+
+      return jsonResponse({
+        result: {
+          hasCookie: true,
+          updatedAt: credential.updated_at,
+          maskedValue: masked
         }
       });
     }
@@ -182,18 +229,18 @@ Deno.serve(async (req: Request) => {
     if (req.method === "POST" && url.pathname.endsWith('/trigger')) {
       const body = await req.json();
       const { cronType } = body;
-      
+
       if (!cronType) return jsonResponse({ error: "Missing cronType" }, 400);
-      
+
       // Call fb-dispatch directly with the user's cron type
       try {
         const dispatchRes = await fetch(`${supabaseUrl}/functions/v1/fb-dispatch`, {
           method: "POST",
-          headers: { 
+          headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${supabaseKey}` 
+            "Authorization": `Bearer ${supabaseKey}`
           },
-          body: JSON.stringify({ 
+          body: JSON.stringify({
             cronType,
             userId,
             force: true, // Bypass hour check for manual trigger
@@ -202,13 +249,68 @@ Deno.serve(async (req: Request) => {
             dateEnd: new Date().toISOString().split('T')[0]
           })
         });
-        
+
         const dispatchData = await dispatchRes.json();
         return jsonResponse({ success: true, data: dispatchData });
       } catch (e: any) {
         return jsonResponse({ success: false, error: e.message }, 500);
       }
     }
+
+    // --- POST /cookie - Update crawler cookie ---
+    if (req.method === "POST" && url.pathname.endsWith('/cookie')) {
+      const body = await req.json();
+      const { cookie } = body;
+
+      if (!cookie) return jsonResponse({ error: "Missing cookie value" }, 400);
+
+      // Validate cookie briefly (should contain c_user and xs)
+      if (!cookie.includes('c_user=') || !cookie.includes('xs=')) {
+        return jsonResponse({ error: "Invalid cookie format. Must contain c_user and xs." }, 400);
+      }
+
+      // 1. Deactivate old cookies
+      await supabase.from("platform_credentials")
+        .update({ is_active: false })
+        .eq("credential_type", "fb_crawler_cookie");
+
+      // 2. Identify the identity record to link to
+      // Ensure userId is handled correctly for querying
+      const cleanUserId = typeof userId === 'string' ? parseInt(userId, 10) : userId;
+
+      let identityId = 7; // Default fallback
+      if (!isNaN(cleanUserId)) {
+        const { data: ident } = await supabase.from("platform_identities")
+          .select("id")
+          .eq("user_id", cleanUserId)
+          .limit(1)
+          .maybeSingle();
+
+        if (ident) identityId = ident.id;
+      }
+
+      // 3. Upsert the cookie to avoid unique constraint violations
+      const { data, error } = await supabase.from("platform_credentials")
+        .upsert({
+          platform_identity_id: identityId,
+          credential_type: "fb_crawler_cookie",
+          credential_value: cookie,
+          is_active: true,
+          updated_at: new Date().toISOString()
+        }, {
+          onConflict: 'platform_identity_id,credential_type'
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.error("Cookie Upsert Error:", error);
+        throw error;
+      }
+
+      return jsonResponse({ success: true, result: { updatedAt: data.updated_at } });
+    }
+
 
     // --- POST / (Upsert) ---
     if (req.method === "POST") {

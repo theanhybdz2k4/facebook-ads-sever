@@ -91,7 +91,7 @@ Deno.serve(async (req) => {
                 .from("unified_ad_groups")
                 .select(`
                     id, external_id, name, status, effective_status, daily_budget, start_time, end_time, synced_at, unified_campaign_id,
-                    unified_campaigns!inner(id, name, platform_account_id, platform_accounts!inner(id, branch_id, platform_identities!inner(user_id))),
+                    unified_campaigns!inner(id, name, platform_account_id, platform_accounts!inner(id, branch_id, synced_at, platform_identities!inner(user_id))),
                     unified_insights(spend, impressions, clicks, results, date)
                 `)
                 .eq("unified_campaigns.platform_accounts.platform_identities.user_id", auth.userId);
@@ -138,7 +138,14 @@ Deno.serve(async (req) => {
                     endTime: s.end_time,
                     syncedAt: s.synced_at,
                     accountId: s.unified_campaigns.platform_account_id,
-                    campaign: { id: s.unified_campaigns.id, name: s.unified_campaigns.name },
+                    campaign: {
+                        id: s.unified_campaigns.id,
+                        name: s.unified_campaigns.name,
+                        account: {
+                            id: s.unified_campaigns.platform_accounts.id,
+                            syncedAt: s.unified_campaigns.platform_accounts.synced_at
+                        }
+                    },
                     stats: stats
                 };
             });

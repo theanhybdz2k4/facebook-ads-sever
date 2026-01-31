@@ -109,7 +109,7 @@ Deno.serve(async (req) => {
     const relevantSegments = branchesIndex !== -1 ? segments.slice(branchesIndex + 1) : segments;
     const path = "/" + relevantSegments.join("/");
 
-    console.log(`[Branches] Request: ${method} ${url.pathname} -> Path: ${path}`);
+    console.log("[Branches] Request: " + method + " " + url.pathname + " -> Path: " + path);
 
     try {
         const auth = await verifyAuth(req);
@@ -251,21 +251,24 @@ Deno.serve(async (req) => {
                 results.push(b.id);
             }
 
-            return jsonResponse({ success: true, message: `Rebuilt stats for ${branches.length} branches`, branches: results, dates: 30 });
+            return jsonResponse({ success: true, message: "Rebuilt stats for " + branches.length + " branches", branches: results, dates: 30 });
         }
 
         if (path.includes("/stats/recalculate") && method === "POST") {
-            const dateStart = url.searchParams.get("dateStart") || getVietnamYesterday();
-            const dateEnd = url.searchParams.get("dateEnd") || getVietnamToday();
+            let body: any = {};
+            try { body = await req.json(); } catch (e) { /* ignore */ }
+
+            const dateStart = url.searchParams.get("dateStart") || body.dateStart || getVietnamYesterday();
+            const dateEnd = url.searchParams.get("dateEnd") || body.dateEnd || getVietnamToday();
 
             // Extract id from path: /123/stats/recalculate
-            const idMatch = path.match(/^\/(\d+)\//);
+            const idMatch = path.match(/\/(\d+)\//);
             const bId = idMatch ? parseInt(idMatch[1]) : null;
 
             if (!bId) return jsonResponse({ success: false, error: "Missing branchId" }, 400);
 
             await aggregateBranchStats(bId, dateStart, dateEnd);
-            return jsonResponse({ success: true, message: `Recalculated stats for branch ${bId}` });
+            return jsonResponse({ success: true, message: "Recalculated stats for branch " + bId, dates: { dateStart, dateEnd } });
         }
 
         // --- CRUD / LIST ---
@@ -315,13 +318,12 @@ Deno.serve(async (req) => {
 
         return jsonResponse({ success: false, error: "Not Found", path }, 404);
     } catch (error: any) {
-        console.error(`[Branches] Final Catch Error:`, error);
         return jsonResponse({ success: false, error: error.message }, 500);
     }
 });
 
 async function aggregateBranchStats(branch_id: number, dateStart: string, dateEnd: string) {
-    console.log(`[Branches] RPC recalculate_branch_daily_stats for branch ${branch_id} (${dateStart} to ${dateEnd})`);
+    console.log("[Branches] RPC recalculate_branch_daily_stats for branch " + branch_id + " (" + dateStart + " to " + dateEnd + ")");
     const { error } = await supabase.rpc('recalculate_branch_daily_stats', { p_branch_id: branch_id, p_date_start: dateStart, p_date_end: dateEnd });
     if (error) {
         console.error(`[Branches] RPC Error:`, error);

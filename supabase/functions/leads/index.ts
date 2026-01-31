@@ -532,6 +532,114 @@ Deno.serve(async (req) => {
 
 
 
+        // POST /leads/:id/sync_messages
+        if (method === "POST" && subPathSegments.length === 2 && subPathSegments[1] === "sync_messages") {
+            const leadId = subPathSegments[0];
+            const FB_BASE_URL = "https://graph.facebook.com/v24.0";
+            
+            // 1. Get Lead Info
+            const { data: lead } = await supabase
+                .from("leads")
+                .select("id, external_id, fb_page_id, platform_accounts!inner(platform_identities!inner(user_id))")
+                .eq("id", leadId)
+                .eq("platform_accounts.platform_identities.user_id", userId)
+                .single();
+
+            if (!lead) return jsonResponse({ success: false, error: "Lead not found or unauthorized" }, 404);
+
+            // 2. Get User Token
+            const { data: identity } = await supabase
+                .from("platform_identities")
+                .select("id")
+                .eq("user_id", userId)
+                .limit(1)
+                .single();
+
+            if (!identity) return jsonResponse({ success: false, error: "No identity found" }, 404);
+
+            const { data: creds } = await supabase
+                .from("platform_credentials")
+                .select("credential_value")
+                .eq("is_active", true)
+                .eq("platform_identity_id", identity.id)
+                .limit(1)
+                .single();
+            
+            if (!creds) return jsonResponse({ success: false, error: "No active FB token found" }, 404);
+            const userToken = creds.credential_value;
+
+            // 3. Get Page Token
+            const pageId = lead.fb_page_id;
+            const pageRes = await fetch(`${FB_BASE_URL}/${pageId}?fields=access_token&access_token=${userToken}`);
+            const pageData = await pageRes.json();
+            
+            if (!pageData.access_token) return jsonResponse({ success: false, error: "Failed to get page token" }, 400);
+            const pageToken = pageData.access_token;
+            
+            // 4. Find Conversation
+            const convsRes = await fetch(`${FB_BASE_URL}/${pageId}/conversations?fields=id,participants&limit=100&access_token=${pageToken}`);
+            const convsData = await convsRes.json();
+            const conversations = convsData.data || [];
+            
+            const targetConv = conversations.find((c: any) => 
+                c.participants?.data?.some((p: any) => p.id === lead.external_id)
+            );
+
+            if (!targetConv) return jsonResponse({ success: false, error: "Conversation not found in recent list (Top 100)" }, 404);
+            
+            // 5. Fetch Messages
+            const msgsRes = await fetch(`${FB_BASE_URL}/${targetConv.id}/messages?fields=id,message,from,created_time,attachments,sticker&limit=100&access_token=${pageToken}`);
+            const msgsData = await msgsRes.json();
+            
+            if (!msgsData.data) return jsonResponse({ success: false, error: "No messages found" }, 400);
+
+            // 6. Upsert Messages
+            const msgsToUpsert = msgsData.data.map((m: any) => {
+                const msgSenderId = String(m.from?.id || "");
+                const isMsgFromPage = msgSenderId === String(pageId);
+
+                // Helper to match sync logic (Timezone +7)
+                const toVietnamTimestamp = (timestamp: string) => {
+                    const date = new Date(timestamp);
+                    const vnTime = new Date(date.getTime() + 7 * 60 * 60 * 1000);
+                    return vnTime.toISOString().slice(0, 19).replace('T', ' ');
+                }
+
+                let content = m.message || "";
+                if (!content && m.attachments?.data) content = "[Attachment]";
+                if (!content && m.sticker) content = "[Sticker]";
+                if (!content) content = "[Media]";
+
+                return {
+                    id: crypto.randomUUID(), // New ID, handled by onConflict
+                    lead_id: lead.id,
+                    fb_message_id: m.id,
+                    sender_id: msgSenderId,
+                    sender_name: m.from?.name || (isMsgFromPage ? "Page" : "Customer"),
+                    message_content: content,
+                    attachments: m.attachments?.data || null,
+                    sticker: m.sticker || null,
+                    shares: m.shares?.data || null,
+                    sent_at: toVietnamTimestamp(m.created_time),
+                    is_from_customer: !isMsgFromPage
+                };
+            });
+
+            const { error: upsertError, count } = await supabase.from("lead_messages").upsert(msgsToUpsert, { onConflict: "fb_message_id" }).select("id", { count: 'exact' });
+
+            if (upsertError) return jsonResponse({ success: false, error: upsertError.message }, 500);
+
+            // Also update lead last_message_at if needed
+             if (msgsToUpsert.length > 0) {
+                 const latestMsg = msgsToUpsert[0]; // First one is newest usually
+                 await supabase.from("leads").update({ 
+                     last_message_at: latestMsg.sent_at 
+                 }).eq("id", lead.id);
+             }
+
+            return jsonResponse({ success: true, count: count || msgsToUpsert.length });
+        }
+
         return jsonResponse({ success: false, error: "Not Found" }, 404);
     } catch (error: any) {
         return jsonResponse({ success: false, error: error.message }, 500);

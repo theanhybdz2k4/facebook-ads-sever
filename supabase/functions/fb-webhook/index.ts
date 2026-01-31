@@ -1,6 +1,8 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.0";
+import { resolveAvatarWithCrawler } from "../_shared/fb_crawler.ts";
+
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
@@ -35,33 +37,26 @@ async function analyzeWithGemini(apiKey: string, messages: Array<{sender: string
     try {
         // Format conversation for analysis
         const conversationText = messages.map(m => 
-            `${m.isFromCustomer ? '👤 Khách hàng' : '📄 Page'}: ${m.content}`
+            (m.isFromCustomer ? '👤 Khách hàng' : '📄 Page') + ': ' + m.content
         ).join('\n');
 
-const prompt = `Bạn là chuyên gia phân tích hội thoại bán hàng. Hãy phân tích cuộc hội thoại sau và trả lời theo đúng format này:
+const prompt = "Bạn là chuyên gia phân tích hội thoại bán hàng. Hãy phân tích cuộc hội thoại sau và trả lời theo đúng format này:\n\n" +
+"Đánh giá: [TIỀM NĂNG hoặc KHÔNG TIỀM NĂNG]\n" +
+"(Tiềm năng = khách hỏi chi tiết về khóa học/sản phẩm, hẹn đóng tiền, quan tâm ưu đãi, hỏi lịch học, để lại SĐT hoặc có dấu hiệu muốn mua hàng)\n" +
+"(Không tiềm năng = chỉ hỏi qua loa rồi im lặng, từ chối rõ ràng, hoặc chỉ là tin nhắn rác/spam)\n\n" +
+"Tóm tắt: [Nội dung chính của cuộc hội thoại, 1-2 câu ngắn gọn]\n\n" +
+"Nhu cầu khách hàng: [Khách đang thực sự muốn giải quyết vấn đề gì?]\n\n" +
+"Mức độ quan tâm: [Cao / Trung bình / Thấp. Giải thích ngắn nhất có thể]\n\n" +
+"Gợi ý follow-up:\n" +
+"[Liệt kê các bước nên làm tiếp theo, mỗi bước một dòng]\n\n" +
+"---\n" +
+conversationText + "\n" +
+"---\n\n" +
+"Trả lời bằng tiếng Việt, cực kỳ súc tích. QUAN TRỌNG: Dòng đầu tiên PHẢI là \"Đánh giá: TIỀM NĂNG\" hoặc \"Đánh giá: KHÔNG TIỀM NĂNG\"";
 
-Đánh giá: [TIỀM NĂNG hoặc KHÔNG TIỀM NĂNG]
-(Tiềm năng = khách hỏi chi tiết về khóa học/sản phẩm, hẹn đóng tiền, quan tâm ưu đãi, hỏi lịch học, để lại SĐT hoặc có dấu hiệu muốn mua hàng)
-(Không tiềm năng = chỉ hỏi qua loa rồi im lặng, từ chối rõ ràng, hoặc chỉ là tin nhắn rác/spam)
-
-Tóm tắt: [Nội dung chính của cuộc hội thoại, 1-2 câu ngắn gọn]
-
-Nhu cầu khách hàng: [Khách đang thực sự muốn giải quyết vấn đề gì?]
-
-Mức độ quan tâm: [Cao / Trung bình / Thấp. Giải thích ngắn nhất có thể]
-
-Gợi ý follow-up:
-[Liệt kê các bước nên làm tiếp theo, mỗi bước một dòng]
-
----
-${conversationText}
----
-
-Trả lời bằng tiếng Việt, cực kỳ súc tích. QUAN TRỌNG: Dòng đầu tiên PHẢI là "Đánh giá: TIỀM NĂNG" hoặc "Đánh giá: KHÔNG TIỀM NĂNG"`;
-
-        console.log(`[FB-Webhook] Calling Gemini API to analyze ${messages.length} messages...`);
+        console.log("[FB-Webhook] Calling Gemini API to analyze " + messages.length + " messages...");
         
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+        const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + apiKey, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -72,13 +67,13 @@ Trả lời bằng tiếng Việt, cực kỳ súc tích. QUAN TRỌNG: Dòng đ
         const data = await response.json();
         
         if (data.error) {
-            console.error(`[FB-Webhook] Gemini API error: ${data.error.message}`);
+            console.error("[FB-Webhook] Gemini API error: " + data.error.message);
             return null;
         }
         
         const analysis = data.candidates?.[0]?.content?.parts?.[0]?.text || null;
         if (analysis) {
-            console.log(`[FB-Webhook] Gemini analysis received: ${analysis.substring(0, 100)}...`);
+            console.log("[FB-Webhook] Gemini analysis received: " + analysis.substring(0, 100) + "...");
             
             // Parse isPotential from analysis and strip the evaluation line
             const lines = analysis.split('\n');
@@ -87,13 +82,13 @@ Trả lời bằng tiếng Việt, cực kỳ súc tích. QUAN TRỌNG: Dòng đ
             
             // Remove the evaluation line (the first line typically starts with "Đánh giá:")
             const cleanedAnalysis = lines.slice(1).join('\n').trim();
-            console.log(`[FB-Webhook] Lead classification: isPotential = ${isPotential}`);
+            console.log("[FB-Webhook] Lead classification: isPotential = " + isPotential);
             
             return { analysis: cleanedAnalysis, isPotential };
         }
         return null;
     } catch (e: any) {
-        console.error(`[FB-Webhook] Gemini API call failed: ${e.message}`);
+        console.error("[FB-Webhook] Gemini API call failed: " + e.message);
         return null;
     }
 }
@@ -114,14 +109,14 @@ Deno.serve(async (req) => {
         const token = url.searchParams.get("hub.verify_token");
         const challenge = url.searchParams.get("hub.challenge");
 
-        console.log(`[FB-Webhook] Verification attempt: mode=${mode}, token=${token}, expected=${VERIFY_TOKEN}`);
+        console.log("[FB-Webhook] Verification attempt: mode=" + mode + ", token=" + token + ", expected=" + VERIFY_TOKEN);
 
         if (mode === "subscribe" && token === VERIFY_TOKEN) {
             console.log("[FB-Webhook] Verification successful!");
             return new Response(challenge, { status: 200 });
         }
 
-        console.error(`[FB-Webhook] Verification failed! Got token "${token}", expected "${VERIFY_TOKEN}"`);
+        console.error("[FB-Webhook] Verification failed! Got token \"" + token + "\", expected \"" + VERIFY_TOKEN + "\"");
         return new Response("Forbidden", { status: 403 });
     }
 
@@ -132,7 +127,7 @@ Deno.serve(async (req) => {
             console.log("[FB-Webhook] Received webhook event body:", JSON.stringify(body, null, 2));
 
             if (body.object !== "page") {
-                console.log(`[FB-Webhook] Ignored non-page object: ${body.object}`);
+                console.log("[FB-Webhook] Ignored non-page object: " + body.object);
                 return jsonResponse({ status: "ignored", reason: "not a page event" });
             }
 
@@ -156,7 +151,7 @@ Deno.serve(async (req) => {
                 };
             }
 
-            console.log(`[FB-Webhook] Authorized pages (from cache): ${Object.keys(authorizedPages).join(", ")}`);
+            console.log("[FB-Webhook] Authorized pages (from cache): " + Object.keys(authorizedPages).join(", "));
 
             // Get default account IDs to map pages to accounts
             const { data: accountsData } = await supabase
@@ -194,17 +189,19 @@ Deno.serve(async (req) => {
                 // *** SECURITY CHECK: Only process if page is authorized ***
                 const pageAuth = authorizedPages[pageId];
                 if (!pageAuth) {
-                    console.warn(`[FB-Webhook] REJECTED: Page ${pageId} is not authorized in our system. Authorized pages are: ${Object.keys(authorizedPages).join(", ")}`);
+                    console.warn("[FB-Webhook] REJECTED: Page " + pageId + " is not authorized in our system. Authorized pages are: " + Object.keys(authorizedPages).join(", "));
                     pagesSkipped++;
                     continue;
                 }
 
-                console.log(`[FB-Webhook] ACCEPTED: Page ${pageId} (${pageAuth.name}) with cached token`);
+                console.log("[FB-Webhook] ACCEPTED: Page " + pageId + " (" + pageAuth.name + ") with cached token");
 
                 const pageToken = pageAuth.token;
                 
-                // STABLE ACCOUNT MAPPING: Try to find which account this page belongs to based on existing leads
+                // STABLE ACCOUNT MAPPING: Try to find which account this page belongs to
                 let accountId = defaultAccountId;
+                
+                // 1. Try mapping via existing leads for this page
                 const { data: pageLeadSample } = await supabase
                     .from("leads")
                     .select("platform_account_id")
@@ -214,9 +211,18 @@ Deno.serve(async (req) => {
                 
                 if (pageLeadSample?.platform_account_id) {
                     accountId = pageLeadSample.platform_account_id;
-                    console.log(`[FB-Webhook] Using stable accountId ${accountId} for Page ${pageId}`);
+                    console.log("[FB-Webhook] Using stable accountId " + accountId + " (found via existing leads) for Page " + pageId);
                 } else {
-                    console.log(`[FB-Webhook] No existing leads for Page ${pageId}, using default accountId ${accountId}`);
+                    // 2. Try mapping via unified_ad_creatives (stronger mapping than default)
+                    const { data: creativeSample } = await supabase
+                        .rpc('get_account_id_from_page_id', { p_page_id: pageId });
+                    
+                    if (creativeSample) {
+                        accountId = creativeSample;
+                        console.log("[FB-Webhook] Using accountId " + accountId + " (found via creatives rpc) for Page " + pageId);
+                    } else {
+                        console.log("[FB-Webhook] No mapping found for Page " + pageId + ", using default accountId " + accountId);
+                    }
                 }
 
                 // Process messaging events
@@ -234,8 +240,8 @@ Deno.serve(async (req) => {
                         continue;
                     }
 
-                    console.log(`[FB-Webhook] Processing message from ${isFromPage ? 'PAGE' : 'CUSTOMER'} ${customerId} on Page ${pageId}`);
-                    console.log(`[FB-Webhook] Event details: message=${!!message}, mid=${message?.mid}, text=${message?.text?.substring(0, 50)}, attachments=${message?.attachments?.length || 0}, reaction=${!!messaging.reaction}, read=${!!messaging.read}, postback=${!!messaging.postback}`);
+                    console.log("[FB-Webhook] Processing message from " + (isFromPage ? 'PAGE' : 'CUSTOMER') + " " + customerId + " on Page " + pageId);
+                    console.log("[FB-Webhook] Event details: message=" + (!!message) + ", mid=" + message?.mid + ", text=" + message?.text?.substring(0, 50) + ", attachments=" + (message?.attachments?.length || 0) + ", reaction=" + (!!messaging.reaction) + ", read=" + (!!messaging.read) + ", postback=" + (!!messaging.postback));
 
                     // Check if lead already exists for this specific (customer, page) combination
                     // STRICT LOOKUP: ONLY external_id + fb_page_id
@@ -256,66 +262,125 @@ Deno.serve(async (req) => {
                     const needsAIAnalysis = existingLead && existingLead.is_potential === null && (!existingLead.ai_analysis || existingLead.ai_analysis === "NULL");
                     
                     if (pageToken) {
-                        // Fetch customer profile (only if we don't have valid info OR we need AI analysis and message is from customer)
-                        if (!isFromPage && (!hasValidName || needsAIAnalysis || !customerAvatar)) {
-                            console.log(`[FB-Webhook] Need to fetch or re-analyze. hasName=${hasValidName}, needsAI=${needsAIAnalysis}, hasAvatar=${!!customerAvatar}`);
+                        // Fetch customer profile (only if we don't have valid info OR we need AI analysis)
+                        if (!hasValidName || needsAIAnalysis || !customerAvatar) {
+                            console.log("[FB-Webhook] Need to resolve name/info. hasName=" + hasValidName + ", needsAI=" + needsAIAnalysis + ", hasAvatar=" + (!!customerAvatar));
                             
-                            // METHOD 1: Get from conversation participants (MOST RELIABLE for Facebook Messenger)
-                            // Facebook allows access to participant names in conversations the page owns
-                            if (!hasValidName) {
+                            let resolvedName: string | null = null;
+                            let resolvedAvatar: string | null = null;
+
+                            // METHOD 1: Try direct profile API
+                            try {
+                                console.log("[FB-Webhook] Trying direct profile API for " + customerId + "...");
+                                const profileRes = await fetch(FB_BASE_URL + "/" + customerId + "?fields=name,first_name,last_name,profile_pic,picture&access_token=" + pageToken);
+                                const profileData = await profileRes.json();
+                                
+                                if (profileData.error) {
+                                    console.error("[FB-Webhook] Profile API error: " + profileData.error.message);
+                                } else {
+                                    resolvedName = profileData.name;
+                                    if (!resolvedName && (profileData.first_name || profileData.last_name)) {
+                                        resolvedName = [profileData.first_name, profileData.last_name].filter(Boolean).join(" ");
+                                    }
+                                    resolvedAvatar = profileData.profile_pic || profileData.picture?.data?.url;
+                                }
+
+                                // Fallback for avatar if still missing
+                                if (!resolvedAvatar) {
+                                    try {
+                                        console.log("[FB-Webhook] Trying /picture fallback for " + customerId + "...");
+                                        const picRes = await fetch(FB_BASE_URL + "/" + customerId + "/picture?type=large&redirect=false&access_token=" + pageToken);
+                                        const picData = await picRes.json();
+                                        if (picData.data?.url) {
+                                            resolvedAvatar = picData.data.url;
+                                            console.log("[FB-Webhook] Avatar resolved from fallback /picture endpoint");
+                                        }
+                                    } catch (picErr: any) {
+                                        console.error("[FB-Webhook] Picture fallback error: " + picErr.message);
+                                    }
+                                }
+                            } catch (e: any) {
+                                console.error("[FB-Webhook] Profile API network error: " + e.message);
+                            }
+
+                            // METHOD 1.5: Crawler Fallback (Pancake Strategy)
+                            if (!resolvedAvatar) {
                                 try {
-                                    console.log(`[FB-Webhook] Trying conversation participants API for ${customerId}...`);
-                                    const convsRes = await fetch(`${FB_BASE_URL}/${pageId}/conversations?user_id=${customerId}&fields=participants&access_token=${pageToken}`);
+                                    resolvedAvatar = await resolveAvatarWithCrawler(supabase, customerId);
+                                    if (resolvedAvatar) {
+                                        console.log("[FB-Webhook] Avatar resolved via Crawler! " + resolvedAvatar);
+                                    }
+                                } catch (crawlErr: any) {
+                                    console.error("[FB-Webhook] Crawler fallback error: " + crawlErr.message);
+                                }
+                            }
+
+
+                            // METHOD 2: Fallback to conversation participants API if name still missing
+                            if (!resolvedName) {
+                                try {
+                                    console.log("[FB-Webhook] Trying fallback conversation participants API for " + customerId + "...");
+                                    const convsRes = await fetch(FB_BASE_URL + "/" + pageId + "/conversations?user_id=" + customerId + "&fields=participants&access_token=" + pageToken);
                                     const convsData = await convsRes.json();
                                     
-                                    if (convsData.error) {
-                                        console.error(`[FB-Webhook] Conversation API error: ${convsData.error.message} (code: ${convsData.error.code})`);
-                                    } else {
-                                        console.log(`[FB-Webhook] Conversation API response: ${JSON.stringify(convsData)}`);
-                                        const participant = convsData.data?.[0]?.participants?.data?.find((p: any) => p.id === customerId);
+                                    if (!convsData.error && convsData.data?.[0]) {
+                                        const participant = convsData.data[0].participants?.data?.find((p: any) => p.id === customerId);
                                         if (participant?.name) {
-                                            customerName = participant.name;
-                                            console.log(`[FB-Webhook] SUCCESS: Got name from conversation participants: "${customerName}"`);
-                                        } else {
-                                            console.warn(`[FB-Webhook] Participant not found in response. Looking for ID: ${customerId}`);
+                                            resolvedName = participant.name;
                                         }
                                     }
                                 } catch (convErr: any) {
-                                    console.error(`[FB-Webhook] Conversation API network error: ${convErr.message}`);
+                                    console.error("[FB-Webhook] Fallback API error: " + convErr.message);
                                 }
                             }
-                            
-                            // METHOD 2: Try direct profile API (may be blocked by Facebook for PSIDs)
-                            if (!customerName || customerName === "Khách hàng" || !customerAvatar) {
+
+                            // METHOD 3: Cross-page lookup - check if we have another lead with the same external_id that HAS a name
+                            if (!resolvedName) {
                                 try {
-                                    console.log(`[FB-Webhook] Trying direct profile API for ${customerId}...`);
-                                    const profileRes = await fetch(`${FB_BASE_URL}/${customerId}?fields=name,profile_pic&access_token=${pageToken}`);
-                                    const profileData = await profileRes.json();
+                                    console.log("[FB-Webhook] Trying cross-page lookup for external_id " + customerId + "...");
+                                    const { data: otherLeads } = await supabase
+                                        .from("leads")
+                                        .select("customer_name, customer_avatar")
+                                        .eq("external_id", customerId)
+                                        .neq("customer_name", "Khách hàng")
+                                        .not("customer_name", "is", null)
+                                        .limit(1);
                                     
-                                    if (profileData.error) {
-                                        console.error(`[FB-Webhook] Profile API error: ${profileData.error.message} (code: ${profileData.error.code}, subcode: ${profileData.error.error_subcode})`);
-                                    } else {
-                                        console.log(`[FB-Webhook] Profile API response: name=${profileData.name}, has_pic=${!!profileData.profile_pic}`);
-                                        if ((!customerName || customerName === "Khách hàng") && profileData.name) {
-                                            customerName = profileData.name;
-                                            console.log(`[FB-Webhook] Got name from profile API: "${customerName}"`);
-                                        }
-                                        if (!customerAvatar && profileData.profile_pic) {
-                                            customerAvatar = profileData.profile_pic;
-                                            console.log(`[FB-Webhook] Got avatar from profile API`);
-                                        }
+                                    if (otherLeads && otherLeads.length > 0) {
+                                        resolvedName = otherLeads[0].customer_name;
+                                        resolvedAvatar = otherLeads[0].customer_avatar;
+                                        console.log("[FB-Webhook] Cross-page lookup success: Found name \"" + resolvedName + "\"");
                                     }
                                 } catch (e: any) {
-                                    console.error(`[FB-Webhook] Profile API network error: ${e.message}`);
+                                    console.error("[FB-Webhook] Cross-page lookup error: " + e.message);
                                 }
                             }
+
+                            // Update local variables if we resolved anything
+                            if (resolvedName) customerName = resolvedName;
+                            if (resolvedAvatar) customerAvatar = resolvedAvatar;
                             
-                            console.log(`[FB-Webhook] Final resolved: name="${customerName}", hasAvatar=${!!customerAvatar}`);
+                            // PROACTIVE SYNC: If we just found a name, update ALL leads for this customer that are still named "Khách hàng"
+                            if (resolvedName && resolvedName !== "Khách hàng") {
+                                console.log("[FB-Webhook] Proactively updating all leads for external_id " + customerId + " with name \"" + resolvedName + "\"...");
+                                const { error: proSyncError } = await supabase
+                                    .from("leads")
+                                    .update({ 
+                                        customer_name: resolvedName,
+                                        customer_avatar: resolvedAvatar || customerAvatar
+                                    })
+                                    .eq("external_id", customerId)
+                                    .or("customer_name.eq.Khách hàng,customer_name.is.null");
+                                
+                                if (proSyncError) console.error("[FB-Webhook] Proactive sync error:", proSyncError);
+                            }
+                            
+                            console.log("[FB-Webhook] Final resolution: name=\"" + customerName + "\", hasAvatar=" + (!!customerAvatar));
                         }
                         
                         // Fetch page name and update centralized info
                         try {
-                            const pageInfoRes = await fetch(`${FB_BASE_URL}/${pageId}?fields=name&access_token=${pageToken}`);
+                            const pageInfoRes = await fetch(FB_BASE_URL + "/" + pageId + "?fields=name&access_token=" + pageToken);
                             const pageInfoData = await pageInfoRes.json();
                             if (pageInfoData.name) {
                                 pageName = pageInfoData.name;
@@ -333,7 +398,7 @@ Deno.serve(async (req) => {
 
                     let dbLead, leadError;
 
-                    // Build lead data - only include fields that should always be updated
+                    // Build lead data
                     const leadBaseData: any = {
                         fb_page_id: pageId,
                         last_message_at: toVietnamTimestamp(timestamp),
@@ -341,19 +406,15 @@ Deno.serve(async (req) => {
                         platform_data: {
                             fb_page_id: pageId,
                             fb_page_name: pageName,
-                            snippet: message?.text?.substring(0, 100) || "Tin nhắn mới"
+                            snippet: message?.text?.substring(0, 100) || 
+                                     (referral ? "Bắt đầu từ quảng cáo" : 
+                                      (messaging.postback ? "Nhấn nút menu" : "Tin nhắn mới"))
                         }
                     };
                     
-                    // Only update customer_name if we have a valid new one
-                    if (customerName && customerName !== "Khách hàng") {
-                        leadBaseData.customer_name = customerName;
-                    }
-                    
-                    // Only update avatar if we have one
-                    if (customerAvatar) {
-                        leadBaseData.customer_avatar = customerAvatar;
-                    }
+                    // Always try to set name/avatar if available
+                    if (customerName) leadBaseData.customer_name = customerName;
+                    if (customerAvatar) leadBaseData.customer_avatar = customerAvatar;
 
                     if (existingLead) {
                         const result = await supabase
@@ -364,7 +425,7 @@ Deno.serve(async (req) => {
                             .single();
                         dbLead = result.data;
                         leadError = result.error;
-                        console.log(`[FB-Webhook] Updated existing lead: ${dbLead?.id}`);
+                        console.log("[FB-Webhook] Updated existing lead: " + dbLead?.id);
                     } else {
                         // New lead - set defaults for required fields
                         const insertData = {
@@ -385,7 +446,7 @@ Deno.serve(async (req) => {
                             .single();
                         dbLead = result.data;
                         leadError = result.error;
-                        console.log(`[FB-Webhook] Created new lead: ${dbLead?.id}`);
+                        console.log("[FB-Webhook] Created new lead: " + dbLead?.id);
                     }
 
                     if (leadError) {
@@ -397,79 +458,76 @@ Deno.serve(async (req) => {
                     // FINAL LEAD OBJECT FOR NEXT STEPS
                     const finalCustomerName = dbLead?.customer_name || customerName || "Khách hàng";
 
-                    // 1. Insert current message
-                    if (message && dbLead) {
-                        // Build message content - handle text and attachments
-                        let messageContent = message.text || "";
+                    // 1. Insert current message OR virtual message from referral/postback
+                    if (dbLead) {
+                        let messageContent = "";
+                        let fbMid = message?.mid || null;
                         
-                        // Handle attachments (images, stickers, files, etc.)
-                        if (message.attachments && message.attachments.length > 0) {
-                            const attachmentDescriptions = message.attachments.map((att: any) => {
-                                if (att.type === "image") return "[Hình ảnh]";
-                                if (att.type === "sticker") return "[Sticker]";
-                                if (att.type === "video") return "[Video]";
-                                if (att.type === "audio") return "[Audio]";
-                                if (att.type === "file") return "[File]";
-                                if (att.type === "location") return "[Vị trí]";
-                                return `[${att.type}]`;
-                            });
-                            if (!messageContent) {
-                                messageContent = attachmentDescriptions.join(" ");
-                            } else {
-                                messageContent += " " + attachmentDescriptions.join(" ");
+                        if (message) {
+                            messageContent = message.text || "";
+                            // Handle attachments (images, stickers, files, etc.)
+                            if (message.attachments && message.attachments.length > 0) {
+                                const attachmentDescriptions = message.attachments.map((att: any) => {
+                                    if (att.type === "image") return "[Hình ảnh]";
+                                    if (att.type === "sticker") return "[Sticker]";
+                                    if (att.type === "video") return "[Video]";
+                                    if (att.type === "audio") return "[Audio]";
+                                    if (att.type === "file") return "[File]";
+                                    if (att.type === "location") return "[Vị trí]";
+                                    return "[" + att.type + "]";
+                                });
+                                if (!messageContent) {
+                                    messageContent = attachmentDescriptions.join(" ");
+                                } else {
+                                    messageContent += " " + attachmentDescriptions.join(" ");
+                                }
                             }
+                        } else if (referral) {
+                            messageContent = "[Bắt đầu từ quảng cáo: " + (referral.ad_id || 'Không rõ ID') + "]";
+                            fbMid = "ref_" + timestamp + "_" + customerId; // Synthetic ID for referrals
+                        } else if (messaging.postback) {
+                            messageContent = "[Nhấn nút: " + (messaging.postback.title || messaging.postback.payload) + "]";
+                            fbMid = "pb_" + timestamp + "_" + customerId; // Synthetic ID for postbacks
                         }
 
-                        // Skip if no content at all
-                        if (!messageContent) {
-                            console.log(`[FB-Webhook] Skipping message with no content: mid=${message.mid}`);
-                        } else if (!message.mid) {
-                            console.log(`[FB-Webhook] Skipping message with no mid`);
-                        } else {
+                        // Save message if we have content
+                        if (messageContent && fbMid) {
                             const { error: msgError } = await supabase
                                 .from("lead_messages")
                                 .upsert({
                                     id: crypto.randomUUID(),
                                     lead_id: dbLead.id,
-                                    fb_message_id: message.mid,
+                                    fb_message_id: fbMid,
                                     sender_id: senderId,
                                     sender_name: isFromPage ? pageName : finalCustomerName,
                                     message_content: messageContent,
+                                    attachments: message?.attachments || null,
+                                    sticker: message?.sticker || null,
+                                    shares: message?.shares || null,
                                     sent_at: toVietnamTimestamp(timestamp),
                                     is_from_customer: !isFromPage
                                 }, { onConflict: "fb_message_id" });
 
                             if (!msgError) {
                                 messagesInserted++;
-                                console.log(`[FB-Webhook] Inserted current message: ${message.mid} content="${messageContent.substring(0, 50)}"`);
+                                console.log("[FB-Webhook] Inserted message/event: " + fbMid + " content=\"" + messageContent.substring(0, 50) + "\"");
                             } else {
-                                console.error(`[FB-Webhook] Message insert error for mid=${message.mid}:`, msgError);
+                                console.error("[FB-Webhook] Message insert error for mid=" + fbMid + ":", msgError);
                             }
-                        }
-                    } else if (!message && dbLead) {
-                        // Handle read receipts, reactions, postbacks
-                        if (messaging.read) {
-                            console.log(`[FB-Webhook] Read receipt from ${customerId} - skipping`);
-                        } else if (messaging.reaction) {
-                            console.log(`[FB-Webhook] Reaction from ${customerId}: ${messaging.reaction.reaction} - skipping`);
-                        } else if (messaging.postback) {
-                            console.log(`[FB-Webhook] Postback from ${customerId}: ${messaging.postback.title} - skipping`);
-                        } else {
-                            console.log(`[FB-Webhook] Unknown event type without message object - skipping`);
                         }
                     }
 
-                    // 2. CRAWL ENTIRE CONVERSATION (like pancake.vn)
-                    if (dbLead && pageToken) {
+                    // 2. CRAWL ENTIRE CONVERSATION (like pancake.vn) - ONLY for new leads
+                    if (!existingLead && dbLead && pageToken) {
                         try {
-                            console.log(`[FB-Webhook] Triggering full conversation crawl for customer ${customerId}...`);
+                            console.log("[FB-Webhook] Triggering full conversation crawl for customer " + customerId + "...");
                             // Fetch conversations to find the ID, participants, and labels
-                            const convsRes = await fetch(`${FB_BASE_URL}/${pageId}/conversations?user_id=${customerId}&fields=id,updated_time,snippet,participants,labels&access_token=${pageToken}`);
+                            const convsRes = await fetch(FB_BASE_URL + "/" + pageId + "/conversations?user_id=" + customerId + "&fields=id,updated_time,snippet,participants,labels&access_token=" + pageToken);
                             const convsData = await convsRes.json();
 
                             const conv = convsData.data?.[0];
                             if (conv) {
-                                console.log(`[FB-Webhook] Found conversation ID: ${conv.id}. Fetching historical messages...`);
+                                console.log("[FB-Webhook] Found conversation ID: " + conv.id + ". Fetching historical messages...");
                                 
                                 // TRY TO GET NAME FROM PARTICIPANTS (backup if we still don't have name)
                                 let extractedCustomerName: string | null = null;
@@ -477,7 +535,7 @@ Deno.serve(async (req) => {
                                     const participant = conv.participants.data.find((p: any) => p.id === customerId);
                                     if (participant?.name) {
                                         extractedCustomerName = participant.name;
-                                        console.log(`[FB-Webhook] Extracted name from conversation participants: "${extractedCustomerName}"`);
+                                        console.log("[FB-Webhook] Extracted name from conversation participants: \"" + extractedCustomerName + "\"");
                                     }
                                 }
                                 
@@ -490,10 +548,10 @@ Deno.serve(async (req) => {
                                         l.name.toLowerCase().includes("hot")
                                     );
                                     if (isManualPotential) {
-                                        console.log(`[FB-Webhook] Manual potential detected via FB label: ${conv.labels.data.map((l: any) => l.name).join(", ")}`);
+                                        console.log("[FB-Webhook] Manual potential detected via FB label: " + conv.labels.data.map((l: any) => l.name).join(", "));
                                     }
                                 }
-                                const msgsRes = await fetch(`${FB_BASE_URL}/${conv.id}/messages?fields=id,message,from,created_time&limit=50&access_token=${pageToken}`);
+                                const msgsRes = await fetch(FB_BASE_URL + "/" + conv.id + "/messages?fields=id,message,from,created_time,attachments,shares,sticker&limit=50&access_token=" + pageToken);
                                 const msgsData = await msgsRes.json();
 
                                 if (msgsData.data && msgsData.data.length > 0) {
@@ -503,7 +561,7 @@ Deno.serve(async (req) => {
                                         if (msgSenderId === customerId && m.from?.name) {
                                             if (!extractedCustomerName) {
                                                 extractedCustomerName = m.from.name;
-                                                console.log(`[FB-Webhook] Extracted name from message from.name: "${extractedCustomerName}"`);
+                                                console.log("[FB-Webhook] Extracted name from message from.name: \"" + extractedCustomerName + "\"");
                                             }
                                             break;
                                         }
@@ -524,11 +582,11 @@ Deno.serve(async (req) => {
                                             .update(updateData)
                                             .eq("id", dbLead.id);
                                         if (!updateErr) {
-                                            console.log(`[FB-Webhook] Updated lead ${dbLead.id} with:`, updateData);
+                                            console.log("[FB-Webhook] Updated lead " + dbLead.id + " with:", updateData);
                                             if (updateData.customer_name) dbLead.customer_name = updateData.customer_name;
                                             if (updateData.is_manual_potential) dbLead.is_manual_potential = true;
                                         } else {
-                                            console.error(`[FB-Webhook] Failed to update lead with extracted data:`, updateErr);
+                                            console.error("[FB-Webhook] Failed to update lead with extracted data:", updateErr);
                                         }
                                     }
                                     
@@ -550,6 +608,9 @@ Deno.serve(async (req) => {
                                             sender_id: msgSenderId,
                                             sender_name: senderName,
                                             message_content: m.message || "",
+                                            attachments: m.attachments?.data || null,
+                                            sticker: m.sticker || null,
+                                            shares: m.shares?.data || null,
                                             sent_at: toVietnamTimestamp(m.created_time),
                                             is_from_customer: !isMsgFromPage
                                         };
@@ -560,7 +621,7 @@ Deno.serve(async (req) => {
                                         .upsert(dbMessages, { onConflict: "fb_message_id" });
 
                                     if (!crawlError) {
-                                        console.log(`[FB-Webhook] Successfully crawled ${dbMessages.length} historical messages`);
+                                        console.log("[FB-Webhook] Successfully crawled " + dbMessages.length + " historical messages");
                                         
                                         // GEMINI AI ANALYSIS: Analyze conversation if API key is available
                                         if (geminiApiKey && dbMessages.length > 0) {
@@ -575,7 +636,7 @@ Deno.serve(async (req) => {
                                                 .reverse(); // Oldest first for context
                                             
                                             if (messagesForAnalysis.length > 0) {
-                                                console.log(`[FB-Webhook] Analyzing ${messagesForAnalysis.length} messages with Gemini...`);
+                                                console.log("[FB-Webhook] Analyzing " + messagesForAnalysis.length + " messages with Gemini...");
                                                 const geminiResult = await analyzeWithGemini(geminiApiKey, messagesForAnalysis);
                                                 
                                                 if (geminiResult) {
@@ -589,32 +650,32 @@ Deno.serve(async (req) => {
                                                         .eq("id", dbLead.id);
                                                     
                                                     if (!analysisErr) {
-                                                        console.log(`[FB-Webhook] Updated lead ${dbLead.id} with AI analysis, isPotential=${geminiResult.isPotential}`);
+                                                        console.log("[FB-Webhook] Updated lead " + dbLead.id + " with AI analysis, isPotential=" + geminiResult.isPotential);
                                                     } else {
-                                                        console.error(`[FB-Webhook] Failed to save AI analysis:`, analysisErr);
+                                                        console.error("[FB-Webhook] Failed to save AI analysis:", analysisErr);
                                                     }
                                                 } else {
-                                                    console.warn(`[FB-Webhook] Gemini returned null result for lead ${dbLead.id}`);
+                                                    console.warn("[FB-Webhook] Gemini returned null result for lead " + dbLead.id);
                                                 }
                                             }
                                         } else {
-                                            console.log(`[FB-Webhook] Skipping AI analysis: geminiApiKey=${!!geminiApiKey}, msgCount=${dbMessages.length}`);
+                                            console.log("[FB-Webhook] Skipping AI analysis: geminiApiKey=" + (!!geminiApiKey) + ", msgCount=" + dbMessages.length);
                                         }
                                     } else {
-                                        console.error(`[FB-Webhook] Crawl upsert error:`, crawlError);
+                                        console.error("[FB-Webhook] Crawl upsert error:", crawlError);
                                     }
                                 }
                             } else {
-                                console.warn(`[FB-Webhook] Could not find conversation ID for customer ${customerId}`);
+                                console.warn("[FB-Webhook] Could not find conversation ID for customer " + customerId);
                             }
                         } catch (crawlErr) {
-                            console.error(`[FB-Webhook] Fatal error during crawl:`, crawlErr);
+                            console.error("[FB-Webhook] Fatal error during crawl:", crawlErr);
                         }
                     }
                 }
             }
 
-            console.log(`[FB-Webhook] Done: ${leadsUpdated} leads, ${messagesInserted} messages, ${pagesSkipped} pages skipped`);
+            console.log("[FB-Webhook] Done: " + leadsUpdated + " leads, " + messagesInserted + " messages, " + pagesSkipped + " pages skipped");
             return jsonResponse({ status: "ok", leadsUpdated, messagesInserted, pagesSkipped });
 
         } catch (err: any) {

@@ -103,14 +103,14 @@ const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(da
 async function callEdgeFunction(name: string, body: any): Promise<any> {
   const res = await fetch(`${supabaseUrl}/functions/v1/${name}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseKey}` },
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + supabaseKey },
     body: JSON.stringify(body),
   });
   return res.json();
 }
 
 async function sendTelegram(botToken: string, chatId: string, message: string) {
-  await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+  await fetch("https://api.telegram.org/bot" + botToken + "/sendMessage", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: "Markdown" }),
@@ -156,7 +156,7 @@ Deno.serve(async (req: Request) => {
     const targetUserId = forcedUserId || auth.userId;
     const currentHour = getVietnamHour();
 
-    console.log(`[Dispatch] Hour ${currentHour}, range: ${dateStart} - ${dateEnd}, force: ${force}`);
+    console.log("[Dispatch] Hour " + currentHour + ", range: " + dateStart + " - " + dateEnd + ", force: " + force);
 
     // Build query - skip hour check if force=true (manual trigger)
     let query = supabase.from("cron_settings").select("id, user_id, cron_type, allowed_hours, enabled").eq("enabled", true);
@@ -201,7 +201,7 @@ Deno.serve(async (req: Request) => {
         // Should we send a Telegram report?
         const shouldReport = syncAll || syncQuick || types.has("insight_daily") || types.has("insight_hourly") || types.has("insight_hour");
 
-        console.log(`[Dispatch] User ${userId}, types: ${Array.from(types).join(", ")}`);
+        console.log("[Dispatch] User " + userId + ", types: " + Array.from(types).join(", "));
         if (!doCampaigns && !doAds && !doInsightDaily && !doInsightHourly && !hasBreakdowns && !doLeads) {
           console.log(`[Dispatch] User ${userId} nothing to do`);
           continue;
@@ -215,7 +215,7 @@ Deno.serve(async (req: Request) => {
           .eq("account_status", "1")  // 1 = ACTIVE in Facebook API
           .limit(2000);
 
-        console.log(`[Dispatch] User ${userId} found ${accounts?.length || 0} active accounts`);
+        console.log("[Dispatch] User " + userId + " found " + (accounts?.length || 0) + " active accounts");
 
         // Fetch branches for auto-assignment
         const { data: branches } = await supabase.from("branches").select("id, auto_match_keywords").eq("user_id", userId);
@@ -223,95 +223,75 @@ Deno.serve(async (req: Request) => {
         const branchIds = new Set<number>();
         const summary = { accounts: accounts?.length || 0, items: 0, errors: 0 };
 
-        const syncPromises = (accounts || []).map(async (account: any) => {
+        // Process accounts SEQUENTIALLY to avoid rate limits and race conditions
+        for (const account of (accounts || [])) {
+          console.log(`[Dispatch] Processing account ${account.name} (${account.id})`);
           try {
             let currentBranchId = account.branch_id;
 
-            // Auto-assign branch if missing
-            if (!currentBranchId && branches && branches.length > 0) {
-              const accName = account.name?.toLowerCase() || "";
-              for (const b of branches) {
-                const keywords = b.auto_match_keywords || [];
-                if (keywords.some((k: string) => k && accName.includes(k.toLowerCase()))) {
-                  currentBranchId = b.id;
-                  console.log(`[Dispatch] Auto-assigning account ${account.id} to branch ${b.id}`);
-                  await supabase.from("platform_accounts").update({ branch_id: b.id }).eq("id", account.id);
-                  break;
-                }
-              }
-            }
-
             if (currentBranchId) branchIds.add(currentBranchId);
 
-            const tasks = [];
-
-            // 1. Sync Entities (Parallel)
+            // CRITICAL: Sync ORDER matters. Campaigns must be synced BEFORE Ads.
+            // 1. Sync Entities (SEQUENTIAL)
             if (doCampaigns) {
-              tasks.push(callEdgeFunction("fb-sync-campaigns", { accountId: account.id }));
+              console.log(`[Dispatch] Syncing campaigns for ${account.id}`);
+              await callEdgeFunction("fb-sync-campaigns", { accountId: account.id });
             }
             if (doAds) {
-              tasks.push(callEdgeFunction("fb-sync-ads", { accountId: account.id }));
+              console.log(`[Dispatch] Syncing ads for ${account.id}`);
+              await callEdgeFunction("fb-sync-ads", { accountId: account.id });
             }
 
-            await Promise.allSettled(tasks);
-            const secondaryTasks = [];
-
-            // 1.5 Sync Leads (Only once per account or just trigger for any active account)
+            // 1.5 Sync Leads
             if (doLeads) {
-              // Note: fb-sync-leads fetches its own token, but we call it with system auth
-              secondaryTasks.push((async () => {
-                const res = await callEdgeFunction("fb-sync-leads", { accountId: account.id });
-                summary.items += (res?.result?.leadsSynced || 0);
-              })());
+              console.log(`[Dispatch] Syncing leads for ${account.id}`);
+              const res = await callEdgeFunction("fb-sync-leads", { accountId: account.id });
+              summary.items += (res?.result?.leadsSynced || 0);
             }
 
             // 2. Sync Insights (with skipAggregation)
             if (doInsightDaily || doInsightHourly) {
-              secondaryTasks.push((async () => {
-                const res = await callEdgeFunction("fb-sync-insights", {
-                  accountId: account.id,
-                  dateStart,
-                  dateEnd,
-                  granularity,
-                  skipBranchAggregation: true
-                });
-                summary.items += (res?.data?.insights || 0) + (res?.data?.hourly || 0);
-              })());
+              console.log(`[Dispatch] Syncing insights for ${account.id} (${granularity})`);
+              const res = await callEdgeFunction("fb-sync-insights", {
+                accountId: account.id,
+                dateStart,
+                dateEnd,
+                granularity,
+                skipBranchAggregation: true
+              });
+              summary.items += (res?.data?.insights || 0) + (res?.data?.hourly || 0);
             }
 
             // 3. Sync Breakdowns
             if (types.has("insight_device")) {
-              secondaryTasks.push(callEdgeFunction("fb-sync-insights", { accountId: account.id, dateStart, dateEnd, breakdown: "device", skipBranchAggregation: true }));
+              await callEdgeFunction("fb-sync-insights", { accountId: account.id, dateStart, dateEnd, breakdown: "device", skipBranchAggregation: true });
             }
             if (types.has("insight_age_gender")) {
-              secondaryTasks.push(callEdgeFunction("fb-sync-insights", { accountId: account.id, dateStart, dateEnd, breakdown: "age_gender", skipBranchAggregation: true }));
+              await callEdgeFunction("fb-sync-insights", { accountId: account.id, dateStart, dateEnd, breakdown: "age_gender", skipBranchAggregation: true });
             }
             if (types.has("insight_region")) {
-              secondaryTasks.push(callEdgeFunction("fb-sync-insights", { accountId: account.id, dateStart, dateEnd, breakdown: "region", skipBranchAggregation: true }));
+              await callEdgeFunction("fb-sync-insights", { accountId: account.id, dateStart, dateEnd, breakdown: "region", skipBranchAggregation: true });
             }
 
-            await Promise.allSettled(secondaryTasks);
           } catch (e: any) {
-            console.error(`Error syncing account ${account.id}:`, e.message);
+            console.error("Error syncing account " + account.id + ":", e.message);
             summary.errors++;
           }
-        });
-
-        await Promise.allSettled(syncPromises);
+        }
 
         // 4. Branch Aggregation (Once per branch)
-        console.log(`[Dispatch] Aggregating ${branchIds.size} branches`);
+        console.log("[Dispatch] Aggregating " + branchIds.size + " branches");
         const aggPromises = Array.from(branchIds).map(async (bid) => {
           try {
             const firstAccInBranch = (accounts || []).find(a => a.branch_id === bid);
             if (firstAccInBranch) {
-              await callEdgeFunction(`branches/${bid}/stats/recalculate`, {
+              await callEdgeFunction("branches/" + bid + "/stats/recalculate", {
                 dateStart,
                 dateEnd
               });
             }
           } catch (e: any) {
-            console.error(`Error aggregating branch ${bid}:`, e.message);
+            console.error("Error aggregating branch " + bid + ":", e.message);
           }
         });
         await Promise.allSettled(aggPromises);
@@ -367,12 +347,12 @@ Deno.serve(async (req: Request) => {
                 const cpr = results > 0 ? spend / results : 0;
 
                 const fmt = (n: number) => new Intl.NumberFormat('vi-VN').format(Math.round(n));
-                const fmtCur = (n: number) => `${fmt(n)} ${currency}`;
+                const fmtCur = (n: number) => fmt(n) + " " + currency;
 
                 // Aggregate by Ad ID to consolidate split records and fix "Chi tiêu" accuracy
                 // Initialize aggregation (or skip if already unique after db fix, but this is safer)
                 if (!result.aggregatedHourly) result.aggregatedHourly = new Map();
-                const adKey = `${accountName}|${externalId}`;
+                const adKey = accountName + "|" + externalId;
                 const existing = result.aggregatedHourly.get(adKey);
 
                 if (existing) {
@@ -401,25 +381,25 @@ Deno.serve(async (req: Request) => {
                 const fmt = (n: number) => new Intl.NumberFormat('vi-VN').format(Math.round(n));
                 const fmtCur = (n: number) => `${fmt(n)} ${currency}`;
 
-                let msg = `📊 *CHI TIẾT ADS - ${reportDate} ${reportHour}:00*\n\n`;
-                msg += `📈 Tài khoản: ${accountName}\n`;
-                msg += `📁 Chiến dịch: ${campaignName}\n`;
-                msg += `📂 Nhóm QC: ${adsetName}\n`;
-                msg += `🎯 Quảng cáo: ${adName}\n\n`;
+                let msg = "📊 *CHI TIẾT ADS - " + reportDate + " " + reportHour + ":00*\n\n";
+                msg += "📈 Tài khoản: " + accountName + "\n";
+                msg += "📁 Chiến dịch: " + campaignName + "\n";
+                msg += "📂 Nhóm QC: " + adsetName + "\n";
+                msg += "🎯 Quảng cáo: " + adName + "\n\n";
 
-                msg += `💰 *THÔNG SỐ*\n`;
-                msg += `├── 💵 Chi tiêu: ${fmtCur(spend)}\n`;
-                msg += `├── 👁 Hiển thị: ${fmt(impressions)}\n`;
-                msg += `├── 👆 Lượt click: ${fmt(clicks)}\n`;
-                msg += `├── 🎯 Kết quả: ${fmt(results)}\n`;
-                msg += `├── 💬 Tin nhắn mới: ${fmt(messaging_new)}\n`;
-                msg += `├── 📊 CTR: ${ctr.toFixed(2)}%\n`;
-                msg += `├── 💳 CPC: ${fmtCur(cpc)}\n`;
-                msg += `├── 📈 CPM: ${fmtCur(cpm)}\n`;
-                msg += `└── 🎯 CPR: ${fmtCur(cpr)}`;
+                msg += "💰 *THÔNG SỐ*\n";
+                msg += "├── 💵 Chi tiêu: " + fmtCur(spend) + "\n";
+                msg += "├── 👁 Hiển thị: " + fmt(impressions) + "\n";
+                msg += "├── 👆 Lượt click: " + fmt(clicks) + "\n";
+                msg += "├── 🎯 Kết quả: " + fmt(results) + "\n";
+                msg += "├── 💬 Tin nhắn mới: " + fmt(messaging_new) + "\n";
+                msg += "├── 📊 CTR: " + ctr.toFixed(2) + "%\n";
+                msg += "├── 💳 CPC: " + fmtCur(cpc) + "\n";
+                msg += "├── 📈 CPM: " + fmtCur(cpm) + "\n";
+                msg += "└── 🎯 CPR: " + fmtCur(cpr);
 
                 if (externalId) {
-                  msg += `\n\n🔗 [Xem QC](https://facebook.com/ads/manage/prediction?act=${accountId}&adid=${externalId})`;
+                  msg += "\n\n🔗 [Xem QC](https://facebook.com/ads/manage/prediction?act=" + accountId + "&adid=" + externalId + ")";
                 }
 
                 for (const bot of bots || []) {
@@ -431,7 +411,7 @@ Deno.serve(async (req: Request) => {
               // Optional: Also send a summary or omit generic report
             } else {
               // Fallback to generic if no ad spend found specifically in that hour but sync happened
-              const msg = `📊 *Sync Report (Optimized)*\n📅 ${new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}\n✅ Accounts: ${summary.accounts}\n📈 Items: ${summary.items}\n⚠️ Errors: ${summary.errors}\n🔧 Sync: ${Array.from(types).join(", ")}`;
+              const msg = "📊 *Sync Report (Optimized)*\n📅 " + new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }) + "\n✅ Accounts: " + summary.accounts + "\n📈 Items: " + summary.items + "\n⚠️ Errors: " + summary.errors + "\n🔧 Sync: " + Array.from(types).join(", ");
               for (const bot of bots || []) {
                 for (const sub of (bot.telegram_subscribers || []).filter((s: any) => s.is_active)) {
                   await sendTelegram(bot.bot_token, sub.chat_id, msg);
@@ -440,7 +420,7 @@ Deno.serve(async (req: Request) => {
             }
           } else {
             // Standard daily/full sync summary
-            const msg = `📊 *Sync Report (Optimized)*\n📅 ${new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}\n✅ Accounts: ${summary.accounts}\n📈 Items: ${summary.items}\n⚠️ Errors: ${summary.errors}\n🔧 Sync: ${Array.from(types).join(", ")}`;
+            const msg = "📊 *Sync Report (Optimized)*\n📅 " + new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }) + "\n✅ Accounts: " + summary.accounts + "\n📈 Items: " + summary.items + "\n⚠️ Errors: " + summary.errors + "\n🔧 Sync: " + Array.from(types).join(", ");
             for (const bot of bots || []) {
               for (const sub of (bot.telegram_subscribers || []).filter((s: any) => s.is_active)) {
                 await sendTelegram(bot.bot_token, sub.chat_id, msg);
@@ -449,7 +429,7 @@ Deno.serve(async (req: Request) => {
           }
         }
       } catch (e: any) {
-        result.errors.push(`User ${userId}: ${e.message}`);
+        result.errors.push("User " + userId + ": " + e.message);
       }
     }
 

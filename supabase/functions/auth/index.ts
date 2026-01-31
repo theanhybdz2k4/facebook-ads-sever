@@ -196,7 +196,7 @@ Deno.serve(async (req: Request) => {
 
       const ct = req.headers.get("content-type") || "";
       console.log(`[Upload Debug] User: ${auth.userId}, Content-Type: ${ct}`);
-      
+
       let formData;
       try {
         formData = await req.formData();
@@ -259,6 +259,19 @@ Deno.serve(async (req: Request) => {
 
       if (error) return jsonResponse({ success: false, error: error.message }, 400);
       return jsonResponse({ success: true, result: users });
+    }
+
+    if (path.endsWith("/logout") && req.method === "POST") {
+      try {
+        const { refreshToken } = await req.json();
+        if (refreshToken) {
+          const { error } = await supabase.from("refresh_tokens").delete().eq("token", refreshToken);
+          if (error) console.error("[Logout Error]", error);
+        }
+      } catch (e) {
+        // Body might be empty or invalid, ignore
+      }
+      return jsonResponse({ success: true, message: "Logged out successfully" });
     }
 
     if (path.endsWith("/refresh") && req.method === "POST") {

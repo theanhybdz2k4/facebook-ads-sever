@@ -31,7 +31,7 @@ function getVietnamTime(): string {
     const h = String(vn.getUTCHours()).padStart(2, '0');
     const min = String(vn.getUTCMinutes()).padStart(2, '0');
     const s = String(vn.getUTCSeconds()).padStart(2, '0');
-    return `${y}-${m}-${d} ${h}:${min}:${s}`;
+    return y + "-" + m + "-" + d + " " + h + ":" + min + ":" + s;
 }
 
 class FacebookApiClient {
@@ -39,10 +39,10 @@ class FacebookApiClient {
 
     // Public method to fetch any FB API endpoint
     async request<T>(endpoint: string): Promise<T> {
-        const url = `${FB_BASE_URL}${endpoint}${endpoint.includes('?') ? '&' : '?'}access_token=${this.accessToken}`;
+        const url = FB_BASE_URL + endpoint + (endpoint.includes("?") ? "&" : "?") + "access_token=" + this.accessToken;
         const res = await fetch(url);
         const data = await res.json();
-        if (data.error) throw new Error(`FB API: ${data.error.message}`);
+        if (data.error) throw new Error("FB API: " + data.error.message);
         return data;
     }
 
@@ -85,31 +85,63 @@ class FacebookApiClient {
             }
         }
 
-        const url = new URL(`${FB_BASE_URL}/${entityId}/insights`);
+        const url = new URL(FB_BASE_URL + "/" + entityId + "/insights");
         url.searchParams.set("access_token", this.accessToken);
         for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v as string);
 
         let allData: any[] = [];
         let nextUrl: string | null = url.toString();
 
+        let retryCount = 0;
+        const maxRetries = 3;
+
         while (nextUrl) {
-            const response = await fetch(nextUrl);
-            const data = await response.json();
-            if (data.error) throw new Error(`FB API: ${data.error.message}`);
-            if (data.data) allData = allData.concat(data.data);
-            nextUrl = data.paging && data.paging.next ? data.paging.next : null;
+            try {
+                const response = await fetch(nextUrl);
+                const data = await response.json();
+
+                if (data.error) {
+                    // Rate limit error (17 or 4) or "too much data" warning
+                    if (data.error.code === 17 || data.error.code === 4 || data.error.message?.includes("reduce the amount of data")) {
+                        if (retryCount < maxRetries) {
+                            retryCount++;
+                            const waitMs = Math.pow(2, retryCount) * 1000;
+                            console.log(`[Insights] Rate limited, waiting ${waitMs}ms before retry ${retryCount}/${maxRetries}`);
+                            await new Promise(r => setTimeout(r, waitMs));
+                            continue;
+                        }
+                    }
+                    throw new Error("FB API: " + data.error.message);
+                }
+
+                retryCount = 0;
+                if (data.data) allData = allData.concat(data.data);
+                nextUrl = data.paging?.next || null;
+
+                if (nextUrl) await new Promise(r => setTimeout(r, 100)); // Small pause
+
+            } catch (e: any) {
+                if (retryCount < maxRetries) {
+                    retryCount++;
+                    const waitMs = Math.pow(2, retryCount) * 1000;
+                    console.log(`[Insights] Request failed, retrying in ${waitMs}ms: ${e.message}`);
+                    await new Promise(r => setTimeout(r, waitMs));
+                    continue;
+                }
+                throw e;
+            }
         }
         return allData;
     }
 
     async getAdCreatives(adIds: string[]): Promise<any[]> {
-        const url = new URL(`${FB_BASE_URL}/`);
+        const url = new URL(FB_BASE_URL + "/");
         url.searchParams.set("access_token", this.accessToken);
         url.searchParams.set("ids", adIds.join(","));
         url.searchParams.set("fields", "id,creative{id,object_story_spec,thumbnail_url,name}");
         const response = await fetch(url.toString());
         const data = await response.json();
-        if (data.error) throw new Error(`Facebook API Error: ${data.error.message}`);
+        if (data.error) throw new Error("Facebook API Error: " + data.error.message);
         return Object.values(data);
     }
 }
@@ -178,25 +210,40 @@ async function verifyAuth(req: Request) {
             return { userId: 1 };
         }
 
-        // PRIORITY: Check custom auth_tokens table first
+        // 3. PRIORITY: Check custom auth_tokens table
         try {
-            const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
+            const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).maybeSingle();
             if (tokenData) return { userId: tokenData.user_id };
         } catch (e) {
-            // Not found in auth_tokens, fallback to JWT
+            // Fallback
         }
 
-        // FALLBACK: JWT verification
+        // 4. FALLBACK 1: Manual JWT verification
         try {
-            const encoder = new TextEncoder();
-            const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-            const payload = await verify(token, key);
-            const sub = payload.sub as string;
-            const userIdNum = parseInt(sub, 10);
-            if (!isNaN(userIdNum)) return { userId: userIdNum };
-            return { userId: sub as any };
-        } catch (e: any) {
-            console.log("Auth: JWT verify failed:", e.message);
+            const secret = Deno.env.get("JWT_SECRET");
+            if (secret) {
+                const encoder = new TextEncoder();
+                const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+                const payload = await verify(token, key);
+
+                if (payload.role === "service_role") return { userId: 1 };
+
+                const sub = payload.sub as string;
+                if (sub) {
+                    const userIdNum = parseInt(sub, 10);
+                    return { userId: isNaN(userIdNum) ? sub : userIdNum };
+                }
+            }
+        } catch (e) {
+            // Fallback
+        }
+
+        // 5. FALLBACK 2: Supabase Auth (for valid Supabase JWTs)
+        try {
+            const { data: { user } } = await supabase.auth.getUser(token);
+            if (user) return { userId: user.id };
+        } catch (e) {
+            // Final fail
         }
     }
     return null;
@@ -226,19 +273,12 @@ Deno.serve(async (req: Request) => {
                 platformId = platform?.id || null;
             }
 
-            let selectString = `
-                *,
-                unified_ads(id, name, external_id),
-                unified_ad_groups(id, name),
-                unified_campaigns(id, name)
-            `;
+            let selectString = "*, unified_ads(id, name, external_id), unified_ad_groups(id, name), unified_campaigns(id, name), platform_accounts!inner(id, branch_id, platform_id, platform_identities!inner(user_id))";
 
-            // Add platform_accounts join if we need to filter by branch or platform
-            if ((branchId && branchId !== "all") || platformId) {
-                selectString += `, platform_accounts!inner(id, branch_id, platform_id)`;
-            }
-
-            let query = supabase.from("unified_insights").select(selectString);
+            let query = supabase
+                .from("unified_insights")
+                .select(selectString)
+                .eq("platform_accounts.platform_identities.user_id", auth.userId);
 
             if (dateStart) query = query.gte("date", dateStart);
             if (dateEnd) query = query.lte("date", dateEnd);
@@ -306,25 +346,22 @@ Deno.serve(async (req: Request) => {
 
             const fb = new FacebookApiClient(token);
             const vnNow = getVietnamTime();
-            console.log(`[Insights] Sync start at VN Time: ${vnNow}`);
+            console.log("[Insights] Sync start at VN Time: " + vnNow);
             const result: any = { insights: 0, hourly: 0, breakdowns: 0, debug: { vnNow } };
 
-            // Auto-assign branch if missing
-            const { data: accForBranch } = await supabase.from("platform_accounts").select("id, name, branch_id, platform_identities!inner(user_id)").eq("id", targetAccountId).single();
-            if (accForBranch && !accForBranch.branch_id) {
-                const userId = (accForBranch.platform_identities as any).user_id;
-                const { data: branches } = await supabase.from("branches").select("id, auto_match_keywords").eq("user_id", userId);
-                if (branches && branches.length > 0) {
-                    const accName = accForBranch.name?.toLowerCase() || "";
-                    for (const b of branches) {
-                        const keywords = b.auto_match_keywords || [];
-                        if (keywords.some((k: string) => k && accName.includes(k.toLowerCase()))) {
-                            await supabase.from("platform_accounts").update({ branch_id: b.id }).eq("id", targetAccountId);
-                            console.log(`[Insights] Auto-assigned account ${targetAccountId} to branch ${b.id}`);
-                            break;
-                        }
-                    }
-                }
+            // Auto-assign branch if missing AND Verify ownership
+            const { data: accForBranch, error: branchErr } = await supabase
+                .from("platform_accounts")
+                .select("id, name, branch_id, platform_identities!inner(user_id)")
+                .eq("id", targetAccountId)
+                .maybeSingle();
+
+            if (branchErr || !accForBranch) return jsonResponse({ success: false, error: "Account not found or access denied" }, 404);
+
+            const accountUserId = (accForBranch.platform_identities as any).user_id;
+            // Strict check: account user_id must match auth.userId (unless it's system user ID 1)
+            if (accountUserId !== auth.userId && auth.userId !== 1) {
+                return jsonResponse({ success: false, error: "Unauthorized: You do not own this account" }, 403);
             }
 
             const { data: campaigns } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", targetAccountId).limit(2000);
@@ -348,7 +385,7 @@ Deno.serve(async (req: Request) => {
                         // If ad doesn't exist, fetch real ad data from FB API and insert it
                         if (!adid && raw.ad_id) {
                             try {
-                                const adRes = await fb.request<any>(`/${raw.ad_id}?fields=id,adset_id,campaign_id,name,status,effective_status,created_time,updated_time`);
+                                const adRes = await fb.request<any>("/" + raw.ad_id + "?fields=id,adset_id,campaign_id,name,status,effective_status,created_time,updated_time");
                                 if (adRes && adRes.id) {
                                     const newAdId = crypto.randomUUID();
                                     const { error } = await supabase.from("unified_ads").insert({
@@ -364,22 +401,22 @@ Deno.serve(async (req: Request) => {
                                     if (!error) {
                                         adid = newAdId;
                                         adMap.set(raw.ad_id, newAdId);
-                                        console.log(`[InsightSync] Inline synced ad ${raw.ad_id} (${adRes.name})`);
+                                        console.log("[InsightSync] Inline synced ad " + raw.ad_id + " (" + (adRes.name || raw.ad_name) + ")");
                                     } else {
-                                        console.log(`[InsightSync] Failed to insert ad ${raw.ad_id}: ${error.message}`);
+                                        console.log("[InsightSync] Failed to insert ad " + raw.ad_id + ": " + error.message);
                                     }
                                 }
                             } catch (e: any) {
-                                console.log(`[InsightSync] Failed to fetch ad ${raw.ad_id}: ${e.message}`);
+                                console.log("[InsightSync] Failed to fetch ad " + raw.ad_id + ": " + e.message);
                             }
                         }
-                        
+
                         if (!adid) {
-                            console.log(`[InsightSync] Skipping insight for unknown ad ${raw.ad_id}`);
+                            console.log("[InsightSync] Skipping insight for unknown ad " + raw.ad_id);
                             continue;
                         }
 
-                        const key = `${targetAccountId}|${cid}|${agid}|${adid}|${raw.date_start}`;
+                        const key = targetAccountId + "|" + cid + "|" + agid + "|" + adid + "|" + raw.date_start;
 
                         function extractRevenue(raw: any): number {
                             if (!raw.action_values) return 0;
@@ -419,7 +456,7 @@ Deno.serve(async (req: Request) => {
 
                         // Debug Revenue
                         if (raw.action_values && raw.action_values.length > 0) {
-                            console.log(`[Revenue Debug] Account ${targetAccountId} Date ${raw.date_start}: Found action_values`, JSON.stringify(raw.action_values));
+                            console.log("[Revenue Debug] Account " + targetAccountId + " Date " + raw.date_start + ": Found action_values", JSON.stringify(raw.action_values));
                         }
 
                         if (raw.actions) {
@@ -456,7 +493,7 @@ Deno.serve(async (req: Request) => {
                     .eq("platform_account_id", targetAccountId)
                     .eq("status", "ACTIVE")
                     .eq("effective_status", "ACTIVE")
-                    .or(`end_time.is.null,end_time.gt.${nowStr}`);
+                    .or("end_time.is.null,end_time.gt." + nowStr);
 
                 let adList = bodyAdId ? ads : (activeAdsForHourly || ads || []);
                 if (bodyAdId) {
@@ -469,7 +506,7 @@ Deno.serve(async (req: Request) => {
                     }
                 }
 
-                console.log(`[Insights] Syncing hourly for ${adList.length} ads: ${dateStart} to ${dateEnd}`);
+                console.log("[Insights] Syncing hourly for " + adList.length + " ads: " + dateStart + " to " + dateEnd);
 
                 // Process ads in batches. Use small batch or single if targeting one ad.
                 const CONCURRENCY = bodyAdId ? 1 : 30;
@@ -488,7 +525,7 @@ Deno.serve(async (req: Request) => {
                                     const adid = ad.id;
                                     const hrRaw = raw.hourly_stats_aggregated_by_advertiser_time_zone || "0:0";
                                     const hr = parseInt(hrRaw.split(":")[0], 10);
-                                    const key = `${targetAccountId}|${cid}|${agid}|${adid}|${raw.date_start}|${hr}`;
+                                    const key = targetAccountId + "|" + cid + "|" + agid + "|" + adid + "|" + raw.date_start + "|" + hr;
 
                                     const current = hAggregated.get(key) || {
                                         platform_account_id: targetAccountId,
@@ -518,19 +555,19 @@ Deno.serve(async (req: Request) => {
 
                                 const hUpserts = Array.from(hAggregated.values());
 
-                                console.log(`[Insights] Upserting ${hUpserts.length} aggregated hourly items for ad ${ad.id}`);
+                                console.log("[Insights] Upserting " + hUpserts.length + " aggregated hourly items for ad " + ad.id);
                                 const { error: hrErr } = await supabase.from("unified_hourly_insights").upsert(hUpserts, {
                                     onConflict: "platform_account_id,unified_ad_id,date,hour"
                                 });
 
                                 if (hrErr) {
-                                    console.error(`[Insights] Hourly upsert error for ad ${ad.id}: ${hrErr.message}`);
+                                    console.error("[Insights] Hourly upsert error for ad " + ad.id + ": " + hrErr.message);
                                 } else {
                                     result.hourly += hUpserts.length;
                                 }
                             }
                         } catch (e: any) {
-                            console.error(`[Insights] Error syncing hourly for ad ${ad.id}:`, e.message);
+                            console.error("[Insights] Error syncing hourly for ad " + ad.id + ":", e.message);
                         }
                     }));
                 }
@@ -544,7 +581,7 @@ Deno.serve(async (req: Request) => {
                         const cid = campaignMap.get(raw?.campaign_id) || null;
                         const agid = adGroupMap.get(raw?.adset_id) || null;
                         const adid = adMap.get(raw.ad_id) || null;
-                        const key = `${targetAccountId}|${cid}|${agid}|${adid}|${raw.date_start}`;
+                        const key = targetAccountId + "|" + cid + "|" + agid + "|" + adid + "|" + raw.date_start;
                         return [key, {
                             platform_account_id: targetAccountId,
                             unified_campaign_id: cid,
@@ -568,7 +605,7 @@ Deno.serve(async (req: Request) => {
                             // Find match by date and ad UUID
                             const match = parents.find((p: any) => p.date === raw.date_start && (p.unified_ad_id === dbAdId));
                             if (!match) {
-                                console.log(`[Insights] No parent match found for ad ${raw.ad_id} (local: ${dbAdId}) on ${raw.date_start} in ${parents.length} parents`);
+                                console.log("[Insights] No parent match found for ad " + raw.ad_id + " (local: " + dbAdId + ") on " + raw.date_start + " in " + parents.length + " parents");
                             }
                             return match?.id;
                         };
@@ -618,8 +655,8 @@ Deno.serve(async (req: Request) => {
             try {
                 // Only sync creatives for truly active ads
                 const nowDate = new Date();
-                const adsToSyncCreative = bodyAdId 
-                    ? ads?.filter((a: any) => a.id === bodyAdId) 
+                const adsToSyncCreative = bodyAdId
+                    ? ads?.filter((a: any) => a.id === bodyAdId)
                     : ads?.filter((a: any) => {
                         const isStatusActive = a.status === "ACTIVE";
                         const isEffectiveActive = a.effective_status === "ACTIVE";
@@ -644,7 +681,7 @@ Deno.serve(async (req: Request) => {
                             return {
                                 external_id: c.id,
                                 platform_account_id: targetAccountId,
-                                name: c.name || `Creative ${c.id}`,
+                                name: c.name || "Creative " + c.id,
                                 thumbnail_url: c.thumbnail_url || null,
                                 platform_data: c,
                                 synced_at: getVietnamTime(),

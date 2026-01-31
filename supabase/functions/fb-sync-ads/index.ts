@@ -20,14 +20,14 @@ function getVietnamTime(): string {
     const h = String(vn.getUTCHours()).padStart(2, '0');
     const min = String(vn.getUTCMinutes()).padStart(2, '0');
     const s = String(vn.getUTCSeconds()).padStart(2, '0');
-    return `${y}-${m}-${d} ${h}:${min}:${s}`;
+    return y + "-" + m + "-" + d + " " + h + ":" + min + ":" + s;
 }
 
 class FacebookApiClient {
     constructor(private accessToken: string) { }
 
     private async request<T>(endpoint: string, params: Record<string, string> = {}): Promise<T> {
-        const url = new URL(`${FB_BASE_URL}${endpoint}`);
+        const url = new URL(FB_BASE_URL + endpoint);
         url.searchParams.set("access_token", this.accessToken);
         for (const [key, value] of Object.entries(params)) {
             if (value !== undefined && value !== null) url.searchParams.set(key, value);
@@ -41,7 +41,7 @@ class FacebookApiClient {
     async getAds(accountId: string): Promise<any[]> {
         let allAds: any[] = [];
         // Use smaller batch size to avoid rate limits
-        let url: string | null = `${FB_BASE_URL}/${accountId}/ads?fields=id,adset_id,campaign_id,name,status,effective_status,creative{id,name,thumbnail_url,image_url},created_time,updated_time,configured_status&limit=200&access_token=${this.accessToken}`;
+        let url: string | null = FB_BASE_URL + "/" + accountId + "/ads?fields=id,adset_id,campaign_id,name,status,effective_status,creative{id,name,thumbnail_url,image_url},created_time,updated_time,configured_status&limit=200&access_token=" + this.accessToken;
 
         let retryCount = 0;
         const maxRetries = 3;
@@ -57,12 +57,12 @@ class FacebookApiClient {
                         if (retryCount < maxRetries) {
                             retryCount++;
                             const waitMs = Math.pow(2, retryCount) * 1000; // Exponential backoff: 2s, 4s, 8s
-                            console.log(`[AdsSync] Rate limited, waiting ${waitMs}ms before retry ${retryCount}/${maxRetries}`);
+                            console.log("[AdsSync] Rate limited, waiting " + waitMs + "ms before retry " + retryCount + "/" + maxRetries);
                             await new Promise(r => setTimeout(r, waitMs));
                             continue; // Retry same URL
                         }
                     }
-                    throw new Error(`Facebook API Error: ${data.error.message}`);
+                    throw new Error("Facebook API Error: " + data.error.message);
                 }
 
                 retryCount = 0; // Reset retry count on success
@@ -76,7 +76,7 @@ class FacebookApiClient {
                 if (retryCount < maxRetries) {
                     retryCount++;
                     const waitMs = Math.pow(2, retryCount) * 1000;
-                    console.log(`[AdsSync] Error, waiting ${waitMs}ms before retry: ${e.message}`);
+                    console.log("[AdsSync] Error, waiting " + waitMs + "ms before retry: " + e.message);
                     await new Promise(r => setTimeout(r, waitMs));
                     continue;
                 }
@@ -84,7 +84,7 @@ class FacebookApiClient {
             }
         }
 
-        console.log(`[AdsSync] Fetched ${allAds.length} ads total`);
+        console.log("[AdsSync] Fetched " + allAds.length + " ads total");
         return allAds;
     }
 }
@@ -106,35 +106,53 @@ async function verifyAuth(req: Request) {
     const authSecret = Deno.env.get("AUTH_SECRET") || "";
     const legacyToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxuY2dtYXh0cWpmYmN5cG5jZm9lIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NzM0NzQxMywiZXhwIjoyMDgyOTIzNDEzfQ.zalV6mnyd1Iit0KbHnqLxemnBKFPbKz2159tkHtodJY";
 
+    // 1. Check Service/Master Key in specialized headers
     if (serviceKeyHeader === serviceKey || serviceKeyHeader === masterKey || serviceKeyHeader === legacyToken) {
         return { userId: 1 };
     }
 
     if (authHeader?.startsWith("Bearer ")) {
         const token = authHeader.substring(7).trim();
+
+        // 2. Check Service/Master/Auth secrets as Bearer token
         if ((serviceKey !== "" && token === serviceKey) || (masterKey !== "" && token === masterKey) || (authSecret !== "" && token === authSecret) || token === legacyToken) {
             return { userId: 1 };
         }
 
-        // PRIORITY: Check custom auth_tokens table first
+        // 3. PRIORITY: Check custom auth_tokens table
         try {
-            const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
+            const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).maybeSingle();
             if (tokenData) return { userId: tokenData.user_id };
         } catch (e) {
-            // Not found in auth_tokens, fallback to JWT
+            // Fallback
         }
 
-        // FALLBACK: JWT verification
+        // 4. FALLBACK 1: Manual JWT verification
         try {
-            const encoder = new TextEncoder();
-            const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-            const payload = await verify(token, key);
-            const sub = payload.sub as string;
-            const userIdNum = parseInt(sub, 10);
-            if (!isNaN(userIdNum)) return { userId: userIdNum };
-            return { userId: sub as any };
-        } catch (e: any) {
-            console.log("Auth: JWT verify failed:", e.message);
+            const secret = Deno.env.get("JWT_SECRET");
+            if (secret) {
+                const encoder = new TextEncoder();
+                const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+                const payload = await verify(token, key);
+
+                if (payload.role === "service_role") return { userId: 1 };
+
+                const sub = payload.sub as string;
+                if (sub) {
+                    const userIdNum = parseInt(sub, 10);
+                    return { userId: isNaN(userIdNum) ? sub : userIdNum };
+                }
+            }
+        } catch (e) {
+            // Fallback
+        }
+
+        // 5. FALLBACK 2: Supabase Auth (for valid Supabase JWTs)
+        try {
+            const { data: { user } } = await supabase.auth.getUser(token);
+            if (user) return { userId: user.id };
+        } catch (e) {
+            // Final fail
         }
     }
     return null;
@@ -157,10 +175,12 @@ Deno.serve(async (req: Request) => {
 
         const { data: account, error: accountError } = await supabase
             .from("platform_accounts")
-            .select(`id, external_id, platform_identities!inner (id, platform_credentials (credential_type, credential_value, is_active))`)
-            .eq("id", accountId).single();
+            .select("id, external_id, platform_identities!inner (id, user_id, platform_credentials (credential_type, credential_value, is_active))")
+            .eq("id", accountId)
+            .eq("platform_identities.user_id", auth.userId)
+            .maybeSingle();
 
-        if (accountError || !account) return jsonResponse({ success: false, error: "Account not found" }, 404);
+        if (accountError || !account) return jsonResponse({ success: false, error: "Account not found or access denied" }, 404);
 
         const creds = account.platform_identities?.platform_credentials || [];
         const tokenCred = creds.find((c: any) => c.credential_type === "access_token" && c.is_active);
@@ -186,7 +206,7 @@ Deno.serve(async (req: Request) => {
             const uniqueCreatives = Array.from(creativeMap.values());
             const creativeIdMapping = new Map<string, string>(); // External ID -> Internal UUID
 
-            console.log(`[AdsSync] Found ${uniqueCreatives.length} unique creatives from ${fbAds.length} ads`);
+            console.log("[AdsSync] Found " + uniqueCreatives.length + " unique creatives from " + fbAds.length + " ads");
 
             // First fetch existing creatives to preserve IDs for upsert
             const externalIds = uniqueCreatives.map(c => c.id);
@@ -203,24 +223,24 @@ Deno.serve(async (req: Request) => {
                     id: existingCreativeMap.get(c.id) || crypto.randomUUID(),
                     external_id: c.id,
                     platform_account_id: accountId,
-                    name: c.name || `Creative ${c.id}`,
+                    name: c.name || "Creative " + c.id,
                     thumbnail_url: c.thumbnail_url || c.image_url || null,
                     image_url: c.image_url || null,
                     platform_data: c,
                     synced_at: getVietnamTime(),
                 }));
 
-                console.log(`[AdsSync] Upserting ${creativeUpserts.length} creatives to DB...`);
+                console.log("[AdsSync] Upserting " + creativeUpserts.length + " creatives to DB...");
                 const { data: upsertedCreatives, error: creErr } = await supabase
                     .from("unified_ad_creatives")
                     .upsert(creativeUpserts, { onConflict: "platform_account_id,external_id" })
                     .select("id, external_id");
 
                 if (creErr) {
-                    console.error(`[AdsSync] Creative Batch Error: ${creErr.message}`);
-                    result.errors.push(`Creative Batch Error: ${creErr.message}`);
+                    console.error("AdsSync Creative Batch Error: " + creErr.message);
+                    result.errors.push("Creative Batch Error: " + creErr.message);
                 } else if (upsertedCreatives) {
-                    console.log(`[AdsSync] Successfully upserted ${upsertedCreatives.length} creatives`);
+                    console.log("[AdsSync] Successfully upserted " + upsertedCreatives.length + " creatives");
                     upsertedCreatives.forEach(c => creativeIdMapping.set(c.external_id, c.id));
                     result.creatives = upsertedCreatives.length;
                 }
@@ -253,13 +273,13 @@ Deno.serve(async (req: Request) => {
             }).filter(Boolean);
 
             if (adUpserts.length > 0) {
-                console.log(`[AdsSync] Upserting ${adUpserts.length} ads to DB...`);
+                console.log("[AdsSync] Upserting " + adUpserts.length + " ads to DB...");
                 const { error: adErr } = await supabase.from("unified_ads").upsert(adUpserts as any[], { onConflict: "platform_account_id,external_id" });
                 if (adErr) {
-                    console.error(`[AdsSync] Ad Batch Error: ${adErr.message}`);
-                    result.errors.push(`Ad Batch Error: ${adErr.message}`);
+                    console.error("AdsSync Ad Batch Error: " + adErr.message);
+                    result.errors.push("Ad Batch Error: " + adErr.message);
                 } else {
-                    console.log(`[AdsSync] Successfully upserted ${adUpserts.length} ads`);
+                    console.log("[AdsSync] Successfully upserted " + adUpserts.length + " ads");
                     result.ads = adUpserts.length;
                 }
             }

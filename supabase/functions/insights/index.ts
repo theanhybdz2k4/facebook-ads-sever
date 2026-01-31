@@ -28,44 +28,55 @@ async function verifyAuth(req: Request) {
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
     const authSecret = Deno.env.get("AUTH_SECRET") || "";
 
-    if (serviceKeyHeader === serviceKey || serviceKeyHeader === masterKey) {
+    // 1. Check Service/Master Key in specialized headers
+    if (serviceKeyHeader === serviceKey || (masterKey && serviceKeyHeader === masterKey)) {
         return { userId: 1 };
     }
 
     if (authHeader?.startsWith("Bearer ")) {
         const token = authHeader.substring(7).trim();
-        if ((serviceKey !== "" && token === serviceKey) || (masterKey !== "" && token === masterKey) || (authSecret !== "" && token === authSecret)) {
+
+        // 2. Check Service/Master/Auth secrets as Bearer token
+        if ((serviceKey && token === serviceKey) ||
+            (masterKey && token === masterKey) ||
+            (authSecret && token === authSecret)) {
             return { userId: 1 };
         }
 
-        // PRIORITY: Check custom auth_tokens table first
+        // 3. PRIORITY: Check custom auth_tokens table
         try {
-            const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).single();
+            const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).maybeSingle();
             if (tokenData) return { userId: tokenData.user_id };
         } catch (e) {
-            // Fallback to JWT
+            // Fallback
         }
 
-        // FALLBACK: JWT verification
-        // FALLBACK: JWT verification
+        // 4. FALLBACK 1: Manual JWT verification
         try {
-            const encoder = new TextEncoder();
-            const key = await crypto.subtle.importKey("raw", encoder.encode(JWT_SECRET || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-            const payload = await verify(token, key);
+            const secret = Deno.env.get("JWT_SECRET");
+            if (secret) {
+                const encoder = new TextEncoder();
+                const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+                const payload = await verify(token, key);
 
-            // service_role tokens don't have a 'sub' but have 'role'
-            if (payload.role === "service_role") {
-                return { userId: 1 };
-            }
+                if (payload.role === "service_role") return { userId: 1 };
 
-            const sub = payload.sub as string;
-            if (sub) {
-                const userIdNum = parseInt(sub, 10);
-                if (!isNaN(userIdNum)) return { userId: userIdNum };
-                return { userId: sub as any };
+                const sub = payload.sub as string;
+                if (sub) {
+                    const userIdNum = parseInt(sub, 10);
+                    return { userId: isNaN(userIdNum) ? sub : userIdNum };
+                }
             }
-        } catch (e: any) {
-            console.log("Auth: JWT verify failed:", e.message);
+        } catch (e) {
+            // Fallback
+        }
+
+        // 5. FALLBACK 2: Supabase Auth (for valid Supabase JWTs)
+        try {
+            const { data: { user } } = await supabase.auth.getUser(token);
+            if (user) return { userId: user.id };
+        } catch (e) {
+            // Final fail
         }
     }
     return null;
@@ -76,8 +87,8 @@ Deno.serve(async (req: Request) => {
 
     const auth = await verifyAuth(req);
     if (!auth) {
-        return jsonResponse({ 
-            success: false, 
+        return jsonResponse({
+            success: false,
             error: "Unauthorized",
             debug: {
                 hasSecret: !!Deno.env.get("JWT_SECRET"),
@@ -98,14 +109,76 @@ Deno.serve(async (req: Request) => {
     try {
         // GET /insights (list)
         if ((path === "/" || path === "") && method === "GET") {
-            const proxyUrl = new URL(`${supabaseUrl}/functions/v1/fb-sync-insights`);
-            url.searchParams.forEach((v, k) => proxyUrl.searchParams.set(k, v));
+            const dateStart = url.searchParams.get("dateStart");
+            const dateEnd = url.searchParams.get("dateEnd");
+            const adId = url.searchParams.get("adId");
+            const accountId = url.searchParams.get("accountId");
+            const branchId = url.searchParams.get("branchId");
+            const platformCode = url.searchParams.get("platformCode");
 
-            const res = await fetch(proxyUrl.toString(), {
-                headers: { "Authorization": req.headers.get("Authorization") || "" }
-            });
-            const data = await res.json();
-            return jsonResponse(data, res.status);
+            // 1. Get user's account IDs efficiently
+            const accountQuery = supabase
+                .from("platform_accounts")
+                .select("id, platform_identities!inner(user_id)")
+                .eq("platform_identities.user_id", auth.userId);
+            
+            if (accountId) accountQuery.eq("id", accountId);
+            if (branchId && branchId !== "all") accountQuery.eq("branch_id", branchId);
+            
+            if (platformCode && platformCode !== "all") {
+                const { data: platform } = await supabase.from("platforms").select("id").eq("code", platformCode).single();
+                if (platform) accountQuery.eq("platform_id", platform.id);
+            }
+
+            const { data: accounts, error: accError } = await accountQuery;
+            if (accError) throw accError;
+
+            const accountIds = (accounts || []).map(a => a.id);
+            if (accountIds.length === 0) return jsonResponse([]);
+
+            // 2. Query insights directly using IN filter on accountIds (hits indices)
+            let query = supabase
+                .from("unified_insights")
+                .select(`
+                    id,
+                    date,
+                    spend,
+                    impressions,
+                    clicks,
+                    reach,
+                    results,
+                    unified_ad_id,
+                    unified_ads(id, name, external_id, platform_account_id)
+                `)
+                .in("platform_account_id", accountIds)
+                .not("unified_ad_id", "is", null);
+
+            if (dateStart) query = query.gte("date", dateStart);
+            if (dateEnd) query = query.lte("date", dateEnd);
+            if (adId) query = query.eq("unified_ad_id", adId);
+
+            const { data, error } = await query.order("date", { ascending: false }).limit(5000);
+            if (error) throw error;
+
+            // 3. Map to camelCase for frontend compatibility
+            const mapped = (data || []).map((i: any) => ({
+                id: i.id,
+                date: i.date,
+                adId: i.unified_ad_id,
+                impressions: i.impressions,
+                clicks: i.clicks,
+                spend: i.spend,
+                reach: i.reach,
+                results: i.results,
+                ad: i.unified_ads ? {
+                    id: i.unified_ads.id,
+                    name: i.unified_ads.name,
+                    externalId: i.unified_ads.external_id,
+                    account: i.unified_ads.platform_account_id
+                } : null
+            }));
+
+            return jsonResponse(mapped);
         }
 
         // GET /insights/ads/:adId/analytics
