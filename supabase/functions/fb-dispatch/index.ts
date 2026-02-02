@@ -207,21 +207,27 @@ Deno.serve(async (req: Request) => {
           continue;
         }
 
-        // Get user's accounts ONCE
-        const { data: accounts } = await supabase
+        // Get user's accounts - sorted by synced_at ASC (oldest first)
+        // CRITICAL: Limit to 2 accounts per cron run to avoid Edge Function timeout (~150s)
+        const { data: allAccounts } = await supabase
           .from("platform_accounts")
-          .select("id, name, external_id, branch_id, platform_identities!inner (user_id)")
+          .select("id, name, external_id, branch_id, synced_at, platform_identities!inner (user_id)")
           .eq("platform_identities.user_id", userId)
           .eq("account_status", "1")  // 1 = ACTIVE in Facebook API
+          .order("synced_at", { ascending: true, nullsFirst: true })
           .limit(2000);
 
-        console.log("[Dispatch] User " + userId + " found " + (accounts?.length || 0) + " active accounts");
+        // Only process 2 accounts with oldest synced_at to avoid timeout
+        const MAX_ACCOUNTS_PER_RUN = 2;
+        const accounts = (allAccounts || []).slice(0, MAX_ACCOUNTS_PER_RUN);
+
+        console.log("[Dispatch] User " + userId + " found " + (allAccounts?.length || 0) + " active accounts, processing " + accounts.length + " (oldest synced_at first)");
 
         // Fetch branches for auto-assignment
         const { data: branches } = await supabase.from("branches").select("id, auto_match_keywords").eq("user_id", userId);
 
         const branchIds = new Set<number>();
-        const summary = { accounts: accounts?.length || 0, items: 0, errors: 0 };
+        const summary = { totalAccounts: allAccounts?.length || 0, accountsProcessed: accounts.length, items: 0, errors: 0 };
 
         // Process accounts SEQUENTIALLY to avoid rate limits and race conditions
         for (const account of (accounts || [])) {
@@ -411,7 +417,7 @@ Deno.serve(async (req: Request) => {
               // Optional: Also send a summary or omit generic report
             } else {
               // Fallback to generic if no ad spend found specifically in that hour but sync happened
-              const msg = "📊 *Sync Report (Optimized)*\n📅 " + new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }) + "\n✅ Accounts: " + summary.accounts + "\n📈 Items: " + summary.items + "\n⚠️ Errors: " + summary.errors + "\n🔧 Sync: " + Array.from(types).join(", ");
+              const msg = "📊 *Sync Report (Optimized)*\n📅 " + new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }) + "\n✅ Synced: " + summary.accountsProcessed + "/" + summary.totalAccounts + " accounts\n📈 Items: " + summary.items + "\n⚠️ Errors: " + summary.errors + "\n🔧 Sync: " + Array.from(types).join(", ");
               for (const bot of bots || []) {
                 for (const sub of (bot.telegram_subscribers || []).filter((s: any) => s.is_active)) {
                   await sendTelegram(bot.bot_token, sub.chat_id, msg);
@@ -420,7 +426,7 @@ Deno.serve(async (req: Request) => {
             }
           } else {
             // Standard daily/full sync summary
-            const msg = "📊 *Sync Report (Optimized)*\n📅 " + new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }) + "\n✅ Accounts: " + summary.accounts + "\n📈 Items: " + summary.items + "\n⚠️ Errors: " + summary.errors + "\n🔧 Sync: " + Array.from(types).join(", ");
+            const msg = "📊 *Sync Report (Optimized)*\n📅 " + new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }) + "\n✅ Synced: " + summary.accountsProcessed + "/" + summary.totalAccounts + " accounts\n📈 Items: " + summary.items + "\n⚠️ Errors: " + summary.errors + "\n🔧 Sync: " + Array.from(types).join(", ");
             for (const bot of bots || []) {
               for (const sub of (bot.telegram_subscribers || []).filter((s: any) => s.is_active)) {
                 await sendTelegram(bot.bot_token, sub.chat_id, msg);

@@ -46,6 +46,18 @@ class FacebookApiClient {
         return data;
     }
 
+    async getCampaign(campaignId: string): Promise<any> {
+        return this.request<any>("/" + campaignId + "?fields=id,account_id,name,objective,status,effective_status,daily_budget,lifetime_budget,start_time,stop_time");
+    }
+
+    async getAdSet(adsetId: string): Promise<any> {
+        return this.request<any>("/" + adsetId + "?fields=id,campaign_id,name,status,effective_status,daily_budget,optimization_goal,start_time,end_time");
+    }
+
+    async getAd(adId: string): Promise<any> {
+        return this.request<any>("/" + adId + "?fields=id,adset_id,campaign_id,name,status,effective_status,created_time,updated_time");
+    }
+
     async getInsights(entityId: string, level: string, dateRange: { start: string; end: string }, granularity: "DAILY" | "HOURLY" = "DAILY", breakdowns?: string): Promise<any[]> {
         if (granularity === "HOURLY" && dateRange.start !== dateRange.end) {
             const arr = [];
@@ -106,7 +118,7 @@ class FacebookApiClient {
                         if (retryCount < maxRetries) {
                             retryCount++;
                             const waitMs = Math.pow(2, retryCount) * 1000;
-                            console.log(`[Insights] Rate limited, waiting ${waitMs}ms before retry ${retryCount}/${maxRetries}`);
+                            console.log("[Insights] Rate limited, waiting " + waitMs + "ms before retry " + retryCount + "/" + maxRetries);
                             await new Promise(r => setTimeout(r, waitMs));
                             continue;
                         }
@@ -124,7 +136,7 @@ class FacebookApiClient {
                 if (retryCount < maxRetries) {
                     retryCount++;
                     const waitMs = Math.pow(2, retryCount) * 1000;
-                    console.log(`[Insights] Request failed, retrying in ${waitMs}ms: ${e.message}`);
+                    console.log("[Insights] Request failed, retrying in " + waitMs + "ms: " + e.message);
                     await new Promise(r => setTimeout(r, waitMs));
                     continue;
                 }
@@ -383,27 +395,90 @@ Deno.serve(async (req: Request) => {
                         let adid = adMap.get(raw.ad_id) || null;
 
                         // If ad doesn't exist, fetch real ad data from FB API and insert it
+                        // Also create campaign and ad_group if they don't exist
                         if (!adid && raw.ad_id) {
                             try {
-                                const adRes = await fb.request<any>("/" + raw.ad_id + "?fields=id,adset_id,campaign_id,name,status,effective_status,created_time,updated_time");
+                                const adRes = await fb.getAd(raw.ad_id);
                                 if (adRes && adRes.id) {
-                                    const newAdId = crypto.randomUUID();
-                                    const { error } = await supabase.from("unified_ads").insert({
-                                        id: newAdId,
-                                        external_id: adRes.id,
-                                        platform_account_id: targetAccountId,
-                                        unified_ad_group_id: adGroupMap.get(adRes.adset_id) || null,
-                                        name: adRes.name || raw.ad_name,
-                                        status: adRes.status || "UNKNOWN",
-                                        effective_status: adRes.effective_status || "UNKNOWN",
-                                        synced_at: getVietnamTime()
-                                    });
-                                    if (!error) {
-                                        adid = newAdId;
-                                        adMap.set(raw.ad_id, newAdId);
-                                        console.log("[InsightSync] Inline synced ad " + raw.ad_id + " (" + (adRes.name || raw.ad_name) + ")");
-                                    } else {
-                                        console.log("[InsightSync] Failed to insert ad " + raw.ad_id + ": " + error.message);
+                                    // First ensure campaign exists
+                                    let campId = campaignMap.get(adRes.campaign_id);
+                                    if (!campId && adRes.campaign_id) {
+                                        try {
+                                            const campRes = await fb.getCampaign(adRes.campaign_id);
+                                            if (campRes && campRes.id) {
+                                                const newCampId = crypto.randomUUID();
+                                                await supabase.from("unified_campaigns").upsert({
+                                                    id: newCampId,
+                                                    external_id: campRes.id,
+                                                    platform_account_id: targetAccountId,
+                                                    name: campRes.name || "Campaign " + campRes.id,
+                                                    objective: campRes.objective,
+                                                    status: campRes.status || "UNKNOWN",
+                                                    effective_status: campRes.effective_status || "UNKNOWN",
+                                                    platform_data: campRes,
+                                                    synced_at: getVietnamTime(),
+                                                }, { onConflict: "platform_account_id,external_id" });
+                                                campaignMap.set(campRes.id, newCampId);
+                                                campId = newCampId;
+                                                console.log("[InsightSync] Auto-created campaign " + campRes.id);
+                                            }
+                                        } catch (ce: any) {
+                                            console.log("[InsightSync] Failed to create campaign: " + ce.message);
+                                        }
+                                    }
+
+                                    // Then ensure ad_group exists
+                                    let agId = adGroupMap.get(adRes.adset_id);
+                                    if (!agId && adRes.adset_id) {
+                                        try {
+                                            const agRes = await fb.getAdSet(adRes.adset_id);
+                                            if (agRes && agRes.id) {
+                                                const newAgId = crypto.randomUUID();
+                                                const parentCampId = campaignMap.get(agRes.campaign_id) || campId;
+                                                await supabase.from("unified_ad_groups").upsert({
+                                                    id: newAgId,
+                                                    external_id: agRes.id,
+                                                    platform_account_id: targetAccountId,
+                                                    unified_campaign_id: parentCampId,
+                                                    name: agRes.name || "AdSet " + agRes.id,
+                                                    status: agRes.status || "UNKNOWN",
+                                                    effective_status: agRes.effective_status || "UNKNOWN",
+                                                    daily_budget: agRes.daily_budget ? parseFloat(agRes.daily_budget) : null,
+                                                    optimization_goal: agRes.optimization_goal,
+                                                    start_time: agRes.start_time || null,
+                                                    end_time: agRes.end_time || null,
+                                                    platform_data: agRes,
+                                                    synced_at: getVietnamTime(),
+                                                }, { onConflict: "platform_account_id,external_id" });
+                                                adGroupMap.set(agRes.id, newAgId);
+                                                agId = newAgId;
+                                                console.log("[InsightSync] Auto-created ad_group " + agRes.id);
+                                            }
+                                        } catch (age: any) {
+                                            console.log("[InsightSync] Failed to create ad_group: " + age.message);
+                                        }
+                                    }
+
+                                    // Finally create the ad
+                                    if (agId) {
+                                        const newAdId = crypto.randomUUID();
+                                        const { error } = await supabase.from("unified_ads").upsert({
+                                            id: newAdId,
+                                            external_id: adRes.id,
+                                            platform_account_id: targetAccountId,
+                                            unified_ad_group_id: agId,
+                                            name: adRes.name || raw.ad_name,
+                                            status: adRes.status || "UNKNOWN",
+                                            effective_status: adRes.effective_status || "UNKNOWN",
+                                            synced_at: getVietnamTime()
+                                        }, { onConflict: "platform_account_id,external_id" });
+                                        if (!error) {
+                                            adid = newAdId;
+                                            adMap.set(raw.ad_id, newAdId);
+                                            console.log("[InsightSync] Auto-created ad " + raw.ad_id + " (" + (adRes.name || raw.ad_name) + ")");
+                                        } else {
+                                            console.log("[InsightSync] Failed to insert ad " + raw.ad_id + ": " + error.message);
+                                        }
                                     }
                                 }
                             } catch (e: any) {
@@ -723,5 +798,3 @@ Deno.serve(async (req: Request) => {
         return jsonResponse({ success: false, error: error.message }, 500);
     }
 });
-
-// Local aggregateBranchStats removed in favor of centralized branches/stats/recalculate

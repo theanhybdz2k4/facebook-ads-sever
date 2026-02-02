@@ -247,7 +247,7 @@ Deno.serve(async (req) => {
                     // STRICT LOOKUP: ONLY external_id + fb_page_id
                     const { data: existingLead } = await supabase
                         .from("leads")
-                        .select("id, customer_name, customer_avatar, is_potential, ai_analysis, is_manual_potential")
+                        .select("id, customer_name, customer_avatar, is_potential, ai_analysis, is_manual_potential, metadata")
                         .eq("external_id", customerId)
                         .eq("fb_page_id", pageId)
                         .limit(1)
@@ -517,8 +517,75 @@ Deno.serve(async (req) => {
                         }
                     }
 
-                    // 2. CRAWL ENTIRE CONVERSATION (like pancake.vn) - ONLY for new leads
-                    if (!existingLead && dbLead && pageToken) {
+                    // 2. AI ANALYSIS: Run when message is from customer and lead needs analysis
+                    // This uses messages from DB (already saved), NOT from crawl
+                    if (dbLead && geminiApiKey && !isFromPage) {
+                        // Check if we should run analysis (no manual override + either no analysis yet or cooldown passed)
+                        const hasManualPotential = existingLead?.is_manual_potential === true;
+                        const lastAnalysis = existingLead?.metadata?.last_analysis_at;
+                        const analysisCooldownMs = 30 * 60 * 1000; // 30 minutes cooldown
+                        const canAnalyze = !hasManualPotential && (!lastAnalysis || (Date.now() - new Date(lastAnalysis).getTime() > analysisCooldownMs));
+                        
+                        if (canAnalyze) {
+                            console.log("[FB-Webhook] Running AI analysis from DB messages for lead " + dbLead.id + "...");
+                            
+                            // Fetch messages from DB (already saved)
+                            const { data: dbMessages } = await supabase
+                                .from("lead_messages")
+                                .select("sender_name, message_content, is_from_customer")
+                                .eq("lead_id", dbLead.id)
+                                .order("sent_at", { ascending: true })
+                                .limit(50);
+                            
+                            if (dbMessages && dbMessages.length > 0) {
+                                const messagesForAnalysis = dbMessages
+                                    .filter((m: any) => m.message_content && m.message_content.trim())
+                                    .map((m: any) => ({
+                                        sender: m.sender_name,
+                                        content: m.message_content,
+                                        isFromCustomer: m.is_from_customer
+                                    }));
+                                
+                                if (messagesForAnalysis.length > 0) {
+                                    console.log("[FB-Webhook] Analyzing " + messagesForAnalysis.length + " messages from DB with Gemini...");
+                                    const geminiResult = await analyzeWithGemini(geminiApiKey, messagesForAnalysis);
+                                    
+                                    if (geminiResult) {
+                                        const existingMetadata = existingLead?.metadata || {};
+                                        const { error: analysisErr } = await supabase
+                                            .from("leads")
+                                            .update({ 
+                                                ai_analysis: geminiResult.analysis,
+                                                is_potential: geminiResult.isPotential,
+                                                last_analysis_at: new Date().toISOString(),
+                                                metadata: { ...existingMetadata, last_analysis_at: new Date().toISOString() }
+                                            })
+                                            .eq("id", dbLead.id);
+                                        
+                                        if (!analysisErr) {
+                                            console.log("[FB-Webhook] Updated lead " + dbLead.id + " with AI analysis, isPotential=" + geminiResult.isPotential);
+                                        } else {
+                                            console.error("[FB-Webhook] Failed to save AI analysis:", analysisErr);
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            console.log("[FB-Webhook] Skipping AI analysis: hasManualPotential=" + hasManualPotential + ", cooldown not passed");
+                        }
+                    }
+
+                    // 3. CRAWL ENTIRE CONVERSATION - Only for new leads OR if not crawled today
+                    // Check if already crawled today (daily limit: 1 crawl per lead per day)
+                    const todayVN = new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10); // YYYY-MM-DD in VN timezone
+                    const lastCrawledAt = existingLead?.metadata?.last_crawled_at;
+                    const lastCrawledDate = lastCrawledAt ? lastCrawledAt.slice(0, 10) : null;
+                    const alreadyCrawledToday = lastCrawledDate === todayVN;
+                    
+                    const shouldCrawl = !existingLead || (!alreadyCrawledToday && dbLead);
+                    
+                    if (shouldCrawl && dbLead && pageToken) {
+                        console.log("[FB-Webhook] Crawl check: isNew=" + (!existingLead) + ", lastCrawled=" + lastCrawledDate + ", today=" + todayVN + ", shouldCrawl=" + shouldCrawl);
                         try {
                             console.log("[FB-Webhook] Triggering full conversation crawl for customer " + customerId + "...");
                             // Fetch conversations to find the ID, participants, and labels
@@ -551,7 +618,7 @@ Deno.serve(async (req) => {
                                         console.log("[FB-Webhook] Manual potential detected via FB label: " + conv.labels.data.map((l: any) => l.name).join(", "));
                                     }
                                 }
-                                const msgsRes = await fetch(FB_BASE_URL + "/" + conv.id + "/messages?fields=id,message,from,created_time,attachments,shares,sticker&limit=50&access_token=" + pageToken);
+                                const msgsRes = await fetch(FB_BASE_URL + "/" + conv.id + "/messages?fields=id,message,from,created_time,attachments,shares,sticker&limit=100&access_token=" + pageToken);
                                 const msgsData = await msgsRes.json();
 
                                 if (msgsData.data && msgsData.data.length > 0) {
@@ -623,44 +690,12 @@ Deno.serve(async (req) => {
                                     if (!crawlError) {
                                         console.log("[FB-Webhook] Successfully crawled " + dbMessages.length + " historical messages");
                                         
-                                        // GEMINI AI ANALYSIS: Analyze conversation if API key is available
-                                        if (geminiApiKey && dbMessages.length > 0) {
-                                            // Prepare messages for Gemini analysis
-                                            const messagesForAnalysis = dbMessages
-                                                .filter((m: any) => m.message_content && m.message_content.trim())
-                                                .map((m: any) => ({
-                                                    sender: m.sender_name,
-                                                    content: m.message_content,
-                                                    isFromCustomer: m.is_from_customer
-                                                }))
-                                                .reverse(); // Oldest first for context
-                                            
-                                            if (messagesForAnalysis.length > 0) {
-                                                console.log("[FB-Webhook] Analyzing " + messagesForAnalysis.length + " messages with Gemini...");
-                                                const geminiResult = await analyzeWithGemini(geminiApiKey, messagesForAnalysis);
-                                                
-                                                if (geminiResult) {
-                                                    const { error: analysisErr } = await supabase
-                                                        .from("leads")
-                                                        .update({ 
-                                                            ai_analysis: geminiResult.analysis,
-                                                            is_potential: geminiResult.isPotential,
-                                                            last_analysis_at: new Date().toISOString()
-                                                        })
-                                                        .eq("id", dbLead.id);
-                                                    
-                                                    if (!analysisErr) {
-                                                        console.log("[FB-Webhook] Updated lead " + dbLead.id + " with AI analysis, isPotential=" + geminiResult.isPotential);
-                                                    } else {
-                                                        console.error("[FB-Webhook] Failed to save AI analysis:", analysisErr);
-                                                    }
-                                                } else {
-                                                    console.warn("[FB-Webhook] Gemini returned null result for lead " + dbLead.id);
-                                                }
-                                            }
-                                        } else {
-                                            console.log("[FB-Webhook] Skipping AI analysis: geminiApiKey=" + (!!geminiApiKey) + ", msgCount=" + dbMessages.length);
-                                        }
+                                        // Update metadata with last_crawled_at to prevent re-crawl today
+                                        const existingMetadata = existingLead?.metadata || {};
+                                        await supabase
+                                            .from("leads")
+                                            .update({ metadata: { ...existingMetadata, last_crawled_at: new Date().toISOString() } })
+                                            .eq("id", dbLead.id);
                                     } else {
                                         console.error("[FB-Webhook] Crawl upsert error:", crawlError);
                                     }

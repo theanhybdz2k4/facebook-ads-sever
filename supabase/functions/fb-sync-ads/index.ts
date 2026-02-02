@@ -26,7 +26,7 @@ function getVietnamTime(): string {
 class FacebookApiClient {
     constructor(private accessToken: string) { }
 
-    private async request<T>(endpoint: string, params: Record<string, string> = {}): Promise<T> {
+    async request<T>(endpoint: string, params: Record<string, string> = {}): Promise<T> {
         const url = new URL(FB_BASE_URL + endpoint);
         url.searchParams.set("access_token", this.accessToken);
         for (const [key, value] of Object.entries(params)) {
@@ -34,8 +34,20 @@ class FacebookApiClient {
         }
         const response = await fetch(url.toString());
         const data = await response.json();
-        if (data.error) throw new Error(`Facebook API Error: ${data.error.message}`);
+        if (data.error) throw new Error("Facebook API Error: " + data.error.message);
         return data;
+    }
+
+    async getCampaign(campaignId: string): Promise<any> {
+        return this.request<any>("/" + campaignId, {
+            fields: "id,account_id,name,objective,status,effective_status,daily_budget,lifetime_budget,start_time,stop_time"
+        });
+    }
+
+    async getAdSet(adsetId: string): Promise<any> {
+        return this.request<any>("/" + adsetId, {
+            fields: "id,campaign_id,name,status,effective_status,daily_budget,optimization_goal,start_time,end_time"
+        });
     }
 
     async getAds(accountId: string): Promise<any[]> {
@@ -187,14 +199,141 @@ Deno.serve(async (req: Request) => {
         if (!tokenCred) return jsonResponse({ success: false, error: "No access token" }, 401);
 
         const fb = new FacebookApiClient(tokenCred.credential_value);
-        const result = { ads: 0, creatives: 0, errors: [] as string[] };
+        const result = { ads: 0, creatives: 0, campaigns: 0, adGroups: 0, errors: [] as string[] };
 
-        const { data: adGroups } = await supabase.from("unified_ad_groups").select("id, external_id, start_time, end_time").eq("platform_account_id", accountId).limit(5000);
+        // Load existing entities
+        const { data: existingCampaigns } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", accountId).limit(5000);
+        const campaignMap = new Map<string, string>((existingCampaigns || []).map((c: any) => [c.external_id, c.id]));
+
+        const { data: adGroups } = await supabase.from("unified_ad_groups").select("id, external_id, unified_campaign_id, start_time, end_time").eq("platform_account_id", accountId).limit(5000);
         const adGroupMap = new Map<string, any>((adGroups || []).map((ag: any) => [ag.external_id, ag]));
 
         // BATCH SYNC ADS & CREATIVES
         const fbAds = await fb.getAds(account.external_id);
         if (fbAds.length > 0) {
+            console.log("[AdsSync] Fetched " + fbAds.length + " ads from FB. Checking for missing parent entities...");
+
+            // STEP 0: Find and auto-create missing campaigns & ad_groups
+            const missingAdSetIds = new Set<string>();
+            const missingCampaignIds = new Set<string>();
+
+            for (const ad of fbAds) {
+                if (!adGroupMap.has(ad.adset_id)) {
+                    missingAdSetIds.add(ad.adset_id);
+                }
+                if (!campaignMap.has(ad.campaign_id)) {
+                    missingCampaignIds.add(ad.campaign_id);
+                }
+            }
+
+            console.log("[AdsSync] Found " + missingCampaignIds.size + " missing campaigns, " + missingAdSetIds.size + " missing ad_groups");
+
+            // Fetch and create missing campaigns
+            if (missingCampaignIds.size > 0) {
+                const campaignUpserts = [];
+                for (const campId of missingCampaignIds) {
+                    try {
+                        const fbCamp = await fb.getCampaign(campId);
+                        if (fbCamp && fbCamp.id) {
+                            const newId = crypto.randomUUID();
+                            campaignUpserts.push({
+                                id: newId,
+                                external_id: fbCamp.id,
+                                platform_account_id: accountId,
+                                name: fbCamp.name || "Campaign " + fbCamp.id,
+                                objective: fbCamp.objective,
+                                status: mapStatus(fbCamp.status),
+                                effective_status: fbCamp.effective_status,
+                                start_time: fbCamp.start_time || null,
+                                end_time: fbCamp.stop_time || null,
+                                platform_data: fbCamp,
+                                synced_at: getVietnamTime(),
+                            });
+                            campaignMap.set(fbCamp.id, newId);
+                        }
+                    } catch (e: any) {
+                        console.log("[AdsSync] Failed to fetch campaign " + campId + ": " + e.message);
+                    }
+                }
+                if (campaignUpserts.length > 0) {
+                    const { error: campErr } = await supabase.from("unified_campaigns").upsert(campaignUpserts, { onConflict: "platform_account_id,external_id" });
+                    if (campErr) result.errors.push("Campaign Auto-Create Error: " + campErr.message);
+                    else {
+                        result.campaigns = campaignUpserts.length;
+                        console.log("[AdsSync] Auto-created " + campaignUpserts.length + " missing campaigns");
+                    }
+                }
+            }
+
+            // Fetch and create missing ad_groups
+            if (missingAdSetIds.size > 0) {
+                const adGroupUpserts = [];
+                for (const adsetId of missingAdSetIds) {
+                    try {
+                        const fbAdSet = await fb.getAdSet(adsetId);
+                        if (fbAdSet && fbAdSet.id) {
+                            // Ensure campaign exists
+                            let campaignId = campaignMap.get(fbAdSet.campaign_id);
+                            if (!campaignId) {
+                                // Fetch campaign too if needed
+                                try {
+                                    const fbCamp = await fb.getCampaign(fbAdSet.campaign_id);
+                                    if (fbCamp && fbCamp.id) {
+                                        const newCampId = crypto.randomUUID();
+                                        await supabase.from("unified_campaigns").upsert({
+                                            id: newCampId,
+                                            external_id: fbCamp.id,
+                                            platform_account_id: accountId,
+                                            name: fbCamp.name || "Campaign " + fbCamp.id,
+                                            objective: fbCamp.objective,
+                                            status: mapStatus(fbCamp.status),
+                                            effective_status: fbCamp.effective_status,
+                                            platform_data: fbCamp,
+                                            synced_at: getVietnamTime(),
+                                        }, { onConflict: "platform_account_id,external_id" });
+                                        campaignMap.set(fbCamp.id, newCampId);
+                                        campaignId = newCampId;
+                                        result.campaigns++;
+                                    }
+                                } catch (ce: any) {
+                                    console.log("[AdsSync] Failed to fetch parent campaign for adset " + adsetId + ": " + ce.message);
+                                }
+                            }
+
+                            if (campaignId) {
+                                const newId = crypto.randomUUID();
+                                adGroupUpserts.push({
+                                    id: newId,
+                                    external_id: fbAdSet.id,
+                                    platform_account_id: accountId,
+                                    unified_campaign_id: campaignId,
+                                    name: fbAdSet.name || "AdSet " + fbAdSet.id,
+                                    status: mapStatus(fbAdSet.status),
+                                    effective_status: fbAdSet.effective_status,
+                                    daily_budget: fbAdSet.daily_budget ? parseFloat(fbAdSet.daily_budget) : null,
+                                    optimization_goal: fbAdSet.optimization_goal,
+                                    start_time: fbAdSet.start_time || null,
+                                    end_time: fbAdSet.end_time || null,
+                                    platform_data: fbAdSet,
+                                    synced_at: getVietnamTime(),
+                                });
+                                adGroupMap.set(fbAdSet.id, { id: newId, start_time: fbAdSet.start_time, end_time: fbAdSet.end_time });
+                            }
+                        }
+                    } catch (e: any) {
+                        console.log("[AdsSync] Failed to fetch adset " + adsetId + ": " + e.message);
+                    }
+                }
+                if (adGroupUpserts.length > 0) {
+                    const { error: agErr } = await supabase.from("unified_ad_groups").upsert(adGroupUpserts, { onConflict: "platform_account_id,external_id" });
+                    if (agErr) result.errors.push("AdGroup Auto-Create Error: " + agErr.message);
+                    else {
+                        result.adGroups = adGroupUpserts.length;
+                        console.log("[AdsSync] Auto-created " + adGroupUpserts.length + " missing ad_groups");
+                    }
+                }
+            }
+
             // 1. EXTRACT & SYNC UNIQUE CREATIVES FIRST
             const creativeMap = new Map<string, any>();
             fbAds.forEach(ad => {
@@ -216,7 +355,7 @@ Deno.serve(async (req: Request) => {
                 .eq("platform_account_id", accountId)
                 .in("external_id", externalIds);
 
-            const existingCreativeMap = new Map((existingCreatives || []).map(c => [c.external_id, c.id]));
+            const existingCreativeMap = new Map((existingCreatives || []).map((c: any) => [c.external_id, c.id]));
 
             if (uniqueCreatives.length > 0) {
                 const creativeUpserts = uniqueCreatives.map(c => ({
@@ -241,22 +380,27 @@ Deno.serve(async (req: Request) => {
                     result.errors.push("Creative Batch Error: " + creErr.message);
                 } else if (upsertedCreatives) {
                     console.log("[AdsSync] Successfully upserted " + upsertedCreatives.length + " creatives");
-                    upsertedCreatives.forEach(c => creativeIdMapping.set(c.external_id, c.id));
+                    upsertedCreatives.forEach((c: any) => creativeIdMapping.set(c.external_id, c.id));
                     result.creatives = upsertedCreatives.length;
                 }
             }
 
             // 2. SYNC ADS (now with linked creative IDs)
             const { data: existingAds } = await supabase.from("unified_ads").select("id, external_id").eq("platform_account_id", accountId).limit(10000);
-            const adIdMap = new Map((existingAds || []).map(a => [a.external_id, a.id]));
+            const adIdMap = new Map((existingAds || []).map((a: any) => [a.external_id, a.id]));
 
-            const adUpserts = fbAds.map(ad => {
+            const adUpserts = [];
+            let skippedAds = 0;
+            for (const ad of fbAds) {
                 const adGroup = adGroupMap.get(ad.adset_id);
-                if (!adGroup) return null;
+                if (!adGroup) {
+                    skippedAds++;
+                    continue;
+                }
 
                 const internalCreativeId = ad.creative?.id ? creativeIdMapping.get(ad.creative.id) : null;
 
-                return {
+                adUpserts.push({
                     id: adIdMap.get(ad.id) || crypto.randomUUID(),
                     external_id: ad.id,
                     platform_account_id: accountId,
@@ -269,8 +413,12 @@ Deno.serve(async (req: Request) => {
                     end_time: adGroup.end_time,
                     platform_data: ad,
                     synced_at: getVietnamTime(),
-                };
-            }).filter(Boolean);
+                });
+            }
+
+            if (skippedAds > 0) {
+                console.log("[AdsSync] Skipped " + skippedAds + " ads due to missing ad_groups (after auto-create attempt)");
+            }
 
             if (adUpserts.length > 0) {
                 console.log("[AdsSync] Upserting " + adUpserts.length + " ads to DB...");

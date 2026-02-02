@@ -284,7 +284,7 @@ Deno.serve(async (req) => {
             let convNextUrl: string | null = `${FB_BASE_URL}/${pageId}/conversations?fields=id,participants,updated_time,snippet&limit=50&since=${since}&access_token=${pageToken}`;
             let convPageCount = 0;
 
-            while (convNextUrl && convPageCount < 5) { // Limit to 5 pages of 50 = 250 conversations max per sync
+            while (convNextUrl && convPageCount < 10) { // Limit to 10 pages of 50 = 500 conversations max per sync
                 try {
                     const res: any = await fetchWithRetry(convNextUrl);
                     const batch = res.data || [];
@@ -308,7 +308,7 @@ Deno.serve(async (req) => {
                         const customerId = String(customer.id);
 
                         // 1. Fetch messages to get referral info (ad_id) AND sync content
-                        const msgData = await fetchWithRetry(`${FB_BASE_URL}/${conv.id}/messages?fields=id,message,from,created_time,referral,attachments,shares,sticker&limit=50&access_token=${pageToken}`);
+                        const msgData = await fetchWithRetry(`${FB_BASE_URL}/${conv.id}/messages?fields=id,message,from,created_time,referral,attachments,shares,sticker&limit=100&access_token=${pageToken}`);
                         const fbMsgs = msgData.data || [];
 
                         // 2. Determine the correctly linked account ID

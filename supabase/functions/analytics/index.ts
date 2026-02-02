@@ -21,6 +21,52 @@ const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(da
 
 // CRITICAL: DO NOT REMOVE THIS AUTH LOGIC. 
 // IT PRIORITIZES auth_tokens TABLE FOR CUSTOM AUTHENTICATION.
+// Gemini AI helper function to analyze campaign performance
+async function analyzeCampaignWithGemini(apiKey: string, metrics: any): Promise<string | null> {
+  if (!apiKey) return null;
+  
+  try {
+    const { name, ctr, cvr, spend, results } = metrics;
+    
+    const prompt = `Bạn là chuyên gia tối ưu hóa quảng cáo Facebook cho ngành Giáo dục (bán khóa học). 
+Hãy phân tích chiến dịch sau và đưa ra các phương pháp tối ưu cụ thể:
+
+Chiến dịch: ${name}
+- CTR: ${ctr.toFixed(2)}% (Mục tiêu ngành: > 2.3%)
+- CVR: ${cvr.toFixed(1)}% (Mục tiêu ngành: > 10%)
+- Đã chi: ${spend.toLocaleString()} VND
+- Kết quả: ${results} leads
+
+Yêu cầu trả lời:
+1. Đánh giá ngắn gọn hiệu quả hiện tại so với benchmark ngành giáo dục.
+2. Đưa ra 3-4 hành động cụ thể để tối ưu (ví dụ: Thay đổi nội dung nếu CTR thấp, Kiểm tra landing page nếu CVR thấp, Tăng ngân sách nếu các chỉ số đang tốt).
+3. Đưa ra dự đoán nếu thực hiện theo các bước trên.
+
+Trả lời bằng tiếng Việt, súc tích, định dạng Markdown (sử dụng bullet points). QUAN TRỌNG: Không trả lời quá dài dòng.`;
+
+    console.log(`[AI] Analyzing campaign ${name} with Gemini...`);
+    
+    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + apiKey, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }]
+      })
+    });
+    
+    const data = await response.json();
+    if (data.error) {
+      console.error("[AI] Gemini API error:", data.error.message);
+      return null;
+    }
+    
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || null;
+  } catch (e: any) {
+    console.error("[AI] Gemini API call failed:", e.message);
+    return null;
+  }
+}
+
 async function verifyAuth(req: Request) {
   const authHeader = req.headers.get("Authorization");
   const serviceKeyHeader = req.headers.get("x-service-key") || req.headers.get("x-master-key");
@@ -395,6 +441,62 @@ Deno.serve(async (req: Request) => {
       const { count, error } = await supabase.from("unified_hourly_insights").delete({ count: "exact" }).lt("date", dateStr);
       if (error) throw error;
       return jsonResponse({ success: true, deletedCount: count });
+    }
+
+    // AI Campaign Optimization
+    if (path === "/optimize" && method === "POST") {
+      const body = await req.json();
+      const { campaignId, name, ctr, cvr, spend, results } = body;
+
+      if (!campaignId) return jsonResponse({ success: false, error: "campaignId required" }, 400);
+
+      // 1. Get Gemini API key
+      const { data: userData } = await supabase
+        .from("users")
+        .select("gemini_api_key")
+        .not("gemini_api_key", "is", null)
+        .limit(1)
+        .maybeSingle();
+      
+      const geminiApiKey = userData?.gemini_api_key;
+      if (!geminiApiKey) {
+        return jsonResponse({ success: false, error: "Gemini API key not configured for this project" }, 400);
+      }
+
+      // 2. Perform AI analysis
+      const analysisText = await analyzeCampaignWithGemini(geminiApiKey, { name, ctr, cvr, spend, results });
+      if (!analysisText) {
+         return jsonResponse({ success: false, error: "Failed to generate AI analysis" }, 500);
+      }
+
+      // 3. Save to database
+      const { data: savedData, error: saveError } = await supabase
+        .from("campaign_ai_analysis")
+        .upsert({
+          campaign_id: campaignId,
+          analysis_text: analysisText,
+          metrics_snapshot: { ctr, cvr, spend, results },
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'campaign_id' })
+        .select()
+        .single();
+
+      if (saveError) throw saveError;
+
+      return jsonResponse({ success: true, data: savedData });
+    }
+
+    // Get specific campaign analysis
+    if (path.startsWith("/analysis/") && method === "GET") {
+        const campaignId = path.split("/").pop();
+        const { data, error } = await supabase
+            .from("campaign_ai_analysis")
+            .select("*")
+            .eq("campaign_id", campaignId)
+            .maybeSingle();
+        
+        if (error) throw error;
+        return jsonResponse(data || null);
     }
 
     return jsonResponse({ success: false, error: "Not Found", path }, 404);
