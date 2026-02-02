@@ -499,7 +499,7 @@ Deno.serve(async (req) => {
                                     lead_id: dbLead.id,
                                     fb_message_id: fbMid,
                                     sender_id: senderId,
-                                    sender_name: isFromPage ? pageName : finalCustomerName,
+                                    sender_name: isFromPage ? (messaging.message?.from?.name || pageName) : finalCustomerName,
                                     message_content: messageContent,
                                     attachments: message?.attachments || null,
                                     sticker: message?.sticker || null,
@@ -511,6 +511,31 @@ Deno.serve(async (req) => {
                             if (!msgError) {
                                 messagesInserted++;
                                 console.log("[FB-Webhook] Inserted message/event: " + fbMid + " content=\"" + messageContent.substring(0, 50) + "\"");
+                                
+                                // AUTO-ASSIGNMENT LOGIC: If message is from Page, detect agent
+                                if (isFromPage && senderId !== pageId) {
+                                    const agentId = senderId;
+                                    const agentName = messaging.message?.from?.name || "Nhân viên";
+                                    
+                                    console.log(`[FB-Webhook] Detected agent reply: ${agentName} (${agentId})`);
+                                    
+                                    // 1. Upsert agent info
+                                    await supabase.from("agents").upsert({
+                                        id: agentId,
+                                        name: agentName,
+                                        fb_page_id: pageId,
+                                        last_seen_at: new Date().toISOString()
+                                    });
+                                    
+                                    // 2. Auto-assign lead if not already assigned
+                                    if (!dbLead.assigned_agent_id) {
+                                        console.log(`[FB-Webhook] Auto-assigning lead ${dbLead.id} to agent ${agentName}`);
+                                        await supabase.from("leads").update({
+                                            assigned_agent_id: agentId,
+                                            assigned_agent_name: agentName
+                                        }).eq("id", dbLead.id);
+                                    }
+                                }
                             } else {
                                 console.error("[FB-Webhook] Message insert error for mid=" + fbMid + ":", msgError);
                             }

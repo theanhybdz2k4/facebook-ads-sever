@@ -182,6 +182,17 @@ Deno.serve(async (req) => {
             return jsonResponse({ success: true, result: pages });
         }
 
+        // GET /leads/agents - List all agents detected in the system
+        if (method === "GET" && (path === "/agents" || path === "agents")) {
+          const { data: agents, error } = await supabase
+              .from("agents")
+              .select("*")
+              .order("name", { ascending: true });
+
+          if (error) return jsonResponse({ success: false, error: error.message }, 400);
+          return jsonResponse({ success: true, result: agents });
+        }
+
         // POST /leads/pages/sync - Sync pages from user token (Manual Trigger)
         if (method === "POST" && (path === "/pages/sync" || path === "pages/sync")) {
             const FB_BASE_URL = "https://graph.facebook.com/v24.0";
@@ -526,6 +537,16 @@ Deno.serve(async (req) => {
 
                 const { data, error } = await supabase.from("leads").update(updates).eq("id", leadId).select().single();
                 if (error) return jsonResponse({ success: false, error: error.message }, 400);
+                
+                // If assignment changed, ensure agent is in agents table (backup)
+                if (updates.assigned_agent_id && updates.assigned_agent_name) {
+                    await supabase.from("agents").upsert({
+                        id: updates.assigned_agent_id,
+                        name: updates.assigned_agent_name,
+                        last_seen_at: new Date().toISOString()
+                    });
+                }
+                
                 return jsonResponse({ success: true, result: data });
             }
         }
