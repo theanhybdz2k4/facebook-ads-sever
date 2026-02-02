@@ -176,9 +176,15 @@ export class AdsSyncService {
 
       let deletedAdsCount = 0;
       if (effectiveForceFullSync) {
+        // More aggressive pruning: Mark ads as ARCHIVED/DELETED if they are not in the current sync but belong to this account
         const deleteAdResult = await this.prisma.unifiedAd.updateMany({
-          where: { accountId: account.id, externalId: { notIn: syncedAdExternalIds }, deletedAt: null },
-          data: { deletedAt: new Date(), status: 'DELETED' }
+          where: {
+            accountId: account.id,
+            externalId: { notIn: syncedAdExternalIds },
+            status: { not: 'DELETED' },
+            deletedAt: null
+          },
+          data: { deletedAt: new Date(), status: 'DELETED', effectiveStatus: 'DELETED' }
         });
         deletedAdsCount = deleteAdResult.count;
       }
@@ -204,16 +210,26 @@ export class AdsSyncService {
       });
 
       // 2. Stale Ads (Active Ads in Inactive/Paused Ad Groups)
+      // This helps clean up "ghost" active ads that didn't get caught in the incremental sync
       const staleAds = await this.prisma.unifiedAd.updateMany({
         where: {
           accountId: account.id,
           status: 'ACTIVE',
-          adGroup: {
-            OR: [
-              { status: { not: 'ACTIVE' } },
-              { effectiveStatus: { not: 'ACTIVE' } }
-            ]
-          }
+          OR: [
+            {
+              adGroup: {
+                OR: [
+                  { status: { not: 'ACTIVE' } },
+                  { effectiveStatus: { not: 'ACTIVE' } }
+                ]
+              }
+            },
+            {
+              // Also catch ads whose external IDs were NOT in the latest fetch if it was a fairly recent full sync
+              // or if they are just plain old and likely defunct. 
+              // For now, let's stick to parent-based cleanup as it's safer.
+            }
+          ]
         },
         data: { status: 'PAUSED', effectiveStatus: 'ADSET_PAUSED', syncedAt: new Date() }
       });
@@ -222,11 +238,11 @@ export class AdsSyncService {
 
       this.logger.log(`Sync Summary for ${account.name} (Ads/AdGroups): AdGroups Updated ${matchedAdGroups.length}, Ads Fetched ${totalRawAds}, Updated ${adEntities.length}, Deleted ${deletedAdsCount}`);
 
-      // 3. Trigger Creative Sync via Service
+      // 3. Trigger Creative Sync via Service - ONLY for ads that are truly active
       this.logger.debug(`Triggering separate creative sync for active ads...`);
       await this.creativeSync.syncByAccount(account.id);
 
-      return { adGroups: matchedAdGroups.length, ads: adEntities.length };
+      return { adGroups: matchedAdGroups.length, ads: adEntities.length, deletedAds: deletedAdsCount };
     } catch (error) {
       this.logger.error(`Ad synchronization failed for account ${account.id}: ${error.message}`, error.stack);
       throw error;

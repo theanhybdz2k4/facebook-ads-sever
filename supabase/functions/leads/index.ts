@@ -390,27 +390,24 @@ Deno.serve(async (req) => {
 
             // Resolve Campaign/Ad Names
             const adIds = [...new Set(leads?.map((l: any) => l.source_campaign_id).filter(Boolean))];
+            
+            const adNamesMap: Record<string, string> = {};
             if (adIds.length > 0) {
                 const { data: adNames } = await supabase
                     .from("unified_ads")
                     .select("external_id, name")
                     .in("external_id", adIds);
 
-                const adNamesMap: Record<string, string> = {};
                 adNames?.forEach((a: any) => { adNamesMap[a.external_id] = a.name; });
-
-                leads?.forEach((l: any) => {
-                    if (l.source_campaign_id && adNamesMap[l.source_campaign_id]) {
-                        l.source_campaign_name = adNamesMap[l.source_campaign_id];
-                    } else {
-                        l.source_campaign_name = "Tự nhiên";
-                    }
-                });
-            } else {
-                leads?.forEach((l: any) => {
-                    l.source_campaign_name = "Tự nhiên";
-                });
             }
+
+            leads?.forEach((l: any) => {
+                if (l.source_campaign_id) {
+                    l.source_campaign_name = adNamesMap[l.source_campaign_id] || `Ad (${l.source_campaign_id})`;
+                } else {
+                    l.source_campaign_name = "Tự nhiên";
+                }
+            });
 
             return jsonResponse({ success: true, result: leads });
         }
@@ -480,7 +477,7 @@ Deno.serve(async (req) => {
                         .select("name")
                         .eq("external_id", lead.source_campaign_id)
                         .maybeSingle();
-                    lead.source_campaign_name = adData?.name || "Tự nhiên";
+                    lead.source_campaign_name = adData?.name || `Ad (${lead.source_campaign_id})`;
                 } else {
                     lead.source_campaign_name = "Tự nhiên";
                 }
@@ -501,12 +498,15 @@ Deno.serve(async (req) => {
                 // Verify ownership
                 const { data: leadCheck } = await supabase
                     .from("leads")
-                    .select("id")
+                    .select("id, platform_accounts!inner(platform_identities!inner(user_id))")
                     .eq("id", leadId)
                     .eq("platform_accounts.platform_identities.user_id", userId)
-                    .single();
+                    .maybeSingle();
 
-                if (!leadCheck) return jsonResponse({ success: false, error: "Lead not found or unauthorized" }, 404);
+                if (!leadCheck) {
+                    console.error(`[Leads] Ownership verification failed for lead ${leadId} and user ${userId}`);
+                    return jsonResponse({ success: false, error: "Lead not found or unauthorized" }, 404);
+                }
 
                 if (updates.reanalyze) {
                     delete updates.reanalyze;
