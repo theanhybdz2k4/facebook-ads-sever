@@ -1,0 +1,2 @@
+[functions.fb-webhook]
+verify_jwt = false

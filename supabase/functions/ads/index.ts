@@ -147,11 +147,7 @@ Deno.serve(async (req: Request) => {
                 query = query.eq("platform_accounts.branch_id", parseInt(branchId));
             }
 
-            // Filter out expired ads (end_time in the past)
-            const nowVN = getVietnamNowISO();
-            query = query.or(`end_time.is.null,end_time.gte.${nowVN}`);
-
-            const { data, error } = await query.order("name", { ascending: true }).limit(500);
+            const { data, error } = await query.order("name", { ascending: true }).limit(1000);
             if (error) throw error;
 
             const vnNow = new Date(Date.now() + 7 * 3600000);

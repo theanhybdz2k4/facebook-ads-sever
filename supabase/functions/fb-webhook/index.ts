@@ -169,8 +169,17 @@ Deno.serve(async (req) => {
                 .eq("platform_id", 1) // Facebook
                 .order("id", { ascending: true });
 
+            // Get ACTIVE account IDs (those that actually have ads)
+            const { data: activeAccounts } = await supabase
+                .from("unified_ads")
+                .select("platform_account_id")
+                .limit(1000);
+            const activeAccIdsSet = new Set(activeAccounts?.map((a: any) => a.platform_account_id) || []);
+            
             const availableAccountIds = accountsData?.map((a: any) => a.id) || [40];
-            const defaultAccountId = availableAccountIds[0];
+            // Prefer accounts that have ads, exclude 45, 46 explicitly
+            const preferredAccountIds = availableAccountIds.filter((id: number) => activeAccIdsSet.has(id) && id !== 45 && id !== 46);
+            const defaultAccountId = preferredAccountIds[0] || availableAccountIds[0];
 
             // Get Gemini API key from users table
             const { data: userData } = await supabase
@@ -210,25 +219,28 @@ Deno.serve(async (req) => {
                 // STABLE ACCOUNT MAPPING: Try to find which account this page belongs to
                 let accountId = defaultAccountId;
 
-                // 1. Try mapping via existing leads for this page
-                const { data: pageLeadSample } = await supabase
-                    .from("leads")
-                    .select("platform_account_id")
-                    .eq("fb_page_id", pageId)
-                    .limit(1)
-                    .maybeSingle();
+                // 1. Try mapping via unified_ad_creatives (Strongest link: which account actually created ads for this page)
+                const { data: creativeSample } = await supabase
+                    .rpc('get_account_id_from_page_id', { p_page_id: pageId });
 
-                if (pageLeadSample?.platform_account_id) {
-                    accountId = pageLeadSample.platform_account_id;
-                    console.log("[FB-Webhook] Using stable accountId " + accountId + " (found via existing leads) for Page " + pageId);
+                if (creativeSample) {
+                    accountId = creativeSample;
+                    console.log("[FB-Webhook] Using accountId " + accountId + " (found via creatives rpc) for Page " + pageId);
                 } else {
-                    // 2. Try mapping via unified_ad_creatives (stronger mapping than default)
-                    const { data: creativeSample } = await supabase
-                        .rpc('get_account_id_from_page_id', { p_page_id: pageId });
+                    // 2. Try mapping via RECENT leads for this page that belong to an ACTIVE account
+                    // We avoid account 45, 46 which the user says have no ads
+                    const { data: pageLeadSample } = await supabase
+                        .from("leads")
+                        .select("platform_account_id")
+                        .eq("fb_page_id", pageId)
+                        .not("platform_account_id", "in", "(45,46)")
+                        .order("last_message_at", { ascending: false })
+                        .limit(1)
+                        .maybeSingle();
 
-                    if (creativeSample) {
-                        accountId = creativeSample;
-                        console.log("[FB-Webhook] Using accountId " + accountId + " (found via creatives rpc) for Page " + pageId);
+                    if (pageLeadSample?.platform_account_id) {
+                        accountId = pageLeadSample.platform_account_id;
+                        console.log("[FB-Webhook] Using stable accountId " + accountId + " (found via recent leads) for Page " + pageId);
                     } else {
                         console.log("[FB-Webhook] No mapping found for Page " + pageId + ", using default accountId " + accountId);
                     }
@@ -387,16 +399,26 @@ Deno.serve(async (req) => {
                             console.log("[FB-Webhook] Final resolution: name=\"" + customerName + "\", hasAvatar=" + (!!customerAvatar));
                         }
 
-                        // Fetch page name and update centralized info
+                        // Fetch page name/avatar and update centralized info
                         try {
                             const pageInfoRes = await fetch(FB_BASE_URL + "/" + pageId + "?fields=name&access_token=" + pageToken);
                             const pageInfoData = await pageInfoRes.json();
                             if (pageInfoData.name) {
                                 pageName = pageInfoData.name;
+                                
+                                // RESOLVE PAGE AVATAR VIA CRAWLER (Direct CDN link)
+                                let pageAvatar = null;
+                                try {
+                                    pageAvatar = await resolveAvatarWithCrawler(supabase, pageId);
+                                } catch (crawlErr) {
+                                    console.error("[FB-Webhook] Page crawler error:", crawlErr);
+                                }
+                                
                                 // Update centralized page info
                                 await supabase.from("platform_pages").upsert({
                                     id: pageId,
                                     name: pageName,
+                                    avatar_url: pageAvatar,
                                     last_synced_at: new Date().toISOString()
                                 });
                             }
@@ -414,41 +436,79 @@ Deno.serve(async (req) => {
                             fb_page_id: pageId,
                             fb_page_name: pageName,
                             snippet: message?.text?.substring(0, 100) ||
-                                (referral ? "Bắt đầu từ quảng cáo" :
-                                    (messaging.postback ? "Nhấn nút menu" : "Tin nhắn mới"))
+                                (referral ? "Khách hàng đến từ quảng cáo" :
+                                    (messaging.postback ? `Nhấn nút: ${messaging.postback.title || 'menu'}` : "Tin nhắn mới"))
                         }
                     };
 
-                    // Only set source_campaign_id if we have a referral ad_id
-                    // This prevents overwriting existing source with null on future messages
-                    if (referral?.ad_id) {
-                        leadBaseData.source_campaign_id = referral.ad_id;
+                    // ALWAYS set last_message_at from timestamp to ensure sorting
+                    leadBaseData.last_message_at = toVietnamTimestamp(timestamp);
+                    
+                    // Set first_contact_at only for NEW leads (not existing ones)
+                    if (!existingLead) {
+                        leadBaseData.first_contact_at = toVietnamTimestamp(timestamp);
+                        console.log("[FB-Webhook] NEW LEAD - Setting first_contact_at: " + leadBaseData.first_contact_at);
                     }
 
-                    // Only update is_read and last_message_at for actual interactions (messages, postbacks, reactions, or ad clicks)
-                    // This prevents "read" receipts from incorrectly resetting is_read to false
-                    if (message || messaging.postback || messaging.reaction || referral) {
-                        leadBaseData.is_read = isFromPage;
-                        leadBaseData.last_message_at = toVietnamTimestamp(timestamp);
+                    // EXTRACT AD ID SMARTERY
+                    // Log referral data for debugging
+                    if (referral) {
+                        console.log("[FB-Webhook] REFERRAL DATA FOUND:", JSON.stringify(referral));
+                    }
+                    
+                    const adIdFromReferral = referral?.ad_id || referral?.campaign_id || referral?.ad_id_key || referral?.ads_context_data?.ad_id;
+                    const adIdFromPostback = messaging.postback?.referral?.ad_id || messaging.postback?.referral?.campaign_id;
+                    const adIdFromMessage = message?.referral?.ad_id || message?.ad_id;
+                    
+                    // Also check payload for common patterns like ad_id:123
+                    let adIdFromPayload = null;
+                    if (messaging.postback?.payload && typeof messaging.postback.payload === 'string') {
+                        const match = messaging.postback.payload.match(/ad_id[:=]([0-9]+)/);
+                        if (match) adIdFromPayload = match[1];
+                    }
 
-                        // If we have an ad_id, try to find the correct platform_account_id for it
-                        if (referral?.ad_id) {
-                            try {
-                                const { data: adData } = await supabase
-                                    .from("unified_ads")
-                                    .select("platform_account_id")
-                                    .eq("external_id", referral.ad_id)
-                                    .limit(1)
-                                    .maybeSingle();
+                    const adId = adIdFromReferral || adIdFromPostback || adIdFromMessage || adIdFromPayload;
+                    
+                    console.log("[FB-Webhook] AD ID EXTRACTION: adIdFromReferral=" + adIdFromReferral + ", adIdFromPostback=" + adIdFromPostback + ", adIdFromMessage=" + adIdFromMessage + ", adIdFromPayload=" + adIdFromPayload + " => FINAL=" + adId);
 
-                                if (adData?.platform_account_id) {
-                                    leadBaseData.platform_account_id = adData.platform_account_id;
-                                    console.log(`[FB-Webhook] Synced platform_account_id ${adData.platform_account_id} from ad_id ${referral.ad_id}`);
-                                }
-                            } catch (e) {
-                                console.error("[FB-Webhook] Failed to lookup ad account info:", e);
+                    if (adId) {
+                        leadBaseData.source_campaign_id = adId;
+                        leadBaseData.is_qualified = true;
+                        
+                        // Set qualified_at in metadata for accurate daily filtering
+                        const nowVNStr = toVietnamTimestamp(new Date());
+                        leadBaseData.metadata = {
+                            ...(existingLead?.metadata || {}),
+                            qualified_at: existingLead?.metadata?.qualified_at || nowVNStr
+                        };
+                    }
+
+                    // If we have an ad_id, try to find the correct platform_account_id for it
+                    if (adId) {
+                        try {
+                            const { data: adData } = await supabase
+                                .from("unified_ads")
+                                .select("platform_account_id")
+                                .eq("external_id", adId)
+                                .limit(1)
+                                .maybeSingle();
+ 
+                            if (adData?.platform_account_id) {
+                                // If the ad is found in a specific account, update BOTH accountId and leadBaseData
+                                accountId = adData.platform_account_id;
+                                leadBaseData.platform_account_id = adData.platform_account_id;
+                                console.log(`[FB-Webhook] Detected ad click: synced platform_account_id ${adData.platform_account_id} from ad_id ${adId}`);
+                            } else {
+                                console.log(`[FB-Webhook] Ad ID ${adId} not found in our system yet, will use default/mapped account ${accountId}`);
+                                leadBaseData.platform_account_id = accountId;
                             }
+                        } catch (e) {
+                            console.error("[FB-Webhook] Failed to lookup ad account info:", e);
+                            leadBaseData.platform_account_id = accountId;
                         }
+                    } else {
+                        // Ensure accountId is set even if no adId
+                        leadBaseData.platform_account_id = accountId;
                     }
 
                     // Always try to set name/avatar if available
@@ -457,8 +517,10 @@ Deno.serve(async (req) => {
 
                     // Enhance metadata with referral info
                     if (referral) {
+                        const nowVNStr = toVietnamTimestamp(new Date());
                         leadBaseData.metadata = {
-                            ...(existingLead?.metadata || {}),
+                            ...(leadBaseData.metadata || existingLead?.metadata || {}),
+                            qualified_at: (leadBaseData.metadata?.qualified_at || existingLead?.metadata?.qualified_at) || nowVNStr,
                             referral: {
                                 source: referral.source || "ADS",
                                 ad_id: referral.ad_id,
@@ -487,6 +549,7 @@ Deno.serve(async (req) => {
                             external_id: customerId,
                             fb_page_id: pageId,
                             source_campaign_id: referral?.ad_id || null,
+                            is_qualified: !!referral?.ad_id,
                             customer_name: customerName || "Khách hàng",
                             customer_avatar: customerAvatar,
                             ...leadBaseData
@@ -535,8 +598,8 @@ Deno.serve(async (req) => {
                                     messageContent += " " + attachmentDescriptions.join(" ");
                                 }
                             }
-                        } else if (referral) {
-                            messageContent = "[Bắt đầu từ quảng cáo: " + (referral.ad_id || 'Không rõ ID') + "]";
+                        } else if (adId) {
+                            messageContent = "[Bắt đầu từ quảng cáo: " + adId + "]";
                             fbMid = "ref_" + timestamp + "_" + customerId; // Synthetic ID for referrals
                         } else if (messaging.postback) {
                             messageContent = "[Nhấn nút: " + (messaging.postback.title || messaging.postback.payload) + "]";
@@ -702,6 +765,11 @@ Deno.serve(async (req) => {
 
                                 if (msgsData.data && msgsData.data.length > 0) {
                                     // Try to extract customer name from message senders
+                                    // AND detect "đã trả lời một quảng cáo" pattern
+                                    let detectedAdReply = false;
+                                    let extractedAdTitle = "";
+                                    let extractedAdSubtitle = "";
+                                    let extractedAdMediaUrl = "";
                                     for (const m of msgsData.data) {
                                         const msgSenderId = String(m.from?.id || "");
                                         if (msgSenderId === customerId && m.from?.name) {
@@ -709,17 +777,94 @@ Deno.serve(async (req) => {
                                                 extractedCustomerName = m.from.name;
                                                 console.log("[FB-Webhook] Extracted name from message from.name: \"" + extractedCustomerName + "\"");
                                             }
-                                            break;
+                                        }
+                                        
+                                        // DETECT AD REPLY PATTERN: Look for system messages indicating ad interaction
+                                        const msgContent = m.message || "";
+                                        if (msgContent.includes("đã trả lời một quảng cáo") || 
+                                            msgContent.includes("replied to your ad") ||
+                                            msgContent.includes("đến từ quảng cáo")) {
+                                            detectedAdReply = true;
+                                            console.log("[FB-Webhook] DETECTED AD REPLY PATTERN in message: \"" + msgContent.substring(0, 60) + "...\"");
+                                        }
+                                        
+                                        // Also check for ads image URL in attachments and extract ad info
+                                        if (m.attachments?.data) {
+                                            for (const att of m.attachments.data) {
+                                                const mediaUrl = att.image_data?.url || att.generic_template?.media_url || "";
+                                                if (mediaUrl.includes("facebook.com/ads/image")) {
+                                                    detectedAdReply = true;
+                                                    console.log("[FB-Webhook] DETECTED AD IMAGE in attachment: " + mediaUrl.substring(0, 80) + "...");
+                                                    
+                                                    // Extract ad title/subtitle for matching
+                                                    if (!extractedAdTitle && att.generic_template?.title) {
+                                                        extractedAdTitle = att.generic_template.title.trim();
+                                                        extractedAdSubtitle = att.generic_template.subtitle?.trim() || "";
+                                                        extractedAdMediaUrl = mediaUrl;
+                                                        console.log("[FB-Webhook] Extracted ad title: \"" + extractedAdTitle.substring(0, 50) + "...\"");
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
 
-                                    // UPDATE LEAD if we got a name or labels
+                                    // UPDATE LEAD if we got a name or labels OR detected ad reply
                                     const updateData: any = {};
                                     if (extractedCustomerName && dbLead.customer_name === "Khách hàng") {
                                         updateData.customer_name = extractedCustomerName;
                                     }
                                     if (isManualPotential) {
                                         updateData.is_manual_potential = true;
+                                    }
+                                    
+                                    // If we detected ad reply, try to find exact ad and mark lead as qualified
+                                    if (detectedAdReply) {
+                                        let matchedAd = null;
+                                        
+                                        // Try to find matching ad by title in unified_ads
+                                        if (extractedAdTitle) {
+                                            // Clean title for matching (remove emojis, special chars)
+                                            const cleanTitle = extractedAdTitle.replace(/[^\w\sÀ-ỹ]/g, '').trim();
+                                            const searchTerms = cleanTitle.split(' ').filter((w: string) => w.length > 3).slice(0, 5);
+                                            
+                                            if (searchTerms.length > 0) {
+                                                // Build ILIKE pattern from first few significant words
+                                                const searchPattern = '%' + searchTerms.join('%') + '%';
+                                                
+                                                const { data: matchingAds } = await supabase
+                                                    .from("unified_ads")
+                                                    .select("external_id, name, platform_account_id")
+                                                    .ilike("name", searchPattern)
+                                                    .limit(1);
+                                                
+                                                if (matchingAds && matchingAds.length > 0) {
+                                                    matchedAd = matchingAds[0];
+                                                    console.log("[FB-Webhook] MATCHED AD: " + matchedAd.external_id + " (" + matchedAd.name.substring(0, 40) + "...)");
+                                                }
+                                            }
+                                        }
+                                        
+                                        // Update lead with ad info
+                                        if (!dbLead.is_qualified) {
+                                            updateData.is_qualified = true;
+                                        }
+                                        
+                                        const nowVNStr = toVietnamTimestamp(new Date());
+                                        updateData.metadata = {
+                                            ...(dbLead.metadata || existingLead?.metadata || {}),
+                                            qualified_at: dbLead.metadata?.qualified_at || existingLead?.metadata?.qualified_at || nowVNStr,
+                                            ad_detection_source: matchedAd ? "matched_ad" : "message_pattern",
+                                            ad_title: extractedAdTitle || null,
+                                            ad_subtitle: extractedAdSubtitle || null
+                                        };
+                                        
+                                        if (matchedAd) {
+                                            updateData.source_campaign_id = matchedAd.external_id;
+                                            updateData.platform_account_id = matchedAd.platform_account_id;
+                                            console.log("[FB-Webhook] Setting source_campaign_id=" + matchedAd.external_id + ", platform_account_id=" + matchedAd.platform_account_id);
+                                        }
+                                        
+                                        console.log("[FB-Webhook] Marking lead " + dbLead.id + " as QUALIFIED (detected from crawled messages)");
                                     }
 
                                     if (Object.keys(updateData).length > 0) {
@@ -738,6 +883,12 @@ Deno.serve(async (req) => {
 
                                     // Use the best available name for messages
                                     const bestCustomerName = dbLead.customer_name !== "Khách hàng" ? dbLead.customer_name : (extractedCustomerName || finalCustomerName);
+
+                                    // Identify the latest message for lead metadata update
+                                    const sortedMsgs = [...msgsData.data].sort((a: any, b: any) => 
+                                        new Date(b.created_time).getTime() - new Date(a.created_time).getTime()
+                                    );
+                                    const latestMsg = sortedMsgs[0];
 
                                     const dbMessages = msgsData.data.map((m: any) => {
                                         const msgSenderId = String(m.from?.id || "");
@@ -769,11 +920,32 @@ Deno.serve(async (req) => {
                                     if (!crawlError) {
                                         console.log("[FB-Webhook] Successfully crawled " + dbMessages.length + " historical messages");
 
-                                        // Update metadata with last_crawled_at to prevent re-crawl today
+                                        // Update metadata and lead head info with latest message
                                         const existingMetadata = existingLead?.metadata || {};
+                                        
+                                        const headUpdate: any = {
+                                            metadata: { ...existingMetadata, last_crawled_at: new Date().toISOString() }
+                                        };
+
+                                        if (latestMsg) {
+                                            headUpdate.last_message_at = toVietnamTimestamp(latestMsg.created_time);
+                                            headUpdate.is_read = String(latestMsg.from?.id) === pageId;
+                                            
+                                            let snippet = latestMsg.message || "";
+                                            if (!snippet && latestMsg.attachments?.data) snippet = "[Hình ảnh/File]";
+                                            if (!snippet && latestMsg.sticker) snippet = "[Sticker]";
+                                            
+                                            if (snippet) {
+                                                headUpdate.platform_data = {
+                                                    ...(dbLead.platform_data || {}),
+                                                    snippet: snippet.substring(0, 100)
+                                                };
+                                            }
+                                        }
+
                                         await supabase
                                             .from("leads")
-                                            .update({ metadata: { ...existingMetadata, last_crawled_at: new Date().toISOString() } })
+                                            .update(headUpdate)
                                             .eq("id", dbLead.id);
                                     } else {
                                         console.error("[FB-Webhook] Crawl upsert error:", crawlError);

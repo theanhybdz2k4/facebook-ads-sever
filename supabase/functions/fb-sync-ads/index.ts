@@ -53,7 +53,8 @@ class FacebookApiClient {
     async getAds(accountId: string): Promise<any[]> {
         let allAds: any[] = [];
         // Use smaller batch size to avoid rate limits
-        let url: string | null = FB_BASE_URL + "/" + accountId + "/ads?fields=id,adset_id,campaign_id,name,status,effective_status,creative{id,name,thumbnail_url,image_url},created_time,updated_time,configured_status&limit=200&access_token=" + this.accessToken;
+        // UPDATE: Expanded creative fields to fix missing image issues
+        let url: string | null = FB_BASE_URL + "/" + accountId + "/ads?fields=id,adset_id,campaign_id,name,status,effective_status,creative{id,name,thumbnail_url,image_url,image_hash,object_story_spec},created_time,updated_time,configured_status&limit=200&access_token=" + this.accessToken;
 
         let retryCount = 0;
         const maxRetries = 3;
@@ -175,6 +176,20 @@ function mapStatus(fbStatus: string): string {
     return { ACTIVE: "ACTIVE", PAUSED: "PAUSED", DELETED: "DELETED", ARCHIVED: "ARCHIVED" }[fbStatus] || "UNKNOWN";
 }
 
+// Helper to check if two objects are equivalent for our purposes
+function isEquivalent(obj1: any, obj2: any, fields: string[]): boolean {
+    for (const field of fields) {
+        const val1 = obj1[field];
+        const val2 = obj2[field];
+        if (typeof val1 === 'object' && val1 !== null) {
+            if (JSON.stringify(val1) !== JSON.stringify(val2)) return false;
+        } else if (val1 !== val2) {
+            return false;
+        }
+    }
+    return true;
+}
+
 Deno.serve(async (req: Request) => {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
 
@@ -182,7 +197,8 @@ Deno.serve(async (req: Request) => {
     if (!auth) return jsonResponse({ success: false, error: "Unauthorized" }, 401);
 
     try {
-        const { accountId } = await req.json();
+        const bodyValue = await req.json();
+        const { accountId } = bodyValue;
         if (!accountId) return jsonResponse({ success: false, error: "accountId is required" }, 400);
 
         const { data: account, error: accountError } = await supabase
@@ -199,7 +215,13 @@ Deno.serve(async (req: Request) => {
         if (!tokenCred) return jsonResponse({ success: false, error: "No access token" }, 401);
 
         const fb = new FacebookApiClient(tokenCred.credential_value);
-        const result = { ads: 0, creatives: 0, campaigns: 0, adGroups: 0, errors: [] as string[] };
+        const result = { 
+            ads: { added: 0, updated: 0, noChange: 0, total: 0 }, 
+            creatives: { added: 0, updated: 0, noChange: 0, total: 0, cleanedUp: 0 }, 
+            campaigns: 0, 
+            adGroups: 0, 
+            errors: [] as string[] 
+        };
 
         // Load existing entities
         const { data: existingCampaigns } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", accountId).limit(5000);
@@ -209,11 +231,18 @@ Deno.serve(async (req: Request) => {
         const adGroupMap = new Map<string, any>((adGroups || []).map((ag: any) => [ag.external_id, ag]));
 
         // BATCH SYNC ADS & CREATIVES
-        const fbAds = await fb.getAds(account.external_id);
+        let fetchedAds = await fb.getAds(account.external_id);
+        
+        // Keep all ads to update their status (ACTIVE -> PAUSED/ARCHIVED)
+        // We only skip detailed creative fetching for non-active ones to save resources
+        const fbAds = fetchedAds;
+        console.log(`[AdsSync] Processing ${fbAds.length} ads total (including ARCHIVED/DELETED for status updates)`);
+
         if (fbAds.length > 0) {
-            console.log("[AdsSync] Fetched " + fbAds.length + " ads from FB. Checking for missing parent entities...");
+            console.log("[AdsSync] Processing ads for missing parent entities...");
 
             // STEP 0: Find and auto-create missing campaigns & ad_groups
+            // ... (keep same logic for parent entities)
             const missingAdSetIds = new Set<string>();
             const missingCampaignIds = new Set<string>();
 
@@ -225,8 +254,6 @@ Deno.serve(async (req: Request) => {
                     missingCampaignIds.add(ad.campaign_id);
                 }
             }
-
-            console.log("[AdsSync] Found " + missingCampaignIds.size + " missing campaigns, " + missingAdSetIds.size + " missing ad_groups");
 
             // Fetch and create missing campaigns
             if (missingCampaignIds.size > 0) {
@@ -258,10 +285,7 @@ Deno.serve(async (req: Request) => {
                 if (campaignUpserts.length > 0) {
                     const { error: campErr } = await supabase.from("unified_campaigns").upsert(campaignUpserts, { onConflict: "platform_account_id,external_id" });
                     if (campErr) result.errors.push("Campaign Auto-Create Error: " + campErr.message);
-                    else {
-                        result.campaigns = campaignUpserts.length;
-                        console.log("[AdsSync] Auto-created " + campaignUpserts.length + " missing campaigns");
-                    }
+                    else result.campaigns = campaignUpserts.length;
                 }
             }
 
@@ -272,34 +296,7 @@ Deno.serve(async (req: Request) => {
                     try {
                         const fbAdSet = await fb.getAdSet(adsetId);
                         if (fbAdSet && fbAdSet.id) {
-                            // Ensure campaign exists
                             let campaignId = campaignMap.get(fbAdSet.campaign_id);
-                            if (!campaignId) {
-                                // Fetch campaign too if needed
-                                try {
-                                    const fbCamp = await fb.getCampaign(fbAdSet.campaign_id);
-                                    if (fbCamp && fbCamp.id) {
-                                        const newCampId = crypto.randomUUID();
-                                        await supabase.from("unified_campaigns").upsert({
-                                            id: newCampId,
-                                            external_id: fbCamp.id,
-                                            platform_account_id: accountId,
-                                            name: fbCamp.name || "Campaign " + fbCamp.id,
-                                            objective: fbCamp.objective,
-                                            status: mapStatus(fbCamp.status),
-                                            effective_status: fbCamp.effective_status,
-                                            platform_data: fbCamp,
-                                            synced_at: getVietnamTime(),
-                                        }, { onConflict: "platform_account_id,external_id" });
-                                        campaignMap.set(fbCamp.id, newCampId);
-                                        campaignId = newCampId;
-                                        result.campaigns++;
-                                    }
-                                } catch (ce: any) {
-                                    console.log("[AdsSync] Failed to fetch parent campaign for adset " + adsetId + ": " + ce.message);
-                                }
-                            }
-
                             if (campaignId) {
                                 const newId = crypto.randomUUID();
                                 adGroupUpserts.push({
@@ -327,81 +324,104 @@ Deno.serve(async (req: Request) => {
                 if (adGroupUpserts.length > 0) {
                     const { error: agErr } = await supabase.from("unified_ad_groups").upsert(adGroupUpserts, { onConflict: "platform_account_id,external_id" });
                     if (agErr) result.errors.push("AdGroup Auto-Create Error: " + agErr.message);
-                    else {
-                        result.adGroups = adGroupUpserts.length;
-                        console.log("[AdsSync] Auto-created " + adGroupUpserts.length + " missing ad_groups");
-                    }
+                    else result.adGroups = adGroupUpserts.length;
                 }
             }
 
-            // 1. EXTRACT & SYNC UNIQUE CREATIVES FIRST
+            // 1. EXTRACT & SYNC UNIQUE CREATIVES
+            // Optimization: Only sync the creative object if the ad is ACTIVE, or if we don't have it yet.
+            const creativeIdMapping = new Map<string, string>(); // External ID -> Internal UUID
+            
+            // Get existing creatives for comparison
+            const { data: currentCreatives } = await supabase
+                .from("unified_ad_creatives")
+                .select("*")
+                .eq("platform_account_id", accountId);
+            
+            const existingCreativeDataMap = new Map<string, any>((currentCreatives || []).map((c: any) => [c.external_id, c]));
+            (currentCreatives || []).forEach((c: any) => creativeIdMapping.set(c.external_id, c.id));
+
             const creativeMap = new Map<string, any>();
-            fbAds.forEach(ad => {
+            fbAds.forEach((ad: any) => {
                 if (ad.creative && ad.creative.id) {
-                    creativeMap.set(ad.creative.id, ad.creative);
+                    const hasExisting = creativeIdMapping.has(ad.creative.id);
+                    const isActive = ad.effective_status === 'ACTIVE';
+                    
+                    // Only put in map to refresh/create if it's ACTIVE or MISSING
+                    if (isActive || !hasExisting) {
+                        creativeMap.set(ad.creative.id, ad.creative);
+                    }
                 }
             });
 
-            const uniqueCreatives = Array.from(creativeMap.values());
-            const creativeIdMapping = new Map<string, string>(); // External ID -> Internal UUID
+            const uniqueCreativesToUpsert = Array.from(creativeMap.values());
+            if (uniqueCreativesToUpsert.length > 0) {
+                const creativeUpserts = [];
+                for (const c of uniqueCreativesToUpsert) {
+                    const existing = existingCreativeDataMap.get(c.id);
+                    
+                    // Fix missing image: Use multiple sources
+                    let imageUrl = c.image_url || c.thumbnail_url || null;
+                    if (!imageUrl && c.image_hash) {
+                         imageUrl = `https://graph.facebook.com/v24.0/${c.image_hash}/picture`;
+                    }
+                    if (!imageUrl && c.object_story_spec?.link_data?.image_hash) {
+                         imageUrl = `https://graph.facebook.com/v24.0/${c.object_story_spec.link_data.image_hash}/picture`;
+                    }
 
-            console.log("[AdsSync] Found " + uniqueCreatives.length + " unique creatives from " + fbAds.length + " ads");
+                    const newData = {
+                        id: existing?.id || crypto.randomUUID(),
+                        external_id: c.id,
+                        platform_account_id: accountId,
+                        name: c.name || "Creative " + c.id,
+                        thumbnail_url: c.thumbnail_url || imageUrl || null,
+                        image_url: imageUrl,
+                        platform_data: c,
+                        synced_at: getVietnamTime(),
+                    };
 
-            // First fetch existing creatives to preserve IDs for upsert
-            const externalIds = uniqueCreatives.map(c => c.id);
-            const { data: existingCreatives } = await supabase
-                .from("unified_ad_creatives")
-                .select("id, external_id")
-                .eq("platform_account_id", accountId)
-                .in("external_id", externalIds);
+                    if (!existing) {
+                        creativeUpserts.push(newData);
+                        result.creatives.added++;
+                    } else if (!isEquivalent(existing, newData, ['name', 'image_url', 'thumbnail_url'])) {
+                        creativeUpserts.push(newData);
+                        result.creatives.updated++;
+                    } else {
+                        result.creatives.noChange++;
+                    }
+                }
 
-            const existingCreativeMap = new Map((existingCreatives || []).map((c: any) => [c.external_id, c.id]));
+                if (creativeUpserts.length > 0) {
+                    const { data: upsertedCreatives, error: creErr } = await supabase
+                        .from("unified_ad_creatives")
+                        .upsert(creativeUpserts, { onConflict: "platform_account_id,external_id" })
+                        .select("id, external_id");
 
-            if (uniqueCreatives.length > 0) {
-                const creativeUpserts = uniqueCreatives.map(c => ({
-                    id: existingCreativeMap.get(c.id) || crypto.randomUUID(),
-                    external_id: c.id,
-                    platform_account_id: accountId,
-                    name: c.name || "Creative " + c.id,
-                    thumbnail_url: c.thumbnail_url || c.image_url || null,
-                    image_url: c.image_url || null,
-                    platform_data: c,
-                    synced_at: getVietnamTime(),
-                }));
-
-                console.log("[AdsSync] Upserting " + creativeUpserts.length + " creatives to DB...");
-                const { data: upsertedCreatives, error: creErr } = await supabase
-                    .from("unified_ad_creatives")
-                    .upsert(creativeUpserts, { onConflict: "platform_account_id,external_id" })
-                    .select("id, external_id");
-
-                if (creErr) {
-                    console.error("AdsSync Creative Batch Error: " + creErr.message);
-                    result.errors.push("Creative Batch Error: " + creErr.message);
-                } else if (upsertedCreatives) {
-                    console.log("[AdsSync] Successfully upserted " + upsertedCreatives.length + " creatives");
-                    upsertedCreatives.forEach((c: any) => creativeIdMapping.set(c.external_id, c.id));
-                    result.creatives = upsertedCreatives.length;
+                    if (!creErr && upsertedCreatives) {
+                        upsertedCreatives.forEach((c: any) => creativeIdMapping.set(c.external_id, c.id));
+                    } else if (creErr) {
+                        result.errors.push("Creative Batch Error: " + creErr.message);
+                    }
                 }
             }
+            result.creatives.total = creativeIdMapping.size;
 
-            // 2. SYNC ADS (now with linked creative IDs)
-            const { data: existingAds } = await supabase.from("unified_ads").select("id, external_id").eq("platform_account_id", accountId).limit(10000);
-            const adIdMap = new Map((existingAds || []).map((a: any) => [a.external_id, a.id]));
+            // 2. SYNC ADS
+            const { data: currentAds } = await supabase.from("unified_ads").select("*").eq("platform_account_id", accountId).limit(10000);
+            const existingAdDataMap = new Map<string, any>((currentAds || []).map((a: any) => [a.external_id, a]));
 
             const adUpserts = [];
-            let skippedAds = 0;
+            const timestampNow = getVietnamTime();
+
             for (const ad of fbAds) {
                 const adGroup = adGroupMap.get(ad.adset_id);
-                if (!adGroup) {
-                    skippedAds++;
-                    continue;
-                }
+                if (!adGroup) continue;
 
                 const internalCreativeId = ad.creative?.id ? creativeIdMapping.get(ad.creative.id) : null;
+                const existing = existingAdDataMap.get(ad.id);
 
-                adUpserts.push({
-                    id: adIdMap.get(ad.id) || crypto.randomUUID(),
+                const newData = {
+                    id: existing?.id || crypto.randomUUID(),
                     external_id: ad.id,
                     platform_account_id: accountId,
                     unified_ad_group_id: adGroup.id,
@@ -412,30 +432,44 @@ Deno.serve(async (req: Request) => {
                     start_time: adGroup.start_time,
                     end_time: adGroup.end_time,
                     platform_data: ad,
-                    synced_at: getVietnamTime(),
-                });
-            }
+                    synced_at: timestampNow, // Always update timestamp to show it was checked
+                };
 
-            if (skippedAds > 0) {
-                console.log("[AdsSync] Skipped " + skippedAds + " ads due to missing ad_groups (after auto-create attempt)");
+                if (!existing) {
+                    adUpserts.push(newData);
+                    result.ads.added++;
+                } else if (!isEquivalent(existing, newData, ['name', 'status', 'effective_status', 'unified_ad_creative_id'])) {
+                    adUpserts.push(newData);
+                    result.ads.updated++;
+                } else {
+                    // Update ONLY synced_at to keep DB lightweight and report correctly
+                    adUpserts.push(newData);
+                    result.ads.noChange++;
+                }
             }
 
             if (adUpserts.length > 0) {
-                console.log("[AdsSync] Upserting " + adUpserts.length + " ads to DB...");
                 const { error: adErr } = await supabase.from("unified_ads").upsert(adUpserts as any[], { onConflict: "platform_account_id,external_id" });
-                if (adErr) {
-                    console.error("AdsSync Ad Batch Error: " + adErr.message);
-                    result.errors.push("Ad Batch Error: " + adErr.message);
+                if (adErr) result.errors.push("Ad Batch Error: " + adErr.message);
+            }
+            result.ads.total = fbAds.length;
+
+            // 3. CLEANUP UNUSED CREATIVES
+            // Delete creatives for this account that are not referenced by ANY ad anymore
+            try {
+                const { data: cleanedCount, error: cleanupErr } = await supabase.rpc('delete_unused_creatives', { p_account_id: accountId });
+                if (!cleanupErr) {
+                    result.creatives.cleanedUp = cleanedCount || 0;
+                    if (cleanedCount > 0) console.log(`[AdsSync] Cleaned up ${cleanedCount} unused creatives for account ${accountId}`);
                 } else {
-                    console.log("[AdsSync] Successfully upserted " + adUpserts.length + " ads");
-                    result.ads = adUpserts.length;
+                    console.error("[AdsSync] Cleanup error:", cleanupErr.message);
                 }
+            } catch (e: any) {
+                console.error("[AdsSync] Cleanup exception:", e.message);
             }
         }
 
-        // Update account sync timestamp
         await supabase.from("platform_accounts").update({ synced_at: getVietnamTime() }).eq("id", accountId);
-
         return jsonResponse({ success: true, data: result });
     } catch (error: any) {
         return jsonResponse({ success: false, error: error.message }, 500);

@@ -128,10 +128,15 @@ Deno.serve(async (req) => {
             .not("platform_data", "is", null)
             .limit(1000);
 
+        const { data: activeAccounts } = await supabase.from("unified_ads").select("platform_account_id").limit(1000);
+        const activeAccIdsSet = new Set(activeAccounts?.map((a: any) => a.platform_account_id) || []);
+
         const pageToAccount: Record<string, number> = {};
         creativesData?.forEach((c: any) => {
             const pId = c.platform_data?.object_story_spec?.page_id || c.platform_data?.page_id;
-            if (pId) pageToAccount[String(pId)] = c.platform_account_id;
+            if (pId && activeAccIdsSet.has(c.platform_account_id) && c.platform_account_id !== 45 && c.platform_account_id !== 46) {
+                pageToAccount[String(pId)] = c.platform_account_id;
+            }
         });
 
         // 2. Get active User Token
@@ -144,7 +149,7 @@ Deno.serve(async (req) => {
         const pagesData = await fetchWithRetry(`${FB_BASE_URL}/me/accounts?fields=id,name,access_token&limit=50&access_token=${userToken}`);
         const pages = pagesData.data || [];
         log(`Found ${pages.length} managed pages.`);
-        
+
         // Map page tokens for easy access
         const pageTokens: Record<string, string> = {};
         pages.forEach((p: any) => pageTokens[p.id] = p.access_token);
@@ -155,7 +160,7 @@ Deno.serve(async (req) => {
         // --- MODE A: HISTORIC DEEP CRAWL (Targeting Existing Leads) ---
         if (forceHistoric) {
             log("Creating Deep Crawl for existing leads in DB...");
-            
+
             // Fetch all leads that have page_id information
             const { data: dbLeads } = await supabase
                 .from("leads")
@@ -165,7 +170,7 @@ Deno.serve(async (req) => {
                 .limit(500); // Process top 500 active leads for safety
 
             if (!dbLeads || dbLeads.length === 0) {
-                 return jsonResponse({ success: true, message: "No leads found to sync", stats });
+                return jsonResponse({ success: true, message: "No leads found to sync", stats });
             }
 
             log(`Found ${dbLeads.length} leads to backfill.`);
@@ -173,7 +178,7 @@ Deno.serve(async (req) => {
             for (const lead of dbLeads) {
                 const pToken = pageTokens[lead.fb_page_id];
                 const convId = lead.platform_data?.fb_conv_id;
-                
+
                 if (!pToken) {
                     log(`Skipping lead ${lead.customer_name}: No token for page ${lead.fb_page_id}`);
                     continue;
@@ -184,7 +189,7 @@ Deno.serve(async (req) => {
                 }
 
                 log(`Backfilling lead: ${lead.customer_name} (${convId})`);
-                
+
                 // Pagination Loop
                 let nextUrl = `${FB_BASE_URL}/${convId}/messages?fields=id,message,from,created_time,referral,attachments,shares,sticker&limit=100&access_token=${pToken}`;
                 let pageCount = 0;
@@ -194,7 +199,7 @@ Deno.serve(async (req) => {
                     try {
                         const res: any = await fetchWithRetry(nextUrl);
                         const msgs = res.data || [];
-                        
+
                         if (msgs.length > 0) {
                             // Track latest message time for sorting
                             const batchLatest = msgs[0].created_time; // FB returns newest first
@@ -205,7 +210,7 @@ Deno.serve(async (req) => {
                             const dbMessages = msgs.map((m: any) => {
                                 const msgSenderId = String(m.from?.id || "");
                                 const isMsgFromPage = msgSenderId === String(lead.fb_page_id);
-                                
+
                                 let content = m.message || "";
                                 if (!content && m.attachments?.data) {
                                     const types = m.attachments.data.map((a: any) => `[${a.type || 'attachment'}]`).join(" ");
@@ -219,7 +224,7 @@ Deno.serve(async (req) => {
                                     lead_id: lead.id,
                                     fb_message_id: m.id,
                                     sender_id: msgSenderId,
-                                    sender_name: isMsgFromPage ? (pages.find((p:any) => p.id === lead.fb_page_id)?.name || "Page") : (lead.customer_name || "Khách hàng"),
+                                    sender_name: isMsgFromPage ? (pages.find((p: any) => p.id === lead.fb_page_id)?.name || "Page") : (lead.customer_name || "Khách hàng"),
                                     message_content: content,
                                     attachments: m.attachments?.data || null,
                                     sticker: m.sticker || null,
@@ -228,11 +233,11 @@ Deno.serve(async (req) => {
                                     is_from_customer: !isMsgFromPage
                                 };
                             });
-            
+
                             const { error: msgErr } = await supabase
                                 .from("lead_messages")
                                 .upsert(dbMessages, { onConflict: "fb_message_id" });
-                                
+
                             if (msgErr) log(`Msg upsert err: ${msgErr.message}`);
                             else stats.messages += dbMessages.length;
                         }
@@ -256,7 +261,7 @@ Deno.serve(async (req) => {
 
                 stats.leads++;
             }
-            
+
             return jsonResponse({ success: true, result: stats, logs });
         }
 
@@ -289,7 +294,7 @@ Deno.serve(async (req) => {
                     const res: any = await fetchWithRetry(convNextUrl);
                     const batch = res.data || [];
                     if (batch.length === 0) break;
-                    
+
                     conversations = [...conversations, ...batch];
                     convNextUrl = res.paging?.next || null;
                     convPageCount++;
@@ -300,156 +305,190 @@ Deno.serve(async (req) => {
             }
             log(`- ${pageName}: Found ${conversations.length} conversations.`);
 
-                for (const conv of conversations) {
-                    try {
-                        const customer = conv.participants?.data?.find((p: any) => String(p.id) !== pageId);
-                        if (!customer) continue;
+            for (const conv of conversations) {
+                try {
+                    const customer = conv.participants?.data?.find((p: any) => String(p.id) !== pageId);
+                    if (!customer) continue;
 
-                        const customerId = String(customer.id);
+                    const customerId = String(customer.id);
 
-                        // 1. Fetch messages to get referral info (ad_id) AND sync content
-                        const msgData = await fetchWithRetry(`${FB_BASE_URL}/${conv.id}/messages?fields=id,message,from,created_time,referral,attachments,shares,sticker&limit=100&access_token=${pageToken}`);
-                        const fbMsgs = msgData.data || [];
+                    // 1. Fetch messages to get referral info (ad_id) AND sync content
+                    const msgData = await fetchWithRetry(`${FB_BASE_URL}/${conv.id}/messages?fields=id,message,from,created_time,referral,attachments,shares,sticker&limit=100&access_token=${pageToken}`);
+                    const fbMsgs = msgData.data || [];
 
-                        // 2. Determine the correctly linked account ID
-                        let adId = fbMsgs.find((m: any) => m.referral?.ad_id)?.referral?.ad_id;
-                        let accId = (adId && adToAccountMap[adId]) ? adToAccountMap[adId] : (pageToAccount[pageId] || 40);
-
-                        // 3. Find existing data for this specific lead (User + Page)
-                        const { data: existingLead } = await supabase
-                            .from("leads")
-                            .select("id, customer_name, customer_avatar")
-                            .eq("platform_account_id", accId)
-                            .eq("external_id", customerId)
-                            .eq("fb_page_id", pageId)
-                            .maybeSingle();
-
-                        let customerName = existingLead?.customer_name || null;
-                        let customerAvatar = existingLead?.customer_avatar || null;
-                        const hasName = customerName && customerName !== "Khách hàng" && customerName !== customerId;
-
-                        // 4. Fetch/Refresh profile if needed
-                        if (!hasName || !customerAvatar) {
-                            try {
-                                const profileRes = await fetch(`${FB_BASE_URL}/${customerId}?fields=name,first_name,last_name,profile_pic,picture&access_token=${pageToken}`);
-                                const profileData = await profileRes.json();
-
-                                if (!profileData.error) {
-                                    let resolvedName = profileData.name;
-                                    if (!resolvedName && (profileData.first_name || profileData.last_name)) {
-                                        resolvedName = [profileData.first_name, profileData.last_name].filter(Boolean).join(" ");
-                                    }
-
-                                    if (!hasName && resolvedName) customerName = resolvedName;
-                                    if (!customerAvatar) {
-                                        customerAvatar = profileData.profile_pic || profileData.picture?.data?.url;
-                                    }
-
-                                    // Fallback for avatar if still missing
-                                    if (!customerAvatar) {
-                                        try {
-                                            const picRes = await fetch(`${FB_BASE_URL}/${customerId}/picture?type=large&redirect=false&access_token=${pageToken}`);
-                                            const picData = await picRes.json();
-                                            if (picData.data?.url) {
-                                                customerAvatar = picData.data.url;
-                                            }
-                                        } catch (e) { }
-                                    }
-                                } else if (!customerName) {
-                                    customerName = customer.name || "Khách hàng";
-                                }
-                            } catch (e) {
-                                if (!customerName) customerName = customer.name || "Khách hàng";
-                            }
-
-                            // METHOD 1.5: Crawler Fallback (Pancake Strategy)
-                            if (!customerAvatar) {
-                                try {
-                                    customerAvatar = await resolveAvatarWithCrawler(supabase, customerId);
-                                    if (customerAvatar) {
-                                        log(`Avatar resolved via Crawler! ${customerAvatar}`);
-                                    }
-                                } catch (crawlErr: any) {
-                                    log(`Crawler fallback error: ${crawlErr.message}`);
-                                }
-                            }
+                    // 2. Determine the correctly linked account ID (Smarter extraction)
+                    let adId: string | null = null;
+                    for (const m of fbMsgs) {
+                        const foundId = m.referral?.ad_id || m.referral?.campaign_id || m.referral?.ad_id_key || m.referral?.ads_context_data?.ad_id;
+                        if (foundId) {
+                            adId = String(foundId);
+                            break;
                         }
-
-
-                        // 5. Upsert Lead
-                        const leadUpsertData: any = {
-                            platform_account_id: accId,
-                            external_id: customerId,
-                            fb_page_id: pageId,
-                            customer_name: customerName,
-                            customer_avatar: customerAvatar,
-                            last_message_at: toVietnamTimestamp(conv.updated_time),
-                            is_read: true,
-                            platform_data: {
-                                fb_conv_id: conv.id,
-                                fb_page_id: pageId,
-                                fb_page_name: pageName,
-                                snippet: conv.snippet
-                            }
-                        };
-
-                        const { data: leadRows, error: lErr } = await supabase
-                            .from("leads")
-                            .upsert(leadUpsertData, { onConflict: "platform_account_id,external_id,fb_page_id" })
-                            .select("id");
-
-                        if (lErr || !leadRows?.length) {
-                            log(`Lead upsert error: ${lErr?.message}`);
-                            continue;
-                        }
-                        const leadId = leadRows[0].id;
-                        stats.leads++;
-
-                        // 6. SYNC MESSAGES
-                        if (fbMsgs.length > 0) {
-                            const dbMessages = fbMsgs.map((m: any) => {
-                                const msgSenderId = String(m.from?.id || "");
-                                const isMsgFromPage = msgSenderId === pageId;
-
-                                // Parse attachments for text summary if needed
-                                let content = m.message || "";
-                                if (!content && m.attachments?.data) {
-                                    const types = m.attachments.data.map((a: any) => `[${a.type || 'attachment'}]`).join(" ");
-                                    content = types;
-                                }
-                                if (!content && m.sticker) content = "[Sticker]";
-                                if (!content) content = "[Media]";
-
-                                return {
-                                    id: crypto.randomUUID(),
-                                    lead_id: leadId,
-                                    fb_message_id: m.id,
-                                    sender_id: msgSenderId,
-                                    sender_name: isMsgFromPage ? pageName : (customerName || "Khách hàng"),
-                                    message_content: content,
-                                    attachments: m.attachments?.data || null,
-                                    sticker: m.sticker || null,
-                                    shares: m.shares?.data || null,
-                                    sent_at: toVietnamTimestamp(m.created_time),
-                                    is_from_customer: !isMsgFromPage
-                                };
-                            });
-
-                            const { error: msgErr } = await supabase
-                                .from("lead_messages")
-                                .upsert(dbMessages, { onConflict: "fb_message_id" });
-
-                            if (msgErr) log(`Msg sync error: ${msgErr.message}`);
-                            else stats.messages += dbMessages.length;
-                        }
-
-
-                    } catch (e: any) {
-                        log(`Conv error: ${e.message}`);
-                        stats.errors++;
                     }
+
+                    let accId = (adId && adToAccountMap[adId]) ? adToAccountMap[adId] : (pageToAccount[pageId] || 40);
+
+                    // RE-VERIFY Account ID if we have an adId (Lookup in DB if map failed)
+                    if (adId && (!accId || accId === 40 || accId === 46)) {
+                        const { data: adLookup } = await supabase.from("unified_ads").select("platform_account_id").eq("external_id", adId).maybeSingle();
+                        if (adLookup?.platform_account_id) accId = adLookup.platform_account_id;
+                    }
+
+                    // 3. Find existing data for this specific lead (User + Page)
+                    const { data: existingLead } = await supabase
+                        .from("leads")
+                        .select("id, customer_name, customer_avatar")
+                        .eq("platform_account_id", accId)
+                        .eq("external_id", customerId)
+                        .eq("fb_page_id", pageId)
+                        .maybeSingle();
+
+                    let customerName = existingLead?.customer_name || null;
+                    let customerAvatar = existingLead?.customer_avatar || null;
+                    const hasName = customerName && customerName !== "Khách hàng" && customerName !== customerId;
+
+                    // 4. Fetch/Refresh profile if needed
+                    if (!hasName || !customerAvatar) {
+                        try {
+                            const profileRes = await fetch(`${FB_BASE_URL}/${customerId}?fields=name,first_name,last_name,profile_pic,picture&access_token=${pageToken}`);
+                            const profileData = await profileRes.json();
+
+                            if (!profileData.error) {
+                                let resolvedName = profileData.name;
+                                if (!resolvedName && (profileData.first_name || profileData.last_name)) {
+                                    resolvedName = [profileData.first_name, profileData.last_name].filter(Boolean).join(" ");
+                                }
+
+                                if (!hasName && resolvedName) customerName = resolvedName;
+                                if (!customerAvatar) {
+                                    customerAvatar = profileData.profile_pic || profileData.picture?.data?.url;
+                                }
+
+                                // Fallback for avatar if still missing
+                                if (!customerAvatar) {
+                                    try {
+                                        const picRes = await fetch(`${FB_BASE_URL}/${customerId}/picture?type=large&redirect=false&access_token=${pageToken}`);
+                                        const picData = await picRes.json();
+                                        if (picData.data?.url) {
+                                            customerAvatar = picData.data.url;
+                                        }
+                                    } catch (e) { }
+                                }
+                            } else if (!customerName) {
+                                customerName = customer.name || "Khách hàng";
+                            }
+                        } catch (e) {
+                            if (!customerName) customerName = customer.name || "Khách hàng";
+                        }
+
+                        // METHOD 1.5: Crawler Fallback (Pancake Strategy)
+                        if (!customerAvatar) {
+                            try {
+                                customerAvatar = await resolveAvatarWithCrawler(supabase, customerId);
+                                if (customerAvatar) {
+                                    log(`Avatar resolved via Crawler! ${customerAvatar}`);
+                                }
+                            } catch (crawlErr: any) {
+                                log(`Crawler fallback error: ${crawlErr.message}`);
+                            }
+                        }
+                    }
+
+
+                    // 5. Upsert Lead
+                    // Try to get earliest message time for first_contact_at
+                    let earliestMsgTime = null;
+                    if (fbMsgs.length > 0) {
+                        // Messages are returned newest first, so last item is oldest
+                        const oldestMsg = fbMsgs[fbMsgs.length - 1];
+                        earliestMsgTime = oldestMsg?.created_time;
+                    }
+                    
+                    const leadUpsertData: any = {
+                        platform_account_id: accId,
+                        external_id: customerId,
+                        fb_page_id: pageId,
+                        customer_name: customerName,
+                        customer_avatar: customerAvatar,
+                        last_message_at: toVietnamTimestamp(conv.updated_time),
+                        is_read: true,
+                        is_qualified: !!adId,
+                        source_campaign_id: adId || null,
+                        metadata: {
+                            ...(existingLead?.metadata || {}),
+                            qualified_at: existingLead?.metadata?.qualified_at || (adId ? toVietnamTimestamp(conv.updated_time) : null)
+                        },
+                        platform_data: {
+                            fb_conv_id: conv.id,
+                            fb_page_id: pageId,
+                            fb_page_name: pageName,
+                            snippet: conv.snippet
+                        }
+                    };
+                    
+                    // Set first_contact_at only for NEW leads (or if not set yet)
+                    if (!existingLead) {
+                        leadUpsertData.first_contact_at = earliestMsgTime ? toVietnamTimestamp(earliestMsgTime) : toVietnamTimestamp(conv.updated_time);
+                        log(`New lead ${customerName}: first_contact_at = ${leadUpsertData.first_contact_at}`);
+                    }
+
+                    const { data: leadRows, error: lErr } = await supabase
+                        .from("leads")
+                        .upsert(leadUpsertData, { onConflict: "platform_account_id,external_id,fb_page_id" })
+                        .select("id");
+
+                    if (lErr || !leadRows?.length) {
+                        log(`Lead upsert error: ${lErr?.message}`);
+                        continue;
+                    }
+                    const leadId = leadRows[0].id;
+                    stats.leads++;
+
+                    // 6. SYNC MESSAGES
+                    if (fbMsgs.length > 0) {
+                        const dbMessages = fbMsgs.map((m: any) => {
+                            const msgSenderId = String(m.from?.id || "");
+                            const isMsgFromPage = msgSenderId === pageId;
+
+                            // Parse attachments for text summary if needed
+                            let content = m.message || "";
+                            if (!content && m.attachments?.data) {
+                                const types = m.attachments.data.map((a: any) => `[${a.type || 'attachment'}]`).join(" ");
+                                content = types;
+                            }
+                            if (!content && m.sticker) content = "[Sticker]";
+                            if (!content) content = "[Media]";
+
+                            return {
+                                id: crypto.randomUUID(),
+                                lead_id: leadId,
+                                fb_message_id: m.id,
+                                sender_id: msgSenderId,
+                                sender_name: isMsgFromPage ? pageName : (customerName || "Khách hàng"),
+                                message_content: content,
+                                attachments: m.attachments?.data || null,
+                                sticker: m.sticker || null,
+                                shares: m.shares?.data || null,
+                                sent_at: toVietnamTimestamp(m.created_time),
+                                is_from_customer: !isMsgFromPage
+                            };
+                        });
+
+                        const { error: msgErr } = await supabase
+                            .from("lead_messages")
+                            .upsert(dbMessages, { onConflict: "fb_message_id" });
+
+                        if (msgErr) log(`Msg sync error: ${msgErr.message}`);
+                        else stats.messages += dbMessages.length;
+                    }
+
+
+                } catch (e: any) {
+                    log(`Conv error: ${e.message}`);
+                    stats.errors++;
                 }
             }
+        }
         log(`Done: ${stats.leads} profiles synced, ${stats.errors} errors`);
 
         return jsonResponse({ success: true, result: stats, logs });

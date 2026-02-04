@@ -17,7 +17,15 @@ const corsHeaders = {
     "Access-Control-Allow-Headers": "Content-Type, Authorization, x-client-info, apikey",
 };
 
-const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: corsHeaders });
+const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { 
+    status, 
+    headers: {
+        ...corsHeaders,
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    } 
+});
 
 // CRITICAL: DO NOT REMOVE THIS AUTH LOGIC. 
 // IT PRIORITIZES auth_tokens TABLE FOR CUSTOM AUTHENTICATION.
@@ -83,33 +91,35 @@ async function verifyAuth(req: Request) {
 }
 
 // Gemini AI helper function to analyze conversation
-async function analyzeWithGemini(apiKey: string, messages: Array<{ sender: string, content: string, isFromCustomer: boolean }>): Promise<{ analysis: string, isPotential: boolean } | null> {
+async function analyzeWithGemini(apiKey: string, messages: Array<{ sender: string, content: string, isFromCustomer: boolean, timestamp?: string }>): Promise<{ analysis: string, isPotential: boolean } | null> {
     if (!apiKey || messages.length === 0) return null;
     try {
-        const conversationText = messages.map(m =>
-            `${m.isFromCustomer ? '👤 Khách hàng' : '📄 Page'}: ${m.content}`
-        ).join('\n');
+        const conversationText = messages.map(m => {
+            const time = new Date(m.timestamp || "").toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
+            return `[${time}] ${m.isFromCustomer ? '👤 Khách hàng' : '📄 Page'}: ${m.content}`;
+        }).join('\n');
 
-        const prompt = `Bạn là chuyên gia phân tích hội thoại bán hàng. Hãy phân tích cuộc hội thoại sau và trả lời theo đúng format này:
-
-Đánh giá: [TIỀM NĂNG hoặc KHÔNG TIỀM NĂNG]
-(Tiềm năng = khách hỏi chi tiết về khóa học/sản phẩm, hẹn đóng tiền, quan tâm ưu đãi, hỏi lịch học, để lại SĐT hoặc có dấu hiệu muốn mua hàng)
-(Không tiềm năng = chỉ hỏi qua loa rồi im lặng, từ chối rõ ràng, hoặc chỉ là tin nhắn rác/spam)
-
-Tóm tắt: [Nội dung chính của cuộc hội thoại, 1-2 câu ngắn gọn]
-
-Nhu cầu khách hàng: [Khách đang thực sự muốn giải quyết vấn đề gì?]
-
-Mức độ quan tâm: [Cao / Trung bình / Thấp. Giải thích ngắn nhất có thể]
-
-Gợi ý follow-up:
-[Liệt kê các bước nên làm tiếp theo, mỗi bước một dòng]
-
----
-${conversationText}
----
-
-Trả lời bằng tiếng Việt, cực kỳ súc tích. QUAN TRỌNG: Dòng đầu tiên PHẢI là "Đánh giá: TIỀM NĂNG" hoặc "Đánh giá: KHÔNG TIỀM NĂNG"`;
+        const prompt = "Bạn là chuyên gia phân tích hội thoại bán hàng cho ColorME (trung tâm đào tạo thiết kế). Hãy phân tích cuộc hội thoại (kèm mốc thời gian) và CHẤM ĐIỂM mức độ tiềm năng trên thang 10.\n\n" +
+            "TIÊU CHÍ CHẤM ĐIỂM (Thang 10):\n" +
+            "1. Nhu cầu (2đ): Khách hỏi sâu về lộ trình, bài tập, sản phẩm đầu ra, hoặc muốn giải quyết vấn đề cụ thể.\n" +
+            "2. Thời gian (2đ): Khách hỏi lịch khai giảng, ca học, hoặc muốn bắt đầu học sớm.\n" +
+            "3. Tài chính (2đ): Khách hỏi học phí/ưu đãi VÀ có phản hồi tích cực (không im lặng sau khi biết giá).\n" +
+            "4. Liên lạc (2đ): Khách đã để lại SĐT hoặc sẵn sàng cung cấp khi được yêu cầu.\n" +
+            "5. Tương tác & Phản hồi (2đ): Khách chủ động trao đổi, phản hồi nhanh. TRỪ ĐIỂM nếu: Khách rep quá chậm (>24h-48h mỗi tin), hoặc đã ngưng tương tác lâu dù Page có nhắn tin (hội thoại bị 'nguội').\n\n" +
+            "QUY TẮC PHÂN LOẠI:\n" +
+            "- TIỀM NĂNG: Tổng điểm >= 8/10.\n" +
+            "- KHÔNG TIỀM NĂNG: Tổng điểm < 8/10 hoặc chỉ hỏi giá rồi im lặng, hoặc tương tác quá rời rạc/không còn phản hồi.\n\n" +
+            "CẤU TRÚC PHẢN HỒI (BẮT BUỘC):\n" +
+            "Đánh giá: [TIỀM NĂNG hoặc KHÔNG TIỀM NĂNG]\n" +
+            "Tổng điểm: [Số điểm]/10\n" +
+            "Chi tiết điểm: [Nhu cầu: xđ, Thời gian: xđ, Tài chính: xđ, Liên lạc: xđ, Tương tác: xđ]\n" +
+            "Tóm tắt: [Diễn biến chính: Khách hỏi -> Sale đáp -> Khách phản hồi. Lưu ý về nhịp độ phản hồi của khách]\n" +
+            "Giai đoạn: [Nhận thức/Quan tâm/Cân nhắc/Quyết định]\n" +
+            "Gợi ý: [Hành động tiếp theo cho Sale]\n\n" +
+            "---\n" +
+            conversationText + "\n" +
+            "---\n\n" +
+            "Dòng đầu tiên PHẢI là \"Đánh giá: TIỀM NĂNG\" hoặc \"Đánh giá: KHÔNG TIỀM NĂNG\"";
 
         const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
             method: 'POST',
@@ -117,21 +127,36 @@ Trả lời bằng tiếng Việt, cực kỳ súc tích. QUAN TRỌNG: Dòng đ
             body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
         });
 
-        const data = await response.json();
-        if (data.error) return null;
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`[Leads] Gemini API error (${response.status}): ${errorText.substring(0, 200)}`);
+            return null;
+        }
 
-        const analysis = data.candidates?.[0]?.content?.parts?.[0]?.text || null;
-        if (analysis) {
-            const lines = analysis.split('\n');
-            const firstLine = lines[0].toLowerCase();
-            const isPotential = firstLine.includes('tiềm năng') && !firstLine.includes('không tiềm năng');
+        const data = await response.text();
+        try {
+            const jsonData = JSON.parse(data);
+            if (jsonData.error) {
+                console.error(`[Leads] Gemini returned error object:`, jsonData.error);
+                return null;
+            }
+            const analysis = jsonData.candidates?.[0]?.content?.parts?.[0]?.text || null;
+            if (analysis) {
+                const lines = analysis.split('\n');
+                const firstLine = lines[0].toLowerCase();
+                const isPotential = firstLine.includes('tiềm năng') && !firstLine.includes('không tiềm năng');
 
-            // Remove the evaluation line
-            const cleanedAnalysis = lines.slice(1).join('\n').trim();
-            return { analysis: cleanedAnalysis, isPotential };
+                // Remove the evaluation line
+                const cleanedAnalysis = lines.slice(1).join('\n').trim();
+                return { analysis: cleanedAnalysis, isPotential };
+            }
+        } catch (parseError) {
+            console.error(`[Leads] Failed to parse Gemini response as JSON. Status: ${response.status}. Body start: ${data.substring(0, 100)}`);
+            return null;
         }
         return null;
-    } catch (e) {
+    } catch (e: any) {
+        console.error(`[Leads] analyzeWithGemini fatal error: ${e.message}`);
         return null;
     }
 }
@@ -156,17 +181,15 @@ Deno.serve(async (req) => {
     }
     const userId = auth.userId;
 
+    const url = new URL(req.url);
+    const method = req.method;
+    const segments = url.pathname.split("/").filter(Boolean);
+    const funcIndex = segments.indexOf("leads");
+    const subPathSegments = funcIndex !== -1 ? segments.slice(funcIndex + 1) : segments;
+    const path = "/" + subPathSegments.join("/");
+
     try {
-        const url = new URL(req.url);
-        const segments = url.pathname.split("/").filter(Boolean);
-        const funcIndex = segments.indexOf("leads");
-        const subPathSegments = funcIndex !== -1 ? segments.slice(funcIndex + 1) : segments;
-        const path = "/" + subPathSegments.join("/");
-
-        const method = req.method;
-
-        console.log(`[Leads] Incoming request: ${method} ${path} (orig: ${url.pathname})`);
-        console.log(`[Leads] Subpath segments:`, subPathSegments);
+        console.log(`[Leads] Processing ${method} ${path} for user ${userId}`);
 
         // Helper to check if path ends with or contains certain segments
         const hasPath = (segment: string) => subPathSegments.includes(segment);
@@ -313,7 +336,7 @@ Deno.serve(async (req) => {
                 const { data: adsData } = await insightsQuery.limit(100000);
 
                 adsData?.forEach((d: any) => {
-                    const sp = parseFloat(d.spend || "0");
+                    const sp = parseFloat(d.spend || "0") * 1.1; // Add 10% tax for display
                     const rev = parseFloat(d.purchase_value || "0");
                     spendTotal += sp;
                     revenueTotal += rev;
@@ -322,38 +345,78 @@ Deno.serve(async (req) => {
                 });
             }
 
-            // 2. STATS FROM LEADS TABLE (COUNT)
+            // FETCH PARAMETERS: dateStart, dateEnd, startTime, endTime
+            const startTime = url.searchParams.get("startTime") || "00:00:00";
+            const endTime = url.searchParams.get("endTime") || "23:59:59";
+            const rangeStart = dateStart ? `${dateStart} ${startTime}` : `${todayStr} 00:00:00`;
+            const rangeEnd = dateEnd ? `${dateEnd} ${endTime}` : `${todayStr} 23:59:59`;
+
+            // 1. STATS FROM LEADS TABLE (COUNT)
             let leadsBaseQuery = supabase
                 .from("leads")
-                .select("id, created_at, is_qualified, platform_accounts!inner(id, branch_id, platform_identities!inner(user_id))")
+                .select("id, created_at, first_contact_at, is_qualified, source_campaign_id, metadata, platform_accounts!inner(id, branch_id, platform_identities!inner(user_id))")
                 .eq("platform_accounts.platform_identities.user_id", userId);
 
-            if (dateStart) leadsBaseQuery = leadsBaseQuery.gte("created_at", `${dateStart}T00:00:00`);
-            if (dateEnd) leadsBaseQuery = leadsBaseQuery.lte("created_at", `${dateEnd}T23:59:59`);
-            if (branchIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("platform_accounts.branch_id", branchIdParam);
-            if (accountIdParam && accountIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("platform_account_id", accountIdParam);
-            if (pageIdParam && pageIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("fb_page_id", pageIdParam);
+            // Fetch anyone who was either first contacted OR qualified in the range
+            leadsBaseQuery = leadsBaseQuery.or(`first_contact_at.gte."${rangeStart}",metadata->>qualified_at.gte."${dateStart || todayStr}"`);
 
             const { data: leadsData } = await leadsBaseQuery;
 
-            const periodLeads = leadsData?.length || 0;
-            const todayLeads = leadsData?.filter((l: any) => l.created_at.startsWith(todayStr)).length || 0;
-            const todayQualified = leadsData?.filter((l: any) => l.created_at.startsWith(todayStr) && l.is_qualified).length || 0;
+            // NEW CONTACTS in range (The denominator in "33/38")
+            const rangeNewContacts = leadsData?.filter((l: any) => {
+                const contactAt = l.first_contact_at || l.created_at;
+                return contactAt && contactAt >= rangeStart && contactAt <= rangeEnd;
+            }) || [];
+            
+            const rangeNewTotal = rangeNewContacts.length;
+            const rangeNewAds = rangeNewContacts.filter((l: any) => {
+                const hasAdSnippet = l.platform_data?.snippet?.includes("trả lời một quảng cáo") || l.platform_data?.snippet?.includes("quảng cáo");
+                return l.is_qualified || !!l.source_campaign_id || hasAdSnippet;
+            }).length;
 
-            // 3. CALC DAYS FOR AVERAGE
+            // QUALIFIED CONVERSIONS in range (The numerator for "Qualified Leads", including old leads re-engaging)
+            const rangeTotalQualified = leadsData?.filter((l: any) => {
+                const qualAt = l.metadata?.qualified_at;
+                return qualAt && qualAt >= (dateStart || todayStr) && qualAt <= (dateEnd || todayStr);
+            }).length || 0;
+
+            // 2. UNIQUE CONTACTS in range (New + Old Leads who sent messages)
+            let msgQuery = supabase
+                .from("lead_messages")
+                .select("lead_id, leads!inner(platform_account_id, fb_page_id, platform_accounts!inner(branch_id, platform_identities!inner(user_id)))")
+                .eq("leads.platform_accounts.platform_identities.user_id", userId)
+                .eq("is_from_customer", true)
+                .gte("sent_at", rangeStart)
+                .lte("sent_at", rangeEnd);
+
+            if (branchIdParam !== "all") msgQuery = msgQuery.eq("leads.platform_accounts.branch_id", branchIdParam);
+            if (accountIdParam && accountIdParam !== "all") msgQuery = msgQuery.eq("leads.platform_account_id", accountIdParam);
+            if (pageIdParam && pageIdParam !== "all") msgQuery = msgQuery.eq("leads.fb_page_id", pageIdParam);
+
+            const { data: msgData } = await msgQuery;
+            const uniqueLeadsInRange = new Set(msgData?.map((m: any) => m.lead_id)).size;
+
+            // 4. CALC DAYS FOR AVERAGE
             let days = 30;
-            if (dateStart && dateEnd) {
+            const effectiveEndDate = dateEnd || todayStr;
+            if (dateStart) {
                 const s = new Date(dateStart).getTime();
-                const e = new Date(dateEnd).getTime();
-                days = Math.max(1, Math.ceil((e - s) / (1000 * 60 * 60 * 24)));
-                if (dateStart === dateEnd) days = 1;
+                const e = new Date(effectiveEndDate).getTime();
+                days = Math.max(1, Math.ceil((e - s) / (1000 * 60 * 60 * 24)) + 1);
+                if (dateStart === effectiveEndDate) days = 1;
             }
 
             return jsonResponse({
                 success: true,
                 result: {
                     spendTotal, spendToday, yesterdaySpend,
-                    todayLeads, todayQualified, totalLeads: periodLeads,
+                    todayLeads: rangeNewTotal,      // Mẫu số: Tổng khách mới trong khoảng thời gian
+                    todayQualified: rangeNewAds,    // Tử số: Khách mới từ Ads trong khoảng thời gian
+                    todayNewOrganic: rangeNewTotal - rangeNewAds,
+                    todayTotalQualified: rangeTotalQualified, // Tổng số lead phát sinh trong khoảng thời gian
+                    todayMessagesCount: uniqueLeadsInRange,   // Tổng số người nhắn tin trong khoảng thời gian
+                    totalLeads: rangeNewTotal,
+                    totalQualified: rangeTotalQualified,
                     revenue: revenueTotal,
                     avgDailySpend: spendTotal / days,
                     roas: spendTotal > 0 ? parseFloat((revenueTotal / spendTotal).toFixed(2)) : 0
@@ -366,26 +429,132 @@ Deno.serve(async (req) => {
             const branchIdParam = url.searchParams.get("branchId") || "all";
             const accountIdParam = url.searchParams.get("accountId");
             const pageIdParam = url.searchParams.get("pageId");
+            
+            // Pagination params
+            const page = parseInt(url.searchParams.get("page") || "1", 10);
+            const limit = Math.min(parseInt(url.searchParams.get("limit") || "50", 10), 200); // Max 200
+            const offset = (page - 1) * limit;
+            
+            // Filter params
+            const qualifiedParam = url.searchParams.get("qualified"); // "true" or "false"
+            const potentialParam = url.searchParams.get("potential"); // "true" or "false" (AI evaluation)
+            let isToday = url.searchParams.get("today") === "true"; 
+            const qualifiedTodayParam = url.searchParams.get("qualifiedToday"); 
+            const potentialTodayParam = url.searchParams.get("potentialToday");
+            const userIdParam = url.searchParams.get("userId"); 
+            const assignedIdParam = url.searchParams.get("assignedId"); // Filter by assigned_user_id
 
+            // New: Granular Date/Time Filters
+            const dateStart = url.searchParams.get("dateStart");
+            const dateEnd = url.searchParams.get("dateEnd");
+            const startTime = url.searchParams.get("startTime") || "00:00:00";
+            const endTime = url.searchParams.get("endTime") || "23:59:59";
+            
+            // Shorthand helpers
+            if (qualifiedTodayParam === "true") {
+                isToday = true;
+            }
+            if (potentialTodayParam === "true") {
+                isToday = true;
+            }
+            
+            // Determine which userId to use for filtering (param takes priority)
+            const effectiveUserId = userIdParam ? parseInt(userIdParam, 10) : userId;
+            
+            // Get today's date in VN timezone
+            const nowVN = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
+            const todayStr = nowVN.toISOString().split('T')[0];
+
+            // Build main query
             let query = supabase
                 .from("leads")
-                .select("*, platform_pages(name), platform_accounts!inner(id, name, branch_id, platform_identities!inner(user_id))")
-                .eq("platform_accounts.platform_identities.user_id", userId)
-                .order("last_message_at", { ascending: false });
+                .select("*, platform_pages(name, avatar_url), platform_accounts!inner(id, name, branch_id, platform_identities!inner(user_id))")
+                .eq("platform_accounts.platform_identities.user_id", effectiveUserId)
+                .order("last_message_at", { ascending: false, nullsFirst: false });
+
+            // Base count query - using a simpler select
+            let countQuery = supabase
+                .from("leads")
+                .select("id, platform_accounts!inner(platform_identities!inner(user_id))", { count: "exact", head: true })
+                .eq("platform_accounts.platform_identities.user_id", effectiveUserId);
 
             if (branchIdParam !== "all") {
                 query = query.eq("platform_accounts.branch_id", branchIdParam);
+                countQuery = countQuery.eq("platform_accounts.branch_id", branchIdParam);
             }
 
             if (accountIdParam && accountIdParam !== "all") {
                 query = query.eq("platform_account_id", accountIdParam);
+                countQuery = countQuery.eq("platform_account_id", accountIdParam);
             }
 
             if (pageIdParam && pageIdParam !== "all") {
                 query = query.eq("fb_page_id", pageIdParam);
+                countQuery = countQuery.eq("fb_page_id", pageIdParam);
+            }
+            
+            // Filter: by assigned_user_id
+            if (assignedIdParam) {
+                const assignedId = parseInt(assignedIdParam, 10);
+                if (!isNaN(assignedId)) {
+                    query = query.eq("assigned_user_id", assignedId);
+                    countQuery = countQuery.eq("assigned_user_id", assignedId);
+                }
+            }
+            
+            // Filter: by qualified status (Manual)
+            if (qualifiedParam === "true") {
+                query = query.eq("is_qualified", true);
+                countQuery = countQuery.eq("is_qualified", true);
+            } else if (qualifiedParam === "false") {
+                query = query.eq("is_qualified", false);
+                countQuery = countQuery.eq("is_qualified", false);
+            } else if (qualifiedTodayParam === "true" && qualifiedParam === null) {
+                query = query.eq("is_qualified", true);
+                countQuery = countQuery.eq("is_qualified", true);
             }
 
-            const { data: leads, error } = await query;
+            // Filter: by potential status (AI)
+            if (potentialParam === "true") {
+                query = query.eq("is_potential", true);
+                countQuery = countQuery.eq("is_potential", true);
+            } else if (potentialParam === "false") {
+                query = query.eq("is_potential", false);
+                countQuery = countQuery.eq("is_potential", false);
+            } else if (potentialTodayParam === "true" && potentialParam === null) {
+                query = query.eq("is_potential", true);
+                countQuery = countQuery.eq("is_potential", true);
+            }
+            
+            // Filter: by Date/Time Range (Handle both new contacts AND specific lead conversions)
+            if (dateStart || isToday) {
+                const effectiveStart = dateStart ? `${dateStart} ${startTime}` : `${todayStr} ${startTime}`;
+                const effectiveEnd = dateEnd ? `${dateEnd} ${endTime}` : `${todayStr} ${endTime}`;
+
+                if (qualifiedTodayParam === "true") {
+                    // Show only leads who converted in this range
+                    query = query.gte("metadata->>qualified_at", effectiveStart).lte("metadata->>qualified_at", effectiveEnd);
+                    countQuery = countQuery.gte("metadata->>qualified_at", effectiveStart).lte("metadata->>qualified_at", effectiveEnd);
+                } else if (potentialTodayParam === "true") {
+                    // Show leads that AI marked potential in this range (rough proxy using metadata)
+                    query = query.gte("metadata->>qualified_at", effectiveStart).lte("metadata->>qualified_at", effectiveEnd);
+                    countQuery = countQuery.gte("metadata->>qualified_at", effectiveStart).lte("metadata->>qualified_at", effectiveEnd);
+                } else {
+                    // Show new contacts in this range (Standard behavior)
+                    query = query.gte("first_contact_at", effectiveStart).lte("first_contact_at", effectiveEnd);
+                    countQuery = countQuery.gte("first_contact_at", effectiveStart).lte("first_contact_at", effectiveEnd);
+                }
+            }
+            
+            // Apply pagination
+            query = query.range(offset, offset + limit - 1);
+            
+            // Execute both queries
+            const [{ count: totalCount }, { data: leads, error }] = await Promise.all([
+                countQuery,
+                query
+            ]);
+            
             if (error) return jsonResponse({ success: false, error: error.message }, 400);
 
             // Resolve Campaign/Ad Names
@@ -402,14 +571,38 @@ Deno.serve(async (req) => {
             }
 
             leads?.forEach((l: any) => {
+                // Check multiple sources to detect if lead came from ads
+                const hasAdSnippet = l.platform_data?.snippet?.includes("trả lời một quảng cáo") || 
+                                   l.platform_data?.snippet?.includes("quảng cáo") ||
+                                   l.platform_data?.snippet?.includes("đến từ quảng cáo");
+                const hasAdDetectionMeta = l.metadata?.ad_detection_source === "message_pattern";
+                const isFromAd = l.source_campaign_id || hasAdSnippet || l.is_qualified || hasAdDetectionMeta;
+                
                 if (l.source_campaign_id) {
-                    l.source_campaign_name = adNamesMap[l.source_campaign_id] || `Ad (${l.source_campaign_id})`;
+                    l.source_campaign_name = adNamesMap[l.source_campaign_id] || `Quảng cáo (ID: ${l.source_campaign_id})`;
+                } else if (isFromAd) {
+                    l.source_campaign_name = "Quảng cáo (Không rõ chiến dịch)";
                 } else {
                     l.source_campaign_name = "Tự nhiên";
                 }
             });
 
-            return jsonResponse({ success: true, result: leads });
+            // Return with pagination metadata
+            const total = totalCount || 0;
+            const totalPages = Math.ceil(total / limit);
+            
+            return jsonResponse({ 
+                success: true, 
+                result: leads,
+                pagination: {
+                    page,
+                    limit,
+                    total,
+                    totalPages,
+                    hasNextPage: page < totalPages,
+                    hasPrevPage: page > 1
+                }
+            });
         }
 
         // GET /leads/:id/messages
@@ -471,13 +664,17 @@ Deno.serve(async (req) => {
                 }
 
                 // Resolve Campaign/Ad Name for this single lead
+                const hasAdSnippet = lead.platform_data?.snippet?.includes("trả lời một quảng cáo") || 
+                                   lead.platform_data?.snippet?.includes("quảng cáo");
                 if (lead.source_campaign_id) {
                     const { data: adData } = await supabase
                         .from("unified_ads")
                         .select("name")
                         .eq("external_id", lead.source_campaign_id)
                         .maybeSingle();
-                    lead.source_campaign_name = adData?.name || `Ad (${lead.source_campaign_id})`;
+                    lead.source_campaign_name = adData?.name || `Quảng cáo (ID: ${lead.source_campaign_id})`;
+                } else if (hasAdSnippet || lead.is_qualified) {
+                    lead.source_campaign_name = "Quảng cáo (Không rõ chiến dịch)";
                 } else {
                     lead.source_campaign_name = "Tự nhiên";
                 }
@@ -520,7 +717,15 @@ Deno.serve(async (req) => {
                         .limit(50);
 
                     if (messages && messages.length > 0) {
-                        const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
+                        // Get Gemini API key from users table for reliability
+                    const { data: userData } = await supabase
+                        .from("users")
+                        .select("gemini_api_key")
+                        .not("gemini_api_key", "is", null)
+                        .limit(1)
+                        .maybeSingle();
+
+                    const geminiApiKey = userData?.gemini_api_key || null;
                         const messagesForAnalysis = messages.map(m => ({
                             sender: m.sender_name,
                             content: m.message_content,
@@ -627,7 +832,7 @@ Deno.serve(async (req) => {
                 }
 
                 let content = m.message || "";
-                if (!content && m.attachments?.data) content = "[Attachment]";
+                if (!content && m.attachments?.data) content = "[Hình ảnh/File]";
                 if (!content && m.sticker) content = "[Sticker]";
                 if (!content) content = "[Media]";
 
@@ -637,7 +842,7 @@ Deno.serve(async (req) => {
                     fb_message_id: m.id,
                     sender_id: msgSenderId,
                     sender_name: m.from?.name || (isMsgFromPage ? "Page" : "Customer"),
-                    message_content: content,
+                    message_content: content.substring(0, 1000),
                     attachments: m.attachments?.data || null,
                     sticker: m.sticker || null,
                     shares: m.shares?.data || null,
@@ -650,19 +855,116 @@ Deno.serve(async (req) => {
 
             if (upsertError) return jsonResponse({ success: false, error: upsertError.message }, 500);
 
-            // Also update lead last_message_at if needed
-             if (msgsToUpsert.length > 0) {
-                 const latestMsg = msgsToUpsert[0]; // First one is newest usually
-                 await supabase.from("leads").update({ 
-                     last_message_at: latestMsg.sent_at 
-                 }).eq("id", lead.id);
-             }
+            // 7. Update lead metadata with the latest message from the sync
+            if (msgsToUpsert.length > 0) {
+                // Find the latest message by sorting by sent_at
+                const sortedMsgs = [...msgsToUpsert].sort((a, b) => 
+                    new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime()
+                );
+                const latestMsg = sortedMsgs[0];
+
+                await supabase.from("leads").update({ 
+                    last_message_at: latestMsg.sent_at,
+                    is_read: !latestMsg.is_from_customer,
+                    platform_data: {
+                        ...(lead.platform_data || {}),
+                        snippet: latestMsg.message_content.substring(0, 100)
+                    }
+                }).eq("id", lead.id);
+            }
 
             return jsonResponse({ success: true, count: count || msgsToUpsert.length });
         }
 
+        // POST /leads/reanalyze_all - Bulk re-analyze leads
+        if (method === "POST" && path.includes("reanalyze_all")) {
+            console.log(`[Leads] reanalyze_all match: ${path}`);
+            
+            const { data: userData } = await supabase
+                .from("users")
+                .select("gemini_api_key")
+                .not("gemini_api_key", "is", null)
+                .limit(1)
+                .maybeSingle();
+
+            const geminiApiKey = userData?.gemini_api_key;
+            if (!geminiApiKey) return jsonResponse({ success: false, error: "AI key missing" }, 500);
+
+            // Fetch leads needing analysis - Filter for old format
+            const { data: leadsToAnalyze, error: leadsError } = await supabase
+                .from("leads")
+                .select("id")
+                .not("last_message_at", "is", null)
+                .or("ai_analysis.is.null,ai_analysis.not.ilike.Tổng điểm%") 
+                .order("last_message_at", { ascending: false })
+                .limit(50); 
+
+            if (leadsError) return jsonResponse({ success: false, error: "DB Error: " + leadsError.message }, 400);
+
+            console.log(`[Leads] Processing batch of ${leadsToAnalyze?.length || 0}`);
+            const processedLeads = [];
+            const startTime = Date.now();
+            
+            for (const lead of (leadsToAnalyze || [])) {
+                // Graceful timeout check: stop if we've been running for > 45s
+                if (Date.now() - startTime > 45000) {
+                    console.warn(`[Leads] Time limit reached (45s). Returning partial results.`);
+                    break;
+                }
+
+                const leadId = lead.id;
+                const { data: messages } = await supabase
+                    .from("lead_messages")
+                    .select("sender_name, message_content, is_from_customer, sent_at")
+                    .eq("lead_id", leadId)
+                    .order("sent_at", { ascending: false })
+                    .limit(50);
+
+                if (messages && messages.length > 0) {
+                    const messagesForAnalysis = messages.map(m => ({
+                        sender: m.sender_name,
+                        content: m.message_content,
+                        isFromCustomer: m.is_from_customer,
+                        timestamp: m.sent_at
+                    })).reverse();
+
+                    const geminiResult = await analyzeWithGemini(geminiApiKey!, messagesForAnalysis);
+                    if (geminiResult) {
+                        await supabase.from("leads").update({
+                            ai_analysis: geminiResult.analysis,
+                            is_potential: geminiResult.isPotential,
+                            updated_at: new Date().toISOString()
+                        }).eq("id", leadId);
+                        processedLeads.push(leadId);
+                    }
+                } else {
+                    // No messages found - mark to avoid re-fetching in next batch
+                    await supabase.from("leads").update({
+                        ai_analysis: "Tổng điểm: 0/10\nChi tiết điểm: [Nhu cầu: 0đ, Thời gian: 0đ, Tài chính: 0đ, Liên lạc: 0đ, Tương tác: 0đ]\nTóm tắt: Không có tin nhắn hội thoại để phân tích.\nGiai đoạn: Chưa xác định\nGợi ý: Kiểm tra lại đồng bộ tin nhắn.",
+                        is_potential: false,
+                        updated_at: new Date().toISOString()
+                    }).eq("id", leadId);
+                    processedLeads.push(leadId);
+                }
+            }
+
+            return jsonResponse({ 
+                success: true, 
+                processed: processedLeads.length,
+                totalMatched: (leadsToAnalyze || []).length,
+                timeSpentMs: Date.now() - startTime
+            });
+        }
+
         return jsonResponse({ success: false, error: "Not Found" }, 404);
     } catch (error: any) {
-        return jsonResponse({ success: false, error: error.message }, 500);
+        console.error(`[Leads] Unhandled error: ${error.message}`, error.stack);
+        return jsonResponse({ 
+            success: false, 
+            error: error.message,
+            stack: error.stack,
+            path: path,
+            method: method
+        }, 500);
     }
 });

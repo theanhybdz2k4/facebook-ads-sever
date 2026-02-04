@@ -56,19 +56,41 @@ export async function resolveAvatarWithCrawler(supabase: SupabaseClient, psid: s
                 } catch (e) { }
             }
 
-            // If URL didn't yield ID, try HTML body
-            if (!uid) {
-                const html = await res.text();
-                const bodyMatch = html.match(/"entity_id":"(\d+)"/);
-                const uidMatchHtml = html.match(/"userID":"(\d+)"/);
-                uid = bodyMatch ? bodyMatch[1] : (uidMatchHtml ? uidMatchHtml[1] : null);
+            // If URL didn't yield ID or as a primary strategy, scrape the HTML for the direct CDN link
+            const html = await res.text();
+            
+            // Look for actual Facebook CDN links (scontent) which are the "real" images
+            // We look for common patterns in m.facebook.com HTML for profile pictures
+            const cdnPatterns = [
+                /https:\/\/scontent\.[^"&?]+\/v\/[^"&?]+\.(?:jpg|png|webp)[^"&?]*/gi,
+                /https:\\[\/][\/]scontent\.[^"&?]+\/v\/[^"&?]+\.(?:jpg|png|webp)[^"&?]*/gi
+            ];
+
+            for (const pattern of cdnPatterns) {
+                const matches = html.match(pattern);
+                if (matches) {
+                    // Find the most likely profile picture (usually has 'p100x100', 'p200x200' or similar in the URL)
+                    // Or just pick the first one that looks like a profile pic
+                    for (let match of matches) {
+                        match = match.replace(/\\/g, ''); // Clean up escaped slashes
+                        if (match.includes('/v/') && (match.includes('stp=') || match.includes('_n.'))) {
+                            console.log("[FB-Crawler] Found direct CDN avatar: " + match.substring(0, 50) + "...");
+                            return match.replace(/&amp;/g, "&");
+                        }
+                    }
+                }
             }
 
+            // Fallback: try to find the UID and return a standard placeholder ONLY if absolutely necessary,
+            // but we'll try to find any scontent link first.
+            const bodyMatch = html.match(/"entity_id":"(\d+)"/);
+            uid = bodyMatch ? bodyMatch[1] : (html.match(/"userID":"(\d+)"/)?.[1] || null);
+
             if (uid) {
-                console.log("[FB-Crawler] Successfully resolved UID: " + uid);
-                return "https://graph.facebook.com/" + uid + "/picture?type=large";
-            } else {
-                console.log("[FB-Crawler] Failed to extract UID from redirect or HTML.");
+                console.log("[FB-Crawler] Successfully resolved UID as fallback: " + uid);
+                // Even with UID, we prefer the scraped link. 
+                // Using a public URL that might work without API if scraping fails 
+                return `https://www.facebook.com/search/top/?q=${uid}`; // Not an image, just a fallback marker
             }
         } else if (credential.credential_type === "fb_crawler_user_token") {
             // Fallback strategy using a high-privilege user token if available
