@@ -1,0 +1,2 @@
+[functions.fb-dispatch]
+verify_jwt = false

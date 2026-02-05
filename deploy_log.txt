@@ -1,0 +1,52 @@
+Bundling Function: fb-sync-ads
+Deploying Function: fb-sync-ads (script size: 127.1kB)
+Bundling Function: fb-sync-leads
+No change found in Function: fb-sync-leads
+Bundling Function: fb-webhook
+No change found in Function: fb-webhook
+Bundling Function: worker
+No change found in Function: worker
+Bundling Function: fb-sync-campaigns
+Deploying Function: fb-sync-campaigns (script size: 122.8kB)
+Bundling Function: leads
+No change found in Function: leads
+Bundling Function: management
+Deploying Function: management (script size: 119.6kB)
+Bundling Function: telegram
+Deploying Function: telegram (script size: 133.2kB)
+Bundling Function: ad-accounts
+Deploying Function: ad-accounts (script size: 120kB)
+Bundling Function: ad-groups
+Deploying Function: ad-groups (script size: 121kB)
+Bundling Function: analytics
+Deploying Function: analytics (script size: 126.2kB)
+Bundling Function: campaigns
+Deploying Function: campaigns (script size: 121.1kB)
+Bundling Function: fb-debug-msg
+No change found in Function: fb-debug-msg
+Bundling Function: fb-debug-msg-2
+Deploying Function: fb-debug-msg-2 (script size: 108.2kB)
+Bundling Function: fb-reply
+Deploying Function: fb-reply (script size: 107.8kB)
+Bundling Function: insights
+Deploying Function: insights (script size: 122.4kB)
+Bundling Function: accounts
+No change found in Function: accounts
+Bundling Function: ads
+Deploying Function: ads (script size: 121.4kB)
+Bundling Function: auth
+Deploying Function: auth (script size: 131.8kB)
+Bundling Function: debug-auth
+Deploying Function: debug-auth (script size: 11.15kB)
+Bundling Function: fb-dispatch
+Deploying Function: fb-dispatch (script size: 127.3kB)
+Bundling Function: fb-settings
+No change found in Function: fb-settings
+Bundling Function: fb-sync-insights
+Deploying Function: fb-sync-insights (script size: 134.2kB)
+Bundling Function: jobs
+Deploying Function: jobs (script size: 106.9kB)
+Bundling Function: branches
+Deploying Function: branches (script size: 124.2kB)
+Deployed Functions on project lncgmaxtqjfbcypncfoe: accounts, ad-accounts, ad-groups, ads, analytics, auth, branches, campaigns, debug-auth, fb-debug-msg, fb-debug-msg-2, fb-dispatch, fb-reply, fb-settings, fb-sync-ads, fb-sync-campaigns, fb-sync-insights, fb-sync-leads, fb-webhook, insights, jobs, leads, management, telegram, worker
+You can inspect your deployment in the Dashboard: https://supabase.com/dashboard/project/lncgmaxtqjfbcypncfoe/functions

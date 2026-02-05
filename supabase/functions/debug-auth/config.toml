@@ -1,0 +1,2 @@
+[functions.debug-auth]
+verify_jwt = false

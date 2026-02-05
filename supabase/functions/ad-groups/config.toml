@@ -1,0 +1,2 @@
+[functions.ad-groups]
+verify_jwt = false

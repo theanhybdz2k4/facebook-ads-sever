@@ -1,0 +1,53 @@
+[functions]
+[functions.accounts]
+verify_jwt = false
+[functions.ad-accounts]
+verify_jwt = false
+[functions.ad-groups]
+verify_jwt = false
+[functions.ads]
+verify_jwt = false
+[functions.analytics]
+verify_jwt = false
+[functions.auth]
+verify_jwt = false
+[functions.branches]
+verify_jwt = false
+[functions.campaigns]
+verify_jwt = false
+[functions.debug-auth]
+verify_jwt = false
+[functions.fb-debug-msg]
+verify_jwt = false
+[functions.fb-debug-msg-2]
+verify_jwt = false
+[functions.fb-dispatch]
+verify_jwt = false
+[functions.fb-reply]
+verify_jwt = false
+[functions.fb-settings]
+verify_jwt = false
+[functions.fb-sync-ads]
+verify_jwt = false
+[functions.fb-sync-campaigns]
+verify_jwt = false
+[functions.fb-sync-insights]
+verify_jwt = false
+[functions.fb-sync-leads]
+verify_jwt = false
+[functions.fb-webhook]
+verify_jwt = false
+[functions.insights]
+verify_jwt = false
+[functions.jobs]
+verify_jwt = false
+[functions.leads]
+verify_jwt = false
+[functions.management]
+verify_jwt = false
+[functions.telegram]
+verify_jwt = false
+[functions.trigger-sync]
+verify_jwt = false
+[functions.worker]
+verify_jwt = false

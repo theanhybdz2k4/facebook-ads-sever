@@ -316,7 +316,14 @@ Deno.serve(async (req: Request) => {
 
         // POST /insights/sync
         if (path === "/sync" && method === "POST") {
-            const body = await req.json();
+            let body = {};
+            try {
+                const text = await req.text();
+                if (text) body = JSON.parse(text);
+            } catch (e) {
+                // Empty or invalid body, use defaults
+            }
+            
             const syncResponse = await fetch(`${supabaseUrl}/functions/v1/fb-sync-insights`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "Authorization": req.headers.get("Authorization") || "" },

@@ -17,15 +17,30 @@ const corsHeaders = {
     "Access-Control-Allow-Headers": "Content-Type, Authorization, x-client-info, apikey",
 };
 
-const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { 
-    status, 
+const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), {
+    status,
     headers: {
         ...corsHeaders,
         "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
         "Pragma": "no-cache",
         "Expires": "0",
-    } 
+    }
 });
+
+// Helper to get current time in Vietnam timezone (UTC+7)
+function getNowVN(): Date {
+    return new Date(Date.now() + 7 * 60 * 60 * 1000);
+}
+
+// Format a VN-adjusted Date to YYYY-MM-DD string (use getUTC* methods since we already added +7 hours)
+function formatVNDate(date: Date): string {
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+}
+
+// Format a VN-adjusted Date to YYYY-MM-DD HH:mm:ss string
+function formatVNTimestamp(date: Date): string {
+    return `${formatVNDate(date)} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}:${String(date.getUTCSeconds()).padStart(2, '0')}`;
+}
 
 // CRITICAL: DO NOT REMOVE THIS AUTH LOGIC. 
 // IT PRIORITIZES auth_tokens TABLE FOR CUSTOM AUTHENTICATION.
@@ -207,13 +222,13 @@ Deno.serve(async (req) => {
 
         // GET /leads/agents - List all agents detected in the system
         if (method === "GET" && (path === "/agents" || path === "agents")) {
-          const { data: agents, error } = await supabase
-              .from("agents")
-              .select("*")
-              .order("name", { ascending: true });
+            const { data: agents, error } = await supabase
+                .from("agents")
+                .select("*")
+                .order("name", { ascending: true });
 
-          if (error) return jsonResponse({ success: false, error: error.message }, 400);
-          return jsonResponse({ success: true, result: agents });
+            if (error) return jsonResponse({ success: false, error: error.message }, 400);
+            return jsonResponse({ success: true, result: agents });
         }
 
         // POST /leads/pages/sync - Sync pages from user token (Manual Trigger)
@@ -300,9 +315,11 @@ Deno.serve(async (req) => {
             const dateEnd = url.searchParams.get("dateEnd");
             const platformCode = url.searchParams.get("platformCode") || "all";
 
-            const nowVN = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
-            const todayStr = nowVN.toISOString().split('T')[0];
-            const yesterdayStr = new Date(nowVN.getTime() - 86400000).toISOString().split('T')[0];
+            // Calculate VN timezone dates using helper functions
+            const nowVN = getNowVN();
+            const todayStr = formatVNDate(nowVN);
+            const yesterdayVN = new Date(nowVN.getTime() - 86400000);
+            const yesterdayStr = formatVNDate(yesterdayVN);
 
             // 1. Get user's account IDs first (simpler approach for accuracy)
             let accountQuery = supabase
@@ -321,13 +338,14 @@ Deno.serve(async (req) => {
             const { data: userAccounts } = await accountQuery;
             const accountIds = userAccounts?.map((a: any) => a.id) || [];
 
-            // 2. STATS FROM UNIFIED_INSIGHTS (SPEND, REVENUE) - query by account IDs
-            let spendTotal = 0, spendToday = 0, yesterdaySpend = 0, revenueTotal = 0;
+            // 2. STATS FROM UNIFIED_INSIGHTS (SPEND, REVENUE, MESSAGING_NEW) - query by account IDs
+            let spendTotal = 0, spendToday = 0, spendTodayRaw = 0, yesterdaySpend = 0, revenueTotal = 0, messagingNewFromAds = 0;
 
             if (accountIds.length > 0) {
+                // Query for selected date range - include messaging_new for accurate lead count from Meta
                 let insightsQuery = supabase
                     .from("unified_insights")
-                    .select("spend, date, purchase_value")
+                    .select("spend, date, purchase_value, messaging_new")
                     .in("platform_account_id", accountIds);
 
                 if (dateStart) insightsQuery = insightsQuery.gte("date", dateStart);
@@ -336,13 +354,35 @@ Deno.serve(async (req) => {
                 const { data: adsData } = await insightsQuery.limit(100000);
 
                 adsData?.forEach((d: any) => {
-                    const sp = parseFloat(d.spend || "0") * 1.1; // Add 10% tax for display
+                    const spRaw = parseFloat(d.spend || "0");
+                    const sp = spRaw * 1.1; // Add 10% tax for display
                     const rev = parseFloat(d.purchase_value || "0");
+                    const msgNew = parseInt(d.messaging_new || "0", 10);
                     spendTotal += sp;
                     revenueTotal += rev;
-                    if (d.date === todayStr) spendToday += sp;
+                    messagingNewFromAds += msgNew;
+                    if (d.date === todayStr) {
+                        spendToday += sp;
+                        spendTodayRaw += spRaw; // Without tax
+                    }
                     if (d.date === yesterdayStr) yesterdaySpend += sp;
                 });
+
+                // ALWAYS query today's spend separately if today is not in the date range
+                const isTodayInRange = (!dateStart || todayStr >= dateStart) && (!dateEnd || todayStr <= dateEnd);
+                if (!isTodayInRange) {
+                    const { data: todayData } = await supabase
+                        .from("unified_insights")
+                        .select("spend")
+                        .in("platform_account_id", accountIds)
+                        .eq("date", todayStr);
+                    
+                    todayData?.forEach((d: any) => {
+                        const spRaw = parseFloat(d.spend || "0");
+                        spendTodayRaw += spRaw; // Without tax
+                        spendToday += spRaw * 1.1;
+                    });
+                }
             }
 
             // FETCH PARAMETERS: dateStart, dateEnd, startTime, endTime
@@ -351,46 +391,47 @@ Deno.serve(async (req) => {
             const rangeStart = dateStart ? `${dateStart} ${startTime}` : `${todayStr} 00:00:00`;
             const rangeEnd = dateEnd ? `${dateEnd} ${endTime}` : `${todayStr} 23:59:59`;
 
-            // 1. STATS FROM LEADS TABLE (COUNT)
+            // 1. STATS FROM LEADS TABLE (COUNT NEW CONTACTS)
+            // Use accountIds fetched above to avoid complex join issues
             let leadsBaseQuery = supabase
                 .from("leads")
-                .select("id, created_at, first_contact_at, is_qualified, source_campaign_id, metadata, platform_accounts!inner(id, branch_id, platform_identities!inner(user_id))")
-                .eq("platform_accounts.platform_identities.user_id", userId);
+                .select("id, first_contact_at, is_qualified, source_campaign_id, platform_data, metadata, platform_account_id")
+                .in("platform_account_id", accountIds);
 
-            // Fetch anyone who was either first contacted OR qualified in the range
-            leadsBaseQuery = leadsBaseQuery.or(`first_contact_at.gte."${rangeStart}",metadata->>qualified_at.gte."${dateStart || todayStr}"`);
+            if (pageIdParam && pageIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("fb_page_id", pageIdParam);
 
-            const { data: leadsData } = await leadsBaseQuery;
+            // Filter by FIRST contact in range
+            leadsBaseQuery = leadsBaseQuery.gte("first_contact_at", rangeStart).lte("first_contact_at", rangeEnd);
 
-            // NEW CONTACTS in range (The denominator in "33/38")
-            const rangeNewContacts = leadsData?.filter((l: any) => {
-                const contactAt = l.first_contact_at || l.created_at;
-                return contactAt && contactAt >= rangeStart && contactAt <= rangeEnd;
-            }) || [];
+            const { data: leadsData, error: leadsError } = await leadsBaseQuery;
             
+            // NEW CONTACTS in range
+            const rangeNewContacts = leadsData || [];
             const rangeNewTotal = rangeNewContacts.length;
-            const rangeNewAds = rangeNewContacts.filter((l: any) => {
-                const hasAdSnippet = l.platform_data?.snippet?.includes("trả lời một quảng cáo") || l.platform_data?.snippet?.includes("quảng cáo");
-                return l.is_qualified || !!l.source_campaign_id || hasAdSnippet;
-            }).length;
+            
+            // AGGREGATION: Ad leads are those marked as qualified (attribute of ad interaction)
+            const rangeNewAds = rangeNewContacts.filter((l: any) => l.source_campaign_id || l.is_qualified).length;
 
-            // QUALIFIED CONVERSIONS in range (The numerator for "Qualified Leads", including old leads re-engaging)
-            const rangeTotalQualified = leadsData?.filter((l: any) => {
-                const qualAt = l.metadata?.qualified_at;
-                return qualAt && qualAt >= (dateStart || todayStr) && qualAt <= (dateEnd || todayStr);
-            }).length || 0;
+            const rangeNewOrganic = rangeNewTotal - rangeNewAds;
+            
+            // Debug info for the developer (can be seen in network tab)
+            const statsDebug = {
+                leadsCount: rangeNewTotal,
+                leadsError: leadsError,
+                range: { start: rangeStart, end: rangeEnd },
+                userId,
+                accountIdsCount: accountIds.length
+            };
 
-            // 2. UNIQUE CONTACTS in range (New + Old Leads who sent messages)
+            // 2. UNIQUE MESSAGING CONTACTS in range (New + Old Leads who sent messages - used for "Total Messages")
             let msgQuery = supabase
                 .from("lead_messages")
-                .select("lead_id, leads!inner(platform_account_id, fb_page_id, platform_accounts!inner(branch_id, platform_identities!inner(user_id)))")
-                .eq("leads.platform_accounts.platform_identities.user_id", userId)
+                .select("lead_id, leads!inner(platform_account_id, fb_page_id)")
+                .in("leads.platform_account_id", accountIds)
                 .eq("is_from_customer", true)
                 .gte("sent_at", rangeStart)
                 .lte("sent_at", rangeEnd);
 
-            if (branchIdParam !== "all") msgQuery = msgQuery.eq("leads.platform_accounts.branch_id", branchIdParam);
-            if (accountIdParam && accountIdParam !== "all") msgQuery = msgQuery.eq("leads.platform_account_id", accountIdParam);
             if (pageIdParam && pageIdParam !== "all") msgQuery = msgQuery.eq("leads.fb_page_id", pageIdParam);
 
             const { data: msgData } = await msgQuery;
@@ -406,21 +447,25 @@ Deno.serve(async (req) => {
                 if (dateStart === effectiveEndDate) days = 1;
             }
 
+            const result = {
+                spendTotal, spendToday, spendTodayRaw, yesterdaySpend,
+                todayLeads: rangeNewTotal,      // Base on rangeNewTotal: 47
+                todayQualified: rangeNewAds,    // EXACT MATCH with list filter: 45
+                todayNewOrganic: rangeNewOrganic, // 2
+                todayMessagesCount: uniqueLeadsInRange, // 111 (New + Old)
+                totalLeads: rangeNewTotal,
+                totalQualified: rangeNewAds,
+                revenue: revenueTotal,
+                avgDailySpend: spendTotal / days,
+                roas: spendTotal > 0 ? parseFloat((revenueTotal / spendTotal).toFixed(2)) : 0,
+                debug: statsDebug
+            };
+
+                            console.log("[Leads-Stats] Final Result:", JSON.stringify(result));
+
             return jsonResponse({
                 success: true,
-                result: {
-                    spendTotal, spendToday, yesterdaySpend,
-                    todayLeads: rangeNewTotal,      // Mẫu số: Tổng khách mới trong khoảng thời gian
-                    todayQualified: rangeNewAds,    // Tử số: Khách mới từ Ads trong khoảng thời gian
-                    todayNewOrganic: rangeNewTotal - rangeNewAds,
-                    todayTotalQualified: rangeTotalQualified, // Tổng số lead phát sinh trong khoảng thời gian
-                    todayMessagesCount: uniqueLeadsInRange,   // Tổng số người nhắn tin trong khoảng thời gian
-                    totalLeads: rangeNewTotal,
-                    totalQualified: rangeTotalQualified,
-                    revenue: revenueTotal,
-                    avgDailySpend: spendTotal / days,
-                    roas: spendTotal > 0 ? parseFloat((revenueTotal / spendTotal).toFixed(2)) : 0
-                }
+                result: result
             });
         }
 
@@ -429,19 +474,19 @@ Deno.serve(async (req) => {
             const branchIdParam = url.searchParams.get("branchId") || "all";
             const accountIdParam = url.searchParams.get("accountId");
             const pageIdParam = url.searchParams.get("pageId");
-            
+
             // Pagination params
             const page = parseInt(url.searchParams.get("page") || "1", 10);
             const limit = Math.min(parseInt(url.searchParams.get("limit") || "50", 10), 200); // Max 200
             const offset = (page - 1) * limit;
-            
+
             // Filter params
             const qualifiedParam = url.searchParams.get("qualified"); // "true" or "false"
             const potentialParam = url.searchParams.get("potential"); // "true" or "false" (AI evaluation)
-            let isToday = url.searchParams.get("today") === "true"; 
-            const qualifiedTodayParam = url.searchParams.get("qualifiedToday"); 
+            let isToday = url.searchParams.get("today") === "true";
+            const qualifiedTodayParam = url.searchParams.get("qualifiedToday");
             const potentialTodayParam = url.searchParams.get("potentialToday");
-            const userIdParam = url.searchParams.get("userId"); 
+            const userIdParam = url.searchParams.get("userId");
             const assignedIdParam = url.searchParams.get("assignedId"); // Filter by assigned_user_id
 
             // New: Granular Date/Time Filters
@@ -450,6 +495,13 @@ Deno.serve(async (req) => {
             const startTime = url.searchParams.get("startTime") || "00:00:00";
             const endTime = url.searchParams.get("endTime") || "23:59:59";
             
+            // Calculate VN timezone dates
+            const nowVN = getNowVN();
+            const todayStr = formatVNDate(nowVN);
+            
+            const rangeStart = dateStart ? `${dateStart} ${startTime}` : `${todayStr} 00:00:00`;
+            const rangeEnd = dateEnd ? `${dateEnd} ${endTime}` : `${todayStr} 23:59:59`;
+
             // Shorthand helpers
             if (qualifiedTodayParam === "true") {
                 isToday = true;
@@ -457,18 +509,23 @@ Deno.serve(async (req) => {
             if (potentialTodayParam === "true") {
                 isToday = true;
             }
-            
+
             // Determine which userId to use for filtering (param takes priority)
             const effectiveUserId = userIdParam ? parseInt(userIdParam, 10) : userId;
-            
-            // Get today's date in VN timezone
-            const nowVN = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
-            const todayStr = nowVN.toISOString().split('T')[0];
 
-            // Build main query
+            // Build main query - OPTIMIZED: Only select needed fields to reduce egress
             let query = supabase
                 .from("leads")
-                .select("*, platform_pages(name, avatar_url), platform_accounts!inner(id, name, branch_id, platform_identities!inner(user_id))")
+                .select(`
+                    id, external_id, customer_name, customer_avatar, phone, 
+                    first_contact_at, last_message_at, created_at, updated_at,
+                    is_qualified, is_potential, is_manual_potential, is_read,
+                    source_campaign_id, fb_page_id, platform_account_id,
+                    assigned_user_id, assigned_agent_id, assigned_agent_name,
+                    notes, platform_data,
+                    platform_pages(name, avatar_url), 
+                    platform_accounts!inner(id, name, branch_id, platform_identities!inner(user_id))
+                `)
                 .eq("platform_accounts.platform_identities.user_id", effectiveUserId)
                 .order("last_message_at", { ascending: false, nullsFirst: false });
 
@@ -492,7 +549,7 @@ Deno.serve(async (req) => {
                 query = query.eq("fb_page_id", pageIdParam);
                 countQuery = countQuery.eq("fb_page_id", pageIdParam);
             }
-            
+
             // Filter: by assigned_user_id
             if (assignedIdParam) {
                 const assignedId = parseInt(assignedIdParam, 10);
@@ -501,17 +558,36 @@ Deno.serve(async (req) => {
                     countQuery = countQuery.eq("assigned_user_id", assignedId);
                 }
             }
-            
-            // Filter: by qualified status (Manual)
+
+            // Filter: by Date/Time (Daily stats view)
+            if (qualifiedTodayParam === "true") {
+                query = query.eq("is_qualified", true).gte("last_message_at", rangeStart).lte("last_message_at", rangeEnd);
+                countQuery = countQuery.eq("is_qualified", true).gte("last_message_at", rangeStart).lte("last_message_at", rangeEnd);
+            } else if (potentialTodayParam === "true") {
+                query = query.eq("is_potential", true).gte("last_message_at", rangeStart).lte("last_message_at", rangeEnd);
+                countQuery = countQuery.eq("is_potential", true).gte("last_message_at", rangeStart).lte("last_message_at", rangeEnd);
+            } else if (isToday) {
+                // Return everyone active in range
+                query = query.gte("last_message_at", rangeStart).lte("last_message_at", rangeEnd);
+                countQuery = countQuery.gte("last_message_at", rangeStart).lte("last_message_at", rangeEnd);
+            } else {
+                if (dateStart) {
+                    query = query.gte("first_contact_at", rangeStart);
+                    countQuery = countQuery.gte("first_contact_at", rangeStart);
+                }
+                if (dateEnd) {
+                    query = query.lte("first_contact_at", rangeEnd);
+                    countQuery = countQuery.lte("first_contact_at", rangeEnd);
+                }
+            }
+
+            // Filter: by qualified status (Manual override)
             if (qualifiedParam === "true") {
                 query = query.eq("is_qualified", true);
                 countQuery = countQuery.eq("is_qualified", true);
             } else if (qualifiedParam === "false") {
                 query = query.eq("is_qualified", false);
                 countQuery = countQuery.eq("is_qualified", false);
-            } else if (qualifiedTodayParam === "true" && qualifiedParam === null) {
-                query = query.eq("is_qualified", true);
-                countQuery = countQuery.eq("is_qualified", true);
             }
 
             // Filter: by potential status (AI)
@@ -521,45 +597,22 @@ Deno.serve(async (req) => {
             } else if (potentialParam === "false") {
                 query = query.eq("is_potential", false);
                 countQuery = countQuery.eq("is_potential", false);
-            } else if (potentialTodayParam === "true" && potentialParam === null) {
-                query = query.eq("is_potential", true);
-                countQuery = countQuery.eq("is_potential", true);
             }
-            
-            // Filter: by Date/Time Range (Handle both new contacts AND specific lead conversions)
-            if (dateStart || isToday) {
-                const effectiveStart = dateStart ? `${dateStart} ${startTime}` : `${todayStr} ${startTime}`;
-                const effectiveEnd = dateEnd ? `${dateEnd} ${endTime}` : `${todayStr} ${endTime}`;
 
-                if (qualifiedTodayParam === "true") {
-                    // Show only leads who converted in this range
-                    query = query.gte("metadata->>qualified_at", effectiveStart).lte("metadata->>qualified_at", effectiveEnd);
-                    countQuery = countQuery.gte("metadata->>qualified_at", effectiveStart).lte("metadata->>qualified_at", effectiveEnd);
-                } else if (potentialTodayParam === "true") {
-                    // Show leads that AI marked potential in this range (rough proxy using metadata)
-                    query = query.gte("metadata->>qualified_at", effectiveStart).lte("metadata->>qualified_at", effectiveEnd);
-                    countQuery = countQuery.gte("metadata->>qualified_at", effectiveStart).lte("metadata->>qualified_at", effectiveEnd);
-                } else {
-                    // Show new contacts in this range (Standard behavior)
-                    query = query.gte("first_contact_at", effectiveStart).lte("first_contact_at", effectiveEnd);
-                    countQuery = countQuery.gte("first_contact_at", effectiveStart).lte("first_contact_at", effectiveEnd);
-                }
-            }
-            
             // Apply pagination
             query = query.range(offset, offset + limit - 1);
-            
+
             // Execute both queries
             const [{ count: totalCount }, { data: leads, error }] = await Promise.all([
                 countQuery,
                 query
             ]);
-            
+
             if (error) return jsonResponse({ success: false, error: error.message }, 400);
 
             // Resolve Campaign/Ad Names
             const adIds = [...new Set(leads?.map((l: any) => l.source_campaign_id).filter(Boolean))];
-            
+
             const adNamesMap: Record<string, string> = {};
             if (adIds.length > 0) {
                 const { data: adNames } = await supabase
@@ -571,17 +624,13 @@ Deno.serve(async (req) => {
             }
 
             leads?.forEach((l: any) => {
-                // Check multiple sources to detect if lead came from ads
-                const hasAdSnippet = l.platform_data?.snippet?.includes("trả lời một quảng cáo") || 
-                                   l.platform_data?.snippet?.includes("quảng cáo") ||
-                                   l.platform_data?.snippet?.includes("đến từ quảng cáo");
-                const hasAdDetectionMeta = l.metadata?.ad_detection_source === "message_pattern";
-                const isFromAd = l.source_campaign_id || hasAdSnippet || l.is_qualified || hasAdDetectionMeta;
-                
+                const isFromAd = !!l.source_campaign_id || !!l.is_qualified;
+
                 if (l.source_campaign_id) {
                     l.source_campaign_name = adNamesMap[l.source_campaign_id] || `Quảng cáo (ID: ${l.source_campaign_id})`;
                 } else if (isFromAd) {
-                    l.source_campaign_name = "Quảng cáo (Không rõ chiến dịch)";
+                    const adTitle = l.metadata?.ad_title;
+                    l.source_campaign_name = adTitle ? `Quảng cáo: ${adTitle}` : "Quảng cáo (Click từ Ad)";
                 } else {
                     l.source_campaign_name = "Tự nhiên";
                 }
@@ -590,9 +639,9 @@ Deno.serve(async (req) => {
             // Return with pagination metadata
             const total = totalCount || 0;
             const totalPages = Math.ceil(total / limit);
-            
-            return jsonResponse({ 
-                success: true, 
+
+            return jsonResponse({
+                success: true,
                 result: leads,
                 pagination: {
                     page,
@@ -620,7 +669,11 @@ Deno.serve(async (req) => {
 
             if (!leadCheck) return jsonResponse({ success: false, error: "Lead not found or unauthorized" }, 404);
 
-            const { data, error } = await supabase.from("lead_messages").select("*").eq("lead_id", leadId).order("sent_at", { ascending: true });
+            // OPTIMIZED: Select specific columns instead of * to reduce egress
+            const { data, error } = await supabase.from("lead_messages")
+                .select("id, lead_id, fb_message_id, sender_id, sender_name, message_content, is_from_customer, sent_at, created_at, sticker, attachments, shares")
+                .eq("lead_id", leadId)
+                .order("sent_at", { ascending: true });
             if (error) return jsonResponse({ success: false, error: error.message }, 400);
             return jsonResponse({ success: true, result: data });
         }
@@ -651,9 +704,19 @@ Deno.serve(async (req) => {
             const leadId = subPathSegments[0];
 
             if (leadId && !["stats", "pages", "messages", "sync", "assign"].includes(leadId)) {
+                // OPTIMIZED: Select specific columns for single lead view
                 const { data: lead, error } = await supabase
                     .from("leads")
-                    .select("*, platform_pages(name), platform_accounts!inner(id, name, branch_id, platform_identities!inner(user_id))")
+                    .select(`
+                        id, external_id, customer_name, customer_avatar, phone,
+                        first_contact_at, last_message_at, created_at, updated_at,
+                        is_qualified, is_potential, is_manual_potential, is_read,
+                        source_campaign_id, fb_page_id, platform_account_id,
+                        assigned_user_id, assigned_agent_id, assigned_agent_name,
+                        notes, platform_data, ai_analysis, metadata, last_analysis_at,
+                        platform_pages(name, avatar_url), 
+                        platform_accounts!inner(id, name, branch_id, platform_identities!inner(user_id))
+                    `)
                     .eq("id", leadId)
                     .eq("platform_accounts.platform_identities.user_id", userId)
                     .single();
@@ -664,8 +727,8 @@ Deno.serve(async (req) => {
                 }
 
                 // Resolve Campaign/Ad Name for this single lead
-                const hasAdSnippet = lead.platform_data?.snippet?.includes("trả lời một quảng cáo") || 
-                                   lead.platform_data?.snippet?.includes("quảng cáo");
+                const hasAdSnippet = lead.platform_data?.snippet?.includes("trả lời một quảng cáo") ||
+                    lead.platform_data?.snippet?.includes("quảng cáo");
                 if (lead.source_campaign_id) {
                     const { data: adData } = await supabase
                         .from("unified_ads")
@@ -718,14 +781,14 @@ Deno.serve(async (req) => {
 
                     if (messages && messages.length > 0) {
                         // Get Gemini API key from users table for reliability
-                    const { data: userData } = await supabase
-                        .from("users")
-                        .select("gemini_api_key")
-                        .not("gemini_api_key", "is", null)
-                        .limit(1)
-                        .maybeSingle();
+                        const { data: userData } = await supabase
+                            .from("users")
+                            .select("gemini_api_key")
+                            .not("gemini_api_key", "is", null)
+                            .limit(1)
+                            .maybeSingle();
 
-                    const geminiApiKey = userData?.gemini_api_key || null;
+                        const geminiApiKey = userData?.gemini_api_key || null;
                         const messagesForAnalysis = messages.map(m => ({
                             sender: m.sender_name,
                             content: m.message_content,
@@ -742,7 +805,7 @@ Deno.serve(async (req) => {
 
                 const { data, error } = await supabase.from("leads").update(updates).eq("id", leadId).select().single();
                 if (error) return jsonResponse({ success: false, error: error.message }, 400);
-                
+
                 // If assignment changed, ensure agent is in agents table (backup)
                 if (updates.assigned_agent_id && updates.assigned_agent_name) {
                     await supabase.from("agents").upsert({
@@ -751,7 +814,7 @@ Deno.serve(async (req) => {
                         last_seen_at: new Date().toISOString()
                     });
                 }
-                
+
                 return jsonResponse({ success: true, result: data });
             }
         }
@@ -762,7 +825,7 @@ Deno.serve(async (req) => {
         if (method === "POST" && subPathSegments.length === 2 && subPathSegments[1] === "sync_messages") {
             const leadId = subPathSegments[0];
             const FB_BASE_URL = "https://graph.facebook.com/v24.0";
-            
+
             // 1. Get Lead Info
             const { data: lead } = await supabase
                 .from("leads")
@@ -790,7 +853,7 @@ Deno.serve(async (req) => {
                 .eq("platform_identity_id", identity.id)
                 .limit(1)
                 .single();
-            
+
             if (!creds) return jsonResponse({ success: false, error: "No active FB token found" }, 404);
             const userToken = creds.credential_value;
 
@@ -798,25 +861,25 @@ Deno.serve(async (req) => {
             const pageId = lead.fb_page_id;
             const pageRes = await fetch(`${FB_BASE_URL}/${pageId}?fields=access_token&access_token=${userToken}`);
             const pageData = await pageRes.json();
-            
+
             if (!pageData.access_token) return jsonResponse({ success: false, error: "Failed to get page token" }, 400);
             const pageToken = pageData.access_token;
-            
+
             // 4. Find Conversation
             const convsRes = await fetch(`${FB_BASE_URL}/${pageId}/conversations?fields=id,participants&limit=100&access_token=${pageToken}`);
             const convsData = await convsRes.json();
             const conversations = convsData.data || [];
-            
-            const targetConv = conversations.find((c: any) => 
+
+            const targetConv = conversations.find((c: any) =>
                 c.participants?.data?.some((p: any) => p.id === lead.external_id)
             );
 
             if (!targetConv) return jsonResponse({ success: false, error: "Conversation not found in recent list (Top 100)" }, 404);
-            
+
             // 5. Fetch Messages
             const msgsRes = await fetch(`${FB_BASE_URL}/${targetConv.id}/messages?fields=id,message,from,created_time,attachments,sticker&limit=100&access_token=${pageToken}`);
             const msgsData = await msgsRes.json();
-            
+
             if (!msgsData.data) return jsonResponse({ success: false, error: "No messages found" }, 400);
 
             // 6. Upsert Messages
@@ -858,12 +921,12 @@ Deno.serve(async (req) => {
             // 7. Update lead metadata with the latest message from the sync
             if (msgsToUpsert.length > 0) {
                 // Find the latest message by sorting by sent_at
-                const sortedMsgs = [...msgsToUpsert].sort((a, b) => 
+                const sortedMsgs = [...msgsToUpsert].sort((a, b) =>
                     new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime()
                 );
                 const latestMsg = sortedMsgs[0];
 
-                await supabase.from("leads").update({ 
+                await supabase.from("leads").update({
                     last_message_at: latestMsg.sent_at,
                     is_read: !latestMsg.is_from_customer,
                     platform_data: {
@@ -879,7 +942,7 @@ Deno.serve(async (req) => {
         // POST /leads/reanalyze_all - Bulk re-analyze leads
         if (method === "POST" && path.includes("reanalyze_all")) {
             console.log(`[Leads] reanalyze_all match: ${path}`);
-            
+
             const { data: userData } = await supabase
                 .from("users")
                 .select("gemini_api_key")
@@ -895,16 +958,16 @@ Deno.serve(async (req) => {
                 .from("leads")
                 .select("id")
                 .not("last_message_at", "is", null)
-                .or("ai_analysis.is.null,ai_analysis.not.ilike.Tổng điểm%") 
+                .or("ai_analysis.is.null,ai_analysis.not.ilike.Tổng điểm%")
                 .order("last_message_at", { ascending: false })
-                .limit(50); 
+                .limit(50);
 
             if (leadsError) return jsonResponse({ success: false, error: "DB Error: " + leadsError.message }, 400);
 
             console.log(`[Leads] Processing batch of ${leadsToAnalyze?.length || 0}`);
             const processedLeads = [];
             const startTime = Date.now();
-            
+
             for (const lead of (leadsToAnalyze || [])) {
                 // Graceful timeout check: stop if we've been running for > 45s
                 if (Date.now() - startTime > 45000) {
@@ -948,8 +1011,8 @@ Deno.serve(async (req) => {
                 }
             }
 
-            return jsonResponse({ 
-                success: true, 
+            return jsonResponse({
+                success: true,
                 processed: processedLeads.length,
                 totalMatched: (leadsToAnalyze || []).length,
                 timeSpentMs: Date.now() - startTime
@@ -959,8 +1022,8 @@ Deno.serve(async (req) => {
         return jsonResponse({ success: false, error: "Not Found" }, 404);
     } catch (error: any) {
         console.error(`[Leads] Unhandled error: ${error.message}`, error.stack);
-        return jsonResponse({ 
-            success: false, 
+        return jsonResponse({
+            success: false,
             error: error.message,
             stack: error.stack,
             path: path,

@@ -1,0 +1,2 @@
+[functions.fb-debug-msg]
+verify_jwt = false

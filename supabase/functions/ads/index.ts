@@ -86,10 +86,12 @@ Deno.serve(async (req: Request) => {
 
             // Single Ad Retrieval via query param (to bypass adblockers)
             if (adId) {
+                // OPTIMIZED: Select specific columns instead of * to reduce egress
                 const { data: ad, error } = await supabase
                     .from("unified_ads")
                     .select(`
-                        *,
+                        id, name, status, effective_status, external_id, start_time, end_time, synced_at, 
+                        unified_ad_group_id, platform_account_id,
                         platform_accounts(id, name, currency, platform_identity_id, branch_id),
                         unified_ad_groups(id, name, unified_campaigns(id, name)),
                         unified_ad_creatives(id, thumbnail_url, image_url)
@@ -226,10 +228,12 @@ Deno.serve(async (req: Request) => {
         // GET /ads/:id
         if (subPathSegments.length === 1 && req.method === "GET") {
             const adId = subPathSegments[0];
+            // OPTIMIZED: Select specific columns instead of * to reduce egress
             const { data: ad, error } = await supabase
                 .from("unified_ads")
                 .select(`
-                    *,
+                    id, name, status, effective_status, external_id, start_time, end_time, synced_at,
+                    unified_ad_group_id, platform_account_id,
                     platform_accounts(id, name, currency, platform_identity_id, branch_id),
                     unified_ad_groups(id, name, unified_campaigns(id, name)),
                     unified_ad_creatives(id, thumbnail_url, image_url)

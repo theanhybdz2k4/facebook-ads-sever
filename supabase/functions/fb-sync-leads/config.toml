@@ -1,0 +1,2 @@
+[functions.fb-sync-leads]
+verify_jwt = false

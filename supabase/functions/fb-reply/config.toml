@@ -1,0 +1,2 @@
+[functions.fb-reply]
+verify_jwt = false

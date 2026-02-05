@@ -13,25 +13,24 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const FB_BASE_URL = "https://graph.facebook.com/v24.0";
 
 function getVietnamToday(): string {
-    const vn = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
-    return vn.toISOString().split("T")[0];
+    const vn = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    return `${vn.getUTCFullYear()}-${String(vn.getUTCMonth() + 1).padStart(2, '0')}-${String(vn.getUTCDate()).padStart(2, '0')}`;
 }
 
 function getVietnamYesterday(): string {
-    const vn = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
-    vn.setDate(vn.getDate() - 1);
-    return vn.toISOString().split("T")[0];
+    const vn = new Date(Date.now() + 7 * 60 * 60 * 1000 - 86400000);
+    return `${vn.getUTCFullYear()}-${String(vn.getUTCMonth() + 1).padStart(2, '0')}-${String(vn.getUTCDate()).padStart(2, '0')}`;
 }
 
 function getVietnamTime(): string {
-    const vn = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
+    const vn = new Date(Date.now() + 7 * 60 * 60 * 1000);
     const y = vn.getUTCFullYear();
     const m = String(vn.getUTCMonth() + 1).padStart(2, '0');
     const d = String(vn.getUTCDate()).padStart(2, '0');
     const h = String(vn.getUTCHours()).padStart(2, '0');
     const min = String(vn.getUTCMinutes()).padStart(2, '0');
     const s = String(vn.getUTCSeconds()).padStart(2, '0');
-    return y + "-" + m + "-" + d + " " + h + ":" + min + ":" + s;
+    return `${y}-${m}-${d} ${h}:${min}:${s}`;
 }
 
 class FacebookApiClient {

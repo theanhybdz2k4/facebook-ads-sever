@@ -1,0 +1,2 @@
+[functions.ad-accounts]
+verify_jwt = false

@@ -1,0 +1,2 @@
+[functions.accounts]
+verify_jwt = false

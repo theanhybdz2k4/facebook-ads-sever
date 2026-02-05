@@ -268,7 +268,7 @@ Deno.serve(async (req) => {
                     // STRICT LOOKUP: ONLY external_id + fb_page_id
                     const { data: existingLead } = await supabase
                         .from("leads")
-                        .select("id, customer_name, customer_avatar, is_potential, ai_analysis, is_manual_potential, metadata")
+                        .select("id, customer_name, customer_avatar, is_potential, ai_analysis, is_manual_potential, metadata, first_contact_at")
                         .eq("external_id", customerId)
                         .eq("fb_page_id", pageId)
                         .limit(1)
@@ -444,10 +444,10 @@ Deno.serve(async (req) => {
                     // ALWAYS set last_message_at from timestamp to ensure sorting
                     leadBaseData.last_message_at = toVietnamTimestamp(timestamp);
                     
-                    // Set first_contact_at only for NEW leads (not existing ones)
-                    if (!existingLead) {
+                    // Set first_contact_at if it doesn't exist yet
+                    if (!existingLead?.first_contact_at) {
                         leadBaseData.first_contact_at = toVietnamTimestamp(timestamp);
-                        console.log("[FB-Webhook] NEW LEAD - Setting first_contact_at: " + leadBaseData.first_contact_at);
+                        console.log("[FB-Webhook] Setting first_contact_at: " + leadBaseData.first_contact_at);
                     }
 
                     // EXTRACT AD ID SMARTERY
@@ -926,6 +926,20 @@ Deno.serve(async (req) => {
                                         const headUpdate: any = {
                                             metadata: { ...existingMetadata, last_crawled_at: new Date().toISOString() }
                                         };
+
+                                        // Update first_contact_at to the earliest message we now know about
+                                        const oldestMsg = sortedMsgs[sortedMsgs.length - 1];
+                                        if (oldestMsg) {
+                                            const oldestSentAt = oldestMsg.created_time || oldestMsg.sent_at;
+                                            if (oldestSentAt) {
+                                                const oldestVN = oldestMsg.sent_at || toVietnamTimestamp(oldestSentAt);
+                                                // If we find a message older than current first_contact_at, update it
+                                                if (!dbLead.first_contact_at || new Date(oldestVN) < new Date(dbLead.first_contact_at)) {
+                                                    headUpdate.first_contact_at = oldestVN;
+                                                    console.log(`[FB-Webhook] Fixing first_contact_at for ${dbLead.id} to oldest message: ${oldestVN}`);
+                                                }
+                                            }
+                                        }
 
                                         if (latestMsg) {
                                             headUpdate.last_message_at = toVietnamTimestamp(latestMsg.created_time);
