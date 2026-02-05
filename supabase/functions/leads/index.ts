@@ -522,7 +522,7 @@ Deno.serve(async (req) => {
                     is_qualified, is_potential, is_manual_potential, is_read,
                     source_campaign_id, fb_page_id, platform_account_id,
                     assigned_user_id, assigned_agent_id, assigned_agent_name,
-                    notes, platform_data,
+                    notes, platform_data, ai_analysis,
                     platform_pages(name, avatar_url), 
                     platform_accounts!inner(id, name, branch_id, platform_identities!inner(user_id))
                 `)
