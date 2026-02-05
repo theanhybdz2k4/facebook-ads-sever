@@ -336,7 +336,21 @@ Deno.serve(async (req) => {
             }
 
             const { data: userAccounts } = await accountQuery;
-            const accountIds = userAccounts?.map((a: any) => a.id) || [];
+            let accountIds = userAccounts?.map((a: any) => a.id) || [];
+
+            // If pageId filter is applied, find accounts that have leads on this page
+            // This ensures spend stats are filtered by the selected fanpage
+            if (pageIdParam && pageIdParam !== "all" && accountIds.length > 0) {
+                const { data: pageAccounts } = await supabase
+                    .from("leads")
+                    .select("platform_account_id")
+                    .eq("fb_page_id", pageIdParam)
+                    .in("platform_account_id", accountIds);
+                
+                // Get unique account IDs that have leads on this page
+                const pageAccountIds = [...new Set(pageAccounts?.map((l: any) => l.platform_account_id) || [])];
+                accountIds = pageAccountIds.length > 0 ? pageAccountIds : [];
+            }
 
             // 2. STATS FROM UNIFIED_INSIGHTS (SPEND, REVENUE, MESSAGING_NEW) - query by account IDs
             let spendTotal = 0, spendToday = 0, spendTodayRaw = 0, yesterdaySpend = 0, revenueTotal = 0, messagingNewFromAds = 0;
@@ -395,7 +409,7 @@ Deno.serve(async (req) => {
             // Use accountIds fetched above to avoid complex join issues
             let leadsBaseQuery = supabase
                 .from("leads")
-                .select("id, first_contact_at, is_qualified, source_campaign_id, platform_data, metadata, platform_account_id")
+                .select("id, first_contact_at, is_qualified, is_potential, is_manual_potential, source_campaign_id, platform_data, metadata, platform_account_id")
                 .in("platform_account_id", accountIds);
 
             if (pageIdParam && pageIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("fb_page_id", pageIdParam);
@@ -410,9 +424,27 @@ Deno.serve(async (req) => {
             const rangeNewTotal = rangeNewContacts.length;
             
             // AGGREGATION: Ad leads are those marked as qualified (attribute of ad interaction)
-            const rangeNewAds = rangeNewContacts.filter((l: any) => l.source_campaign_id || l.is_qualified).length;
-
-            const rangeNewOrganic = rangeNewTotal - rangeNewAds;
+            const adsLeads = rangeNewContacts.filter((l: any) => l.source_campaign_id || l.is_qualified);
+            const organicLeads = rangeNewContacts.filter((l: any) => !l.source_campaign_id && !l.is_qualified);
+            
+            const rangeNewAds = adsLeads.length;
+            const rangeNewOrganic = organicLeads.length;
+            
+            // Count potential leads in each group (is_potential = AI analysis, is_manual_potential = starred by user)
+            const potentialFromAds = adsLeads.filter((l: any) => l.is_potential === true || l.is_manual_potential === true).length;
+            const potentialFromOrganic = organicLeads.filter((l: any) => l.is_potential === true || l.is_manual_potential === true).length;
+            
+            // Count ALL starred (manual potential) leads - không giới hạn theo ngày
+            // Query riêng để đếm tất cả leads đã đánh dấu sao
+            let starredQuery = supabase
+                .from("leads")
+                .select("id", { count: "exact", head: true })
+                .in("platform_account_id", accountIds)
+                .or("is_potential.eq.true,is_manual_potential.eq.true");
+            
+            if (pageIdParam && pageIdParam !== "all") starredQuery = starredQuery.eq("fb_page_id", pageIdParam);
+            
+            const { count: starredCount } = await starredQuery;
             
             // Debug info for the developer (can be seen in network tab)
             const statsDebug = {
@@ -452,7 +484,10 @@ Deno.serve(async (req) => {
                 todayLeads: rangeNewTotal,      // Base on rangeNewTotal: 47
                 todayQualified: rangeNewAds,    // EXACT MATCH with list filter: 45
                 todayNewOrganic: rangeNewOrganic, // 2
+                potentialFromAds,               // Số tiềm năng từ ads
+                potentialFromOrganic,           // Số tiềm năng từ organic
                 todayMessagesCount: uniqueLeadsInRange, // 111 (New + Old)
+                starredCount,                   // Khách hàng tiềm năng được đánh dấu sao
                 totalLeads: rangeNewTotal,
                 totalQualified: rangeNewAds,
                 revenue: revenueTotal,
