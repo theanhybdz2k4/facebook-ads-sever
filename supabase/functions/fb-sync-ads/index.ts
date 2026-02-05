@@ -335,7 +335,7 @@ Deno.serve(async (req: Request) => {
             // Get existing creatives for comparison
             const { data: currentCreatives } = await supabase
                 .from("unified_ad_creatives")
-                .select("*")
+                .select("id, external_id, name, image_url, thumbnail_url") // FETCH ONLY NEEDED FIELDS
                 .eq("platform_account_id", accountId);
             
             const existingCreativeDataMap = new Map<string, any>((currentCreatives || []).map((c: any) => [c.external_id, c]));
@@ -369,6 +369,17 @@ Deno.serve(async (req: Request) => {
                          imageUrl = `https://graph.facebook.com/v24.0/${c.object_story_spec.link_data.image_hash}/picture`;
                     }
 
+                    // CRITICAL OPTIMIZATION: Trim platform_data to save space
+                    // Only keep what's needed for display and lead-sync mapping
+                    const trimmedPlatformData = {
+                        id: c.id,
+                        name: c.name,
+                        thumbnail_url: c.thumbnail_url,
+                        image_url: c.image_url,
+                        page_id: c.object_story_spec?.page_id || c.page_id,
+                        object_story_spec: c.object_story_spec ? { page_id: c.object_story_spec.page_id } : undefined
+                    };
+
                     const newData = {
                         id: existing?.id || crypto.randomUUID(),
                         external_id: c.id,
@@ -376,7 +387,7 @@ Deno.serve(async (req: Request) => {
                         name: c.name || "Creative " + c.id,
                         thumbnail_url: c.thumbnail_url || imageUrl || null,
                         image_url: imageUrl,
-                        platform_data: c,
+                        platform_data: trimmedPlatformData, // USE TRIMMED DATA
                         synced_at: getVietnamTime(),
                     };
 
@@ -392,22 +403,28 @@ Deno.serve(async (req: Request) => {
                 }
 
                 if (creativeUpserts.length > 0) {
-                    const { data: upsertedCreatives, error: creErr } = await supabase
-                        .from("unified_ad_creatives")
-                        .upsert(creativeUpserts, { onConflict: "platform_account_id,external_id" })
-                        .select("id, external_id");
+                    // Split into chunks if too many
+                    const chunks = [];
+                    for (let i = 0; i < creativeUpserts.length; i += 100) chunks.push(creativeUpserts.slice(i, i + 100));
+                    
+                    for (const chunk of chunks) {
+                        const { data: upsertedCreatives, error: creErr } = await supabase
+                            .from("unified_ad_creatives")
+                            .upsert(chunk, { onConflict: "platform_account_id,external_id" })
+                            .select("id, external_id");
 
-                    if (!creErr && upsertedCreatives) {
-                        upsertedCreatives.forEach((c: any) => creativeIdMapping.set(c.external_id, c.id));
-                    } else if (creErr) {
-                        result.errors.push("Creative Batch Error: " + creErr.message);
+                        if (!creErr && upsertedCreatives) {
+                            upsertedCreatives.forEach((c: any) => creativeIdMapping.set(c.external_id, c.id));
+                        } else if (creErr) {
+                            result.errors.push("Creative Batch Error: " + creErr.message);
+                        }
                     }
                 }
             }
             result.creatives.total = creativeIdMapping.size;
 
             // 2. SYNC ADS
-            const { data: currentAds } = await supabase.from("unified_ads").select("*").eq("platform_account_id", accountId).limit(10000);
+            const { data: currentAds } = await supabase.from("unified_ads").select("id, external_id, name, status, effective_status, unified_ad_creative_id").eq("platform_account_id", accountId).limit(10000);
             const existingAdDataMap = new Map<string, any>((currentAds || []).map((a: any) => [a.external_id, a]));
 
             const adUpserts = [];
@@ -420,7 +437,9 @@ Deno.serve(async (req: Request) => {
                 const internalCreativeId = ad.creative?.id ? creativeIdMapping.get(ad.creative.id) : null;
                 const existing = existingAdDataMap.get(ad.id);
 
-                const newData = {
+                // Optimization: Skip upserting platform_data for ARCHIVED ads if not changed
+                const isArchived = ad.effective_status === 'ARCHIVED' || ad.effective_status === 'DELETED';
+                const newData: any = {
                     id: existing?.id || crypto.randomUUID(),
                     external_id: ad.id,
                     platform_account_id: accountId,
@@ -431,9 +450,13 @@ Deno.serve(async (req: Request) => {
                     effective_status: ad.effective_status,
                     start_time: adGroup.start_time,
                     end_time: adGroup.end_time,
-                    platform_data: ad,
-                    synced_at: timestampNow, // Always update timestamp to show it was checked
+                    synced_at: timestampNow,
                 };
+
+                // Only store platform_data for non-archived or new ads to save space
+                if (!isArchived || !existing) {
+                    newData.platform_data = ad;
+                }
 
                 if (!existing) {
                     adUpserts.push(newData);
@@ -442,31 +465,48 @@ Deno.serve(async (req: Request) => {
                     adUpserts.push(newData);
                     result.ads.updated++;
                 } else {
-                    // Update ONLY synced_at to keep DB lightweight and report correctly
-                    adUpserts.push(newData);
+                    // Update ONLY synced_at to keep DB lightweight
+                    adUpserts.push({ id: existing.id, synced_at: timestampNow });
                     result.ads.noChange++;
                 }
             }
 
             if (adUpserts.length > 0) {
-                const { error: adErr } = await supabase.from("unified_ads").upsert(adUpserts as any[], { onConflict: "platform_account_id,external_id" });
-                if (adErr) result.errors.push("Ad Batch Error: " + adErr.message);
+                const chunks = [];
+                for (let i = 0; i < adUpserts.length; i += 200) chunks.push(adUpserts.slice(i, i + 200));
+                for (const chunk of chunks) {
+                    const { error: adErr } = await supabase.from("unified_ads").upsert(chunk as any[], { onConflict: "platform_account_id,external_id" });
+                    if (adErr) result.errors.push("Ad Batch Error: " + adErr.message);
+                }
             }
             result.ads.total = fbAds.length;
 
-            // 3. CLEANUP UNUSED CREATIVES
-            // Delete creatives for this account that are not referenced by ANY ad anymore
+            // 3. AUTO-CLEANUP: Delete old archived/deleted ads and their orphaned creatives
+            // This is the "EVERYWHERE" check the user requested to keep DB lightweight
             try {
+                // Step A: Delete archived/deleted ads that haven't been synced in over 30 days
+                const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+                const { error: adCleanupErr } = await supabase
+                    .from("unified_ads")
+                    .delete()
+                    .eq("platform_account_id", accountId)
+                    .in("effective_status", ["ARCHIVED", "DELETED", "UNKNOWN"])
+                    .lt("synced_at", thirtyDaysAgo);
+                
+                if (adCleanupErr) console.error("[AdsSync] Ad cleanup error:", adCleanupErr.message);
+
+                // Step B: Call the RPC to delete creatives that are no longer referenced by ANY ad
                 const { data: cleanedCount, error: cleanupErr } = await supabase.rpc('delete_unused_creatives', { p_account_id: accountId });
                 if (!cleanupErr) {
                     result.creatives.cleanedUp = cleanedCount || 0;
                     if (cleanedCount > 0) console.log(`[AdsSync] Cleaned up ${cleanedCount} unused creatives for account ${accountId}`);
                 } else {
-                    console.error("[AdsSync] Cleanup error:", cleanupErr.message);
+                    console.error("[AdsSync] Creative cleanup RPC error:", cleanupErr.message);
                 }
             } catch (e: any) {
                 console.error("[AdsSync] Cleanup exception:", e.message);
             }
+
         }
 
         await supabase.from("platform_accounts").update({ synced_at: getVietnamTime() }).eq("id", accountId);

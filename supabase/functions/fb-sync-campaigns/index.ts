@@ -138,9 +138,9 @@ class FacebookApiClient {
         const url = new URL(FB_BASE_URL + "/" + accountId);
         url.searchParams.set("access_token", this.accessToken);
         for (const [key, value] of Object.entries(params)) {
-             url.searchParams.set(key, value);
+            url.searchParams.set(key, value);
         }
-        
+
         const response = await fetch(url.toString());
         const data = await response.json();
         if (data.error) {
@@ -192,21 +192,26 @@ Deno.serve(async (req: Request) => {
             const { data: existingCamps } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", accountId).limit(5000);
             const campaignIdMap = new Map((existingCamps || []).map(c => [c.external_id, c.id]));
 
-            const campUpserts = fbCampaigns.map(c => ({
-                id: campaignIdMap.get(c.id) || crypto.randomUUID(),
-                external_id: c.id,
-                platform_account_id: accountId,
-                name: c.name,
-                objective: c.objective,
-                status: mapStatus(c.status),
-                effective_status: c.effective_status,
-                daily_budget: c.daily_budget ? parseFloat(c.daily_budget) / offset : null,
-                lifetime_budget: c.lifetime_budget ? parseFloat(c.lifetime_budget) / offset : null,
-                start_time: c.start_time || null,
-                end_time: c.stop_time || null,
-                platform_data: c,
-                synced_at: getVietnamTime(),
-            }));
+            const campUpserts = fbCampaigns.map(c => {
+                const existingId = campaignIdMap.get(c.id);
+                const isArchived = c.effective_status === 'ARCHIVED' || c.effective_status === 'DELETED';
+
+                return {
+                    id: existingId || crypto.randomUUID(),
+                    external_id: c.id,
+                    platform_account_id: accountId,
+                    name: c.name,
+                    objective: c.objective,
+                    status: mapStatus(c.status),
+                    effective_status: c.effective_status,
+                    daily_budget: c.daily_budget ? parseFloat(c.daily_budget) / offset : null,
+                    lifetime_budget: c.lifetime_budget ? parseFloat(c.lifetime_budget) / offset : null,
+                    start_time: c.start_time || null,
+                    end_time: c.stop_time || null,
+                    platform_data: (!isArchived || !existingId) ? c : undefined, // Only store full data for active or new
+                    synced_at: getVietnamTime(),
+                };
+            });
 
             const { error: campErr } = await supabase.from("unified_campaigns").upsert(campUpserts, { onConflict: "platform_account_id,external_id" });
             if (campErr) result.errors.push("Campaign Batch Error: " + campErr.message);
@@ -231,8 +236,11 @@ Deno.serve(async (req: Request) => {
                     console.log("[CampaignSync] Adset " + adset.id + " skipped - campaign " + adset.campaign_id + " not found in DB");
                     return null;
                 }
+                const existingId = adGroupIdMap.get(adset.id);
+                const isArchived = adset.effective_status === 'ARCHIVED' || adset.effective_status === 'DELETED';
+
                 return {
-                    id: adGroupIdMap.get(adset.id) || crypto.randomUUID(),
+                    id: existingId || crypto.randomUUID(),
                     external_id: adset.id,
                     platform_account_id: accountId,
                     unified_campaign_id: campaignId,
@@ -243,7 +251,7 @@ Deno.serve(async (req: Request) => {
                     optimization_goal: adset.optimization_goal,
                     start_time: adset.start_time || null,
                     end_time: adset.end_time || null,
-                    platform_data: adset,  // Store full FB data including start/end time
+                    platform_data: (!isArchived || !existingId) ? adset : undefined, // Only store full data for active or new
                     synced_at: getVietnamTime(),
                 };
             }).filter(Boolean);
@@ -272,7 +280,7 @@ Deno.serve(async (req: Request) => {
             // Fallback: still update synced_at
             await supabase.from("platform_accounts").update({ synced_at: getVietnamTime() }).eq("id", accountId);
         }
-        
+
         return jsonResponse({ success: true, data: result });
     } catch (error: any) {
         return jsonResponse({ success: false, error: error.message }, 500);

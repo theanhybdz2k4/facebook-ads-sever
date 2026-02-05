@@ -18,7 +18,16 @@ const corsHeaders = {
     "Access-Control-Allow-Headers": "Content-Type, Authorization, x-client-info, apikey",
 };
 
-const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: corsHeaders });
+const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { 
+    status, 
+    headers: {
+        ...corsHeaders,
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    } 
+});
+
+// Tax markup for display (10%)
+const TAX_MULTIPLIER = 1.1;
 
 function getVietnamToday(): string {
     const vn = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
@@ -83,12 +92,12 @@ async function verifyAuth(req: Request) {
 
         // FALLBACK 2: Supabase Auth verification (Works for Service Role Keys)
         try {
-            const { data: { user }, error } = await supabase.auth.getUser(token);
+            const { data: { user }, error: authError } = await supabase.auth.getUser(token);
             if (user) {
                 console.log("Auth: Verified via Supabase Auth. ID:", user.id);
                 return { userId: user.id };
-            } else if (error) {
-                console.log("Auth: Supabase Auth verify returned error:", error.message);
+            } else if (authError) {
+                console.log("Auth: Supabase Auth verify returned error:", authError.message);
             }
         } catch (e: any) {
             console.log("Auth: Supabase Auth verify thrown error:", e.message);
@@ -103,91 +112,106 @@ Deno.serve(async (req) => {
     const url = new URL(req.url);
     const method = req.method;
 
-    // Robust path handling for Supabase Edge Functions
+    // Robust path handling
     const segments = url.pathname.split("/").filter(Boolean);
     const branchesIndex = segments.indexOf("branches");
     const relevantSegments = branchesIndex !== -1 ? segments.slice(branchesIndex + 1) : segments;
     const path = "/" + relevantSegments.join("/");
 
-    console.log("[Branches] Request: " + method + " " + url.pathname + " -> Path: " + path);
-
     try {
         const auth = await verifyAuth(req);
         if (!auth) {
             const authHeader = req.headers.get("Authorization");
-            const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
             const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7).trim() : "";
+            console.warn(`[Branches] Unauthorized access attempt: ${method} ${url.pathname}`);
 
             return jsonResponse({ 
                 success: false, 
                 error: "Unauthorized",
                 debug: {
-                    hasJwtSecret: !!Deno.env.get("JWT_SECRET"),
-                    hasServiceKey: !!serviceKey,
-                    hasMasterKey: !!Deno.env.get("MASTER_KEY"),
-                    hasAuthSecret: !!Deno.env.get("AUTH_SECRET"),
-                    lengths: {
-                        token: token.length,
-                        serviceKeyEnv: serviceKey.length
-                    },
-                    matches: {
-                        serviceKey: token !== "" && token === serviceKey
-                    },
+                    hasJwtSecret: !!JWT_SECRET,
+                    tokenLength: token.length,
                     headers: {
                         auth: !!authHeader,
-                        authPrefix: authHeader?.substring(0, 15),
-                        serviceKeyPrefix: serviceKey.substring(0, 15), // Safe to show prefix
                         serviceKeyHeader: !!(req.headers.get("x-service-key") || req.headers.get("x-master-key")),
                     }
                 }
             }, 401);
         }
-        const targetUserId = auth.userId;
+
+        // Support userId from query parameter (Harmonized with leads function)
+        const userIdParam = url.searchParams.get("userId");
+        const targetUserId = userIdParam ? (isNaN(parseInt(userIdParam)) ? userIdParam : parseInt(userIdParam)) : auth.userId;
+
+        console.log(`[Branches] Processing ${method} ${path} for user ${targetUserId} (Auth User: ${auth.userId})`);
 
         // --- STATS DASHBOARD ---
-        if (path.includes("/stats/dashboard")) {
+        if (path === "/stats/dashboard" || path.includes("/stats/dashboard")) {
             const dateStart = url.searchParams.get("dateStart") || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
             const dateEnd = url.searchParams.get("dateEnd") || new Date().toISOString().split("T")[0];
             const platformCode = url.searchParams.get("platformCode") || "all";
             const branchIdParam = url.searchParams.get("branchId") || "all";
 
+            console.log(`[Dashboard] Aggregating stats: ${dateStart} to ${dateEnd}, Platform: ${platformCode}, Branch: ${branchIdParam}`);
+
             let branchQuery = supabase.from("branches").select("id, name, code, auto_match_keywords").eq("user_id", targetUserId);
             if (branchIdParam !== "all" && !isNaN(parseInt(branchIdParam))) {
                 branchQuery = branchQuery.eq("id", parseInt(branchIdParam));
             }
-            const { data: branches } = await branchQuery;
-            const branchIds = branches?.map(b => b.id) || [];
+            const { data: branches, error: branchError } = await branchQuery;
+            if (branchError) throw branchError;
 
-            if (branchIds.length === 0) return jsonResponse({ branches: [], breakdowns: { device: [], ageGender: [], region: [] } });
+            const branchIds = branches?.map(b => b.id) || [];
+            if (branchIds.length === 0) {
+                console.log(`[Dashboard] No branches found for user ${targetUserId}`);
+                return jsonResponse({ branches: [], breakdowns: { device: [], ageGender: [], region: [] } });
+            }
+
+            console.log(`[Dashboard] Found ${branchIds.length} branches: ${branchIds.join(", ")}`);
 
             let statsQuery = supabase.from("branch_daily_stats").select("*").in("branch_id", branchIds).gte("date", dateStart).lte("date", dateEnd);
             if (platformCode !== "all") statsQuery = statsQuery.eq("platform_code", platformCode);
-            const { data: allStats } = await statsQuery;
+            
+            const { data: allStats, error: statsError } = await statsQuery;
+            if (statsError) throw statsError;
 
             // Get platform_id from platforms table if filtering by specific platform
             let platformId: number | null = null;
             if (platformCode !== "all") {
-                const { data: platform } = await supabase.from("platforms").select("id").eq("code", platformCode).single();
+                const { data: platform } = await supabase.from("platforms").select("id").eq("code", platformCode).maybeSingle();
                 platformId = platform?.id || null;
             }
 
             let accountQuery = supabase.from("platform_accounts").select("id").in("branch_id", branchIds);
             if (platformId) accountQuery = accountQuery.eq("platform_id", platformId);
-            const { data: accounts } = await accountQuery;
+            const { data: accounts, error: accountError } = await accountQuery;
+            if (accountError) throw accountError;
+            
             const accountIds = accounts?.map(a => a.id) || [];
+            console.log(`[Dashboard] Statistics retrieved: ${allStats?.length || 0} rows. Target accounts: ${accountIds.length}`);
 
-            const { data: breakdowns, error: rpcError } = await supabase.rpc('get_dashboard_breakdowns', {
-                p_account_ids: accountIds,
-                p_date_start: dateStart,
-                p_date_end: dateEnd
-            });
-            if (rpcError) console.error("[Dashboard] Breakdown RPC error:", rpcError);
+            let breakdowns: any = { device: [], ageGender: [], region: [] };
+            if (accountIds.length > 0) {
+                const { data: breakdownData, error: rpcError } = await supabase.rpc('get_dashboard_breakdowns', {
+                    p_account_ids: accountIds,
+                    p_date_start: dateStart,
+                    p_date_end: dateEnd
+                });
+                if (rpcError) {
+                    console.error("[Dashboard] Breakdown RPC error:", rpcError);
+                } else {
+                    breakdowns = breakdownData;
+                }
+            }
 
-            const mappedBranches = branches?.map(b => {
+            const today = getVietnamToday();
+            
+            const mappedBranches = (branches || []).map(b => {
                 const bStats = allStats?.filter(s => s.branch_id === b.id) || [];
                 const platformMap = new Map();
                 let totalSpend = 0, totalImpressions = 0, totalClicks = 0, totalResults = 0;
                 let totalMessagingTotal = 0, totalMessagingNew = 0;
+                let todaySpend = 0, todayImpressions = 0, todayClicks = 0, todayResults = 0;
 
                 bStats.forEach(s => {
                     const sp = parseFloat(s.totalSpend || "0");
@@ -204,8 +228,16 @@ Deno.serve(async (req) => {
                         (platformCode !== "all" && s.platform_code === platformCode);
 
                     if (shouldCountForTotal) {
-                        totalSpend += sp; totalImpressions += im; totalClicks += cl; totalResults += re;
+                        totalSpend += sp * TAX_MULTIPLIER; totalImpressions += im; totalClicks += cl; totalResults += msgNew;
                         totalMessagingTotal += msgTotal; totalMessagingNew += msgNew;
+                        
+                        // Calculate today's stats
+                        if (s.date === today) {
+                            todaySpend += sp * TAX_MULTIPLIER;
+                            todayImpressions += im;
+                            todayClicks += cl;
+                            todayResults += msgNew;
+                        }
                     }
 
                     // Build platform breakdown for display (exclude 'all' summary row)
@@ -214,20 +246,21 @@ Deno.serve(async (req) => {
                             platformMap.set(s.platform_code, { code: s.platform_code, spend: 0, impressions: 0, clicks: 0, results: 0 });
                         }
                         const p = platformMap.get(s.platform_code);
-                        p.spend += sp; p.impressions += im; p.clicks += cl; p.results += re;
+                        p.spend += sp * TAX_MULTIPLIER; p.impressions += im; p.clicks += cl; p.results += re;
                     }
                 });
 
                 return {
                     id: b.id, name: b.name, code: b.code,
                     totalSpend, totalImpressions, totalClicks, totalResults,
+                    todaySpend, todayImpressions, todayClicks, todayResults,
                     totalMessaging: totalMessagingTotal,
                     totalMessagingTotal, totalMessagingNew,
                     platforms: Array.from(platformMap.values()),
                     stats: bStats.map(s => ({
                         date: s.date,
                         platformCode: s.platform_code,
-                        spend: parseFloat(s.totalSpend || "0"),
+                        spend: parseFloat(s.totalSpend || "0") * TAX_MULTIPLIER,
                         impressions: parseInt(s.totalImpressions || "0"),
                         clicks: parseInt(s.totalClicks || "0"),
                         results: parseInt(s.totalResults || "0")
@@ -235,7 +268,7 @@ Deno.serve(async (req) => {
                 };
             });
 
-            return jsonResponse({ branches: mappedBranches, breakdowns: breakdowns || { device: [], ageGender: [], region: [] } });
+            return jsonResponse({ branches: mappedBranches, breakdowns });
         }
 
         if (path === "/stats/rebuild" && method === "POST") {
@@ -294,7 +327,8 @@ Deno.serve(async (req) => {
 
         if (id) {
             if (method === "GET") {
-                const { data } = await supabase.from("branches").select("*, platform_accounts(*)").eq("id", id).eq("user_id", targetUserId).single();
+                const { data, error } = await supabase.from("branches").select("*, platform_accounts(*)").eq("id", id).eq("user_id", targetUserId).maybeSingle();
+                if (error) throw error;
                 return jsonResponse({ success: true, result: data });
             }
             if (method === "PUT") {
@@ -307,17 +341,20 @@ Deno.serve(async (req) => {
                 if (body.code !== undefined) updateData.code = body.code;
                 if (keywords !== undefined) updateData.auto_match_keywords = keywords;
 
-                const { data } = await supabase.from("branches").update(updateData).eq("id", id).eq("user_id", targetUserId).select().single();
+                const { data, error } = await supabase.from("branches").update(updateData).eq("id", id).eq("user_id", targetUserId).select().maybeSingle();
+                if (error) throw error;
                 return jsonResponse({ success: true, result: data });
             }
             if (method === "DELETE") {
-                await supabase.from("branches").delete().eq("id", id).eq("user_id", targetUserId);
+                const { error } = await supabase.from("branches").delete().eq("id", id).eq("user_id", targetUserId);
+                if (error) throw error;
                 return jsonResponse({ success: true });
             }
         }
 
         return jsonResponse({ success: false, error: "Not Found", path }, 404);
     } catch (error: any) {
+        console.error(`[Branches] Fatal error:`, error);
         return jsonResponse({ success: false, error: error.message }, 500);
     }
 });
@@ -330,3 +367,4 @@ async function aggregateBranchStats(branch_id: number, dateStart: string, dateEn
         throw error;
     }
 }
+

@@ -118,23 +118,29 @@ Deno.serve(async (req) => {
 
         // 1. Get Ad Account Map
         log(`Fetching ad account mapping...`);
-        const { data: adsData } = await supabase.from("unified_ads").select("external_id, platform_account_id");
+        const { data: adsData } = await supabase
+            .from("unified_ads")
+            .select("external_id, platform_account_id")
+            .not("external_id", "is", null);
+
         const adToAccountMap: Record<string, number> = {};
         adsData?.forEach((a: any) => adToAccountMap[a.external_id] = a.platform_account_id);
 
+        // OPTIMIZED: Fetch only essential creative data to build mapping
+        // We only need the page_id from platform_data
         const { data: creativesData } = await supabase
             .from("unified_ad_creatives")
             .select("platform_account_id, platform_data")
             .not("platform_data", "is", null)
-            .limit(1000);
+            .limit(5000); // Increased limit but reduced selectivity
 
-        const { data: activeAccounts } = await supabase.from("unified_ads").select("platform_account_id").limit(1000);
-        const activeAccIdsSet = new Set(activeAccounts?.map((a: any) => a.platform_account_id) || []);
+        const activeAccIdsSet = new Set(creativesData?.map((c: any) => c.platform_account_id) || []);
 
         const pageToAccount: Record<string, number> = {};
         creativesData?.forEach((c: any) => {
-            const pId = c.platform_data?.object_story_spec?.page_id || c.platform_data?.page_id;
-            if (pId && activeAccIdsSet.has(c.platform_account_id) && c.platform_account_id !== 45 && c.platform_account_id !== 46) {
+            const pData = c.platform_data as any;
+            const pId = pData?.page_id || pData?.object_story_spec?.page_id;
+            if (pId && c.platform_account_id !== 45 && c.platform_account_id !== 46) {
                 pageToAccount[String(pId)] = c.platform_account_id;
             }
         });
