@@ -121,10 +121,10 @@ Deno.serve(async (req: Request) => {
                 .from("platform_accounts")
                 .select("id, platform_identities!inner(user_id)")
                 .eq("platform_identities.user_id", auth.userId);
-            
+
             if (accountId) accountQuery.eq("id", accountId);
             if (branchId && branchId !== "all") accountQuery.eq("branch_id", branchId);
-            
+
             if (platformCode && platformCode !== "all") {
                 const { data: platform } = await supabase.from("platforms").select("id").eq("code", platformCode).single();
                 if (platform) accountQuery.eq("platform_id", platform.id);
@@ -323,13 +323,28 @@ Deno.serve(async (req: Request) => {
             } catch (e) {
                 // Empty or invalid body, use defaults
             }
-            
+
             const syncResponse = await fetch(`${supabaseUrl}/functions/v1/fb-sync-insights`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "Authorization": req.headers.get("Authorization") || "" },
                 body: JSON.stringify(body)
             });
-            return jsonResponse(await syncResponse.json(), syncResponse.status);
+
+            try {
+                const text = await syncResponse.text();
+                try {
+                    return jsonResponse(JSON.parse(text), syncResponse.status);
+                } catch (e) {
+                    return jsonResponse({ 
+                        success: false, 
+                        error: "Worker returned invalid JSON", 
+                        status: syncResponse.status,
+                        raw: text.substring(0, 500) 
+                    }, 500);
+                }
+            } catch (e: any) {
+                return jsonResponse({ success: false, error: "Failed to read worker response: " + e.message }, 500);
+            }
         }
 
         return jsonResponse({ success: false, error: "Not Found", path }, 404);

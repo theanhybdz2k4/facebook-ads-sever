@@ -1,111 +1,58 @@
-HTTP/1.1 200 OK
-Date: Mon, 02 Feb 2026 12:04:00 GMT
-Content-Type: application/json
-Transfer-Encoding: chunked
-Connection: keep-alive
-Server: cloudflare
-CF-Ray: 9c798b3eae392907-HKG
-CF-Cache-Status: DYNAMIC
-Access-Control-Allow-Origin: *
-Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
-Vary: Accept-Encoding
-access-control-allow-headers: Content-Type, Authorization, x-client-info, apikey
-access-control-allow-methods: GET, POST, PUT, DELETE, OPTIONS
-sb-gateway-version: 1
-sb-project-ref: lncgmaxtqjfbcypncfoe
-sb-request-id: 019c1e3c-4336-7e0e-a642-c0bb5a0f2ccc
-x-deno-execution-id: 598d16fc-a382-405b-b8a8-eff6352f5a8b
-x-sb-edge-region: ap-northeast-2
-x-served-by: supabase-edge-runtime
-Set-Cookie: __cf_bm=qOqbF5DUflG2BjV0fesuE1L1Urp2U8cwpd7T65hc3o0-1770033840-1.0.1.1-czELoBMp4uLHUsVzaqSTdYFe93HKyaKYefkUaDXppWALdRDPK3MwYifuytAf4mfvMOQ2u3WKzXHPQr8ybfZCOdYI1vDSkkykr0myD17qOpw; path=/; expires=Mon, 02-Feb-26 12:34:00 GMT; domain=.supabase.co; HttpOnly; Secure; SameSite=None
-alt-svc: h3=":443"; ma=86400
+Starting sync for 9 accounts...
 
-{"success":true,"processed":5,"totalMatched":20,"timeSpentMs":45569}HTTP/1.1 200 OK
-Date: Mon, 02 Feb 2026 12:04:37 GMT
-Content-Type: application/json
-Transfer-Encoding: chunked
-Connection: keep-alive
-Server: cloudflare
-CF-Ray: 9c798c6e0b6b0461-HKG
-CF-Cache-Status: DYNAMIC
-Access-Control-Allow-Origin: *
-Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
-Vary: Accept-Encoding
-access-control-allow-headers: Content-Type, Authorization, x-client-info, apikey
-access-control-allow-methods: GET, POST, PUT, DELETE, OPTIONS
-sb-gateway-version: 1
-sb-project-ref: lncgmaxtqjfbcypncfoe
-sb-request-id: 019c1e3d-00df-73e1-828f-58c5ab5d2da4
-x-deno-execution-id: 076477e7-8ab8-463d-86ba-b56abe24a790
-x-sb-edge-region: ap-northeast-2
-x-served-by: supabase-edge-runtime
-Set-Cookie: __cf_bm=moIhWx3KsdhAWv1fi0GZT7vDBHQ_D3jcYPEzO_LyEcM-1770033877-1.0.1.1-EGGYRbF3vOxK7CiVJGjqXLyJd_6OInQFbUITEfso1woZvX1pFU85aRNjwHCkCjQ2PZT8BCZyHHyKzx2pHZ.OeDf177o1oatTAu5VbnmVt1U; path=/; expires=Mon, 02-Feb-26 12:34:37 GMT; domain=.supabase.co; HttpOnly; Secure; SameSite=None
-alt-svc: h3=":443"; ma=86400
+Syncing account 40...
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0100   190    0   190    0     0    112      0 --:--:--  0:00:01 --:--:--   112{"success":true,"data":{"ads":{"added":0,"updated":0,"noChange":0,"total":0},"creatives":{"added":0,"updated":0,"noChange":0,"total":0,"cleanedUp":0},"campaigns":0,"adGroups":0,"errors":[]}}
 
-{"success":true,"processed":2,"totalMatched":20,"timeSpentMs":36412}HTTP/1.1 200 OK
-Date: Mon, 02 Feb 2026 12:05:26 GMT
-Content-Type: application/json
-Transfer-Encoding: chunked
-Connection: keep-alive
-Server: cloudflare
-CF-Ray: 9c798d560d8b1f05-HKG
-CF-Cache-Status: DYNAMIC
-Access-Control-Allow-Origin: *
-Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
-Vary: Accept-Encoding
-access-control-allow-headers: Content-Type, Authorization, x-client-info, apikey
-access-control-allow-methods: GET, POST, PUT, DELETE, OPTIONS
-sb-gateway-version: 1
-sb-project-ref: lncgmaxtqjfbcypncfoe
-sb-request-id: 019c1e3d-91d4-7d69-90c9-b7f2510d1f57
-x-deno-execution-id: 60374e27-25c4-4bca-9ce2-b8bdbeda7e47
-x-sb-edge-region: ap-northeast-2
-x-served-by: supabase-edge-runtime
-Set-Cookie: __cf_bm=jDFzAgTVU62X15JjbAc73cyGSeAjBXRdEEVbsOfdmSc-1770033926-1.0.1.1-Y_KQLIuKn5w9F2noc4NyjJdxM3Qy8lqtAl1og_2k50yuetKpSIvG14zULFYv1UCBUe7u6PKf3NaTskzeASOsFkpz.o0LIIvQo8wCUINpRjU; path=/; expires=Mon, 02-Feb-26 12:35:26 GMT; domain=.supabase.co; HttpOnly; Secure; SameSite=None
-alt-svc: h3=":443"; ma=86400
+---
+Syncing account 41...
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100   190    0   190    0     0    153      0 --:--:--  0:00:01 --:--:--   154100   190    0   190    0     0    153      0 --:--:--  0:00:01 --:--:--   154{"success":true,"data":{"ads":{"added":0,"updated":0,"noChange":0,"total":0},"creatives":{"added":0,"updated":0,"noChange":0,"total":0,"cleanedUp":0},"campaigns":0,"adGroups":0,"errors":[]}}
 
-{"success":true,"processed":4,"totalMatched":20,"timeSpentMs":44644}HTTP/1.1 200 OK
-Date: Mon, 02 Feb 2026 12:06:04 GMT
-Content-Type: application/json
-Transfer-Encoding: chunked
-Connection: keep-alive
-Server: cloudflare
-CF-Ray: 9c798e87defadd48-HKG
-CF-Cache-Status: DYNAMIC
-Access-Control-Allow-Origin: *
-Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
-Vary: Accept-Encoding
-access-control-allow-headers: Content-Type, Authorization, x-client-info, apikey
-access-control-allow-methods: GET, POST, PUT, DELETE, OPTIONS
-sb-gateway-version: 1
-sb-project-ref: lncgmaxtqjfbcypncfoe
-sb-request-id: 019c1e3e-50f6-7da7-8033-c993a11c8303
-x-deno-execution-id: cb7fc3a5-557d-4790-81c1-eb130855d197
-x-sb-edge-region: ap-northeast-2
-x-served-by: supabase-edge-runtime
-Set-Cookie: __cf_bm=eR.lz3ihDQjElBRJJOKB_FWxbwYbu0EU34YGDB5tjUc-1770033964-1.0.1.1-Wad9Ey4scxGey_RcXA4gmMd9YNqyp5znIpG0IB9qt4T.RczWTS6CUfTcVie4CwpjVgPW9MpXNDxbKovlWY6b2xmezL_nQ86JqYC0kSkuCh4; path=/; expires=Mon, 02-Feb-26 12:36:04 GMT; domain=.supabase.co; HttpOnly; Secure; SameSite=None
-alt-svc: h3=":443"; ma=86400
+---
+Syncing account 42...
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:02 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:03 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:04 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:05 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:06 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:07 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:08 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:09 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:10 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:11 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:12 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:13 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:14 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:15 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:16 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:17 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:18 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:19 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:20 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:21 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:22 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:23 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:24 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:25 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:26 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:27 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:28 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:29 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:30 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:31 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:32 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:33 --:--:--     0100   241    0   241    0     0      7      0 --:--:--  0:00:34 --:--:--    49100   241    0   241    0     0      7      0 --:--:--  0:00:34 --:--:--    61{"success":false,"error":"Facebook API Error: There have been too many calls to this ad-account. Wait a bit and try again. For more info, please refer to https://developers.facebook.com/docs/graph-api/overview/rate-limiting#ads-management."}
 
-{"success":true,"processed":7,"totalMatched":20,"timeSpentMs":38218}HTTP/1.1 200 OK
-Date: Mon, 02 Feb 2026 12:06:30 GMT
-Content-Type: application/json
-Transfer-Encoding: chunked
-Connection: keep-alive
-Server: cloudflare
-CF-Ray: 9c798f7a4956b178-HKG
-CF-Cache-Status: DYNAMIC
-Access-Control-Allow-Origin: *
-Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
-Vary: Accept-Encoding
-access-control-allow-headers: Content-Type, Authorization, x-client-info, apikey
-access-control-allow-methods: GET, POST, PUT, DELETE, OPTIONS
-sb-gateway-version: 1
-sb-project-ref: lncgmaxtqjfbcypncfoe
-sb-request-id: 019c1e3e-e870-72ae-a85c-729132080dcc
-x-deno-execution-id: badd53bc-c9a1-4e4d-a671-fc1c5ff5eb4f
-x-sb-edge-region: ap-northeast-2
-x-served-by: supabase-edge-runtime
-Set-Cookie: __cf_bm=Fien38yQZAguGM7ERUwE53D6xReZzLLS6XZeuRW0Ips-1770033990-1.0.1.1-96QMQ5v_n.irjmt6zkJ9XwhlJSH_QPVD.INTYF_29il4uv5ATPHnoOpzmdgyMSz47PPiY7fNRSoKsNC50tYUVwFHOg7F5hRfemxLPKOb8ac; path=/; expires=Mon, 02-Feb-26 12:36:30 GMT; domain=.supabase.co; HttpOnly; Secure; SameSite=None
-alt-svc: h3=":443"; ma=86400
+---
+Syncing account 43...
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:02 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:03 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:04 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:05 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:06 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:07 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:08 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:09 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:10 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:11 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:12 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:13 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:14 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:15 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:16 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:17 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:18 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:19 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:20 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:21 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:22 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:23 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:24 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:25 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:26 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:27 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:28 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:29 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:30 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:31 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:32 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:33 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:34 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:35 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:36 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:37 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:38 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:39 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:40 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:41 --:--:--     0100  1047    0  1047    0     0     24      0 --:--:--  0:00:42 --:--:--   234{"success":true,"data":{"ads":{"added":326,"updated":0,"noChange":1000,"total":1326},"creatives":{"added":160,"updated":0,"noChange":0,"total":1160,"cleanedUp":0},"campaigns":770,"adGroups":1275,"errors":["Ad Batch Error: null value in column \"unified_ad_group_id\" of relation \"unified_ads\" violates not-null constraint","Ad Batch Error: null value in column \"unified_ad_group_id\" of relation \"unified_ads\" violates not-null constraint","Ad Batch Error: null value in column \"unified_ad_group_id\" of relation \"unified_ads\" violates not-null constraint","Ad Batch Error: null value in column \"unified_ad_group_id\" of relation \"unified_ads\" violates not-null constraint","Ad Batch Error: null value in column \"unified_ad_group_id\" of relation \"unified_ads\" violates not-null constraint","Ad Batch Error: null value in column \"unified_ad_group_id\" of relation \"unified_ads\" violates not-null constraint","Ad Batch Error: null value in column \"unified_ad_group_id\" of relation \"unified_ads\" violates not-null constraint"]}}
 
-{"success":true,"processed":0,"totalMatched":20,"timeSpentMs":25382}
+---
+Syncing account 44...
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:02 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:03 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:04 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:05 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:06 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:07 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:08 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:09 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:10 --:--:--     0100   439    0   439    0     0     42      0 --:--:--  0:00:10 --:--:--   107{"success":true,"data":{"ads":{"added":0,"updated":0,"noChange":343,"total":343},"creatives":{"added":0,"updated":4,"noChange":0,"total":323,"cleanedUp":0},"campaigns":292,"adGroups":312,"errors":["Ad Batch Error: null value in column \"unified_ad_group_id\" of relation \"unified_ads\" violates not-null constraint","Ad Batch Error: null value in column \"unified_ad_group_id\" of relation \"unified_ads\" violates not-null constraint"]}}
+
+---
+Syncing account 45...
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0100   190    0   190    0     0    131      0 --:--:--  0:00:01 --:--:--   131{"success":true,"data":{"ads":{"added":0,"updated":0,"noChange":0,"total":0},"creatives":{"added":0,"updated":0,"noChange":0,"total":0,"cleanedUp":0},"campaigns":0,"adGroups":0,"errors":[]}}
+
+---
+Syncing account 46...
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0100   190    0   190    0     0    146      0 --:--:--  0:00:01 --:--:--   147{"success":true,"data":{"ads":{"added":0,"updated":0,"noChange":0,"total":0},"creatives":{"added":0,"updated":0,"noChange":0,"total":0,"cleanedUp":0},"campaigns":0,"adGroups":0,"errors":[]}}
+
+---
+Syncing account 47...
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:02 --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:03 --:--:--     0100   195    0   195    0     0     58      0 --:--:--  0:00:03 --:--:--    58{"success":true,"data":{"ads":{"added":0,"updated":62,"noChange":0,"total":62},"creatives":{"added":0,"updated":2,"noChange":0,"total":61,"cleanedUp":0},"campaigns":60,"adGroups":61,"errors":[]}}
+
+---
+Syncing account 48...
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0100   190    0   190    0     0    144      0 --:--:--  0:00:01 --:--:--   144{"success":true,"data":{"ads":{"added":0,"updated":0,"noChange":0,"total":0},"creatives":{"added":0,"updated":0,"noChange":0,"total":0,"cleanedUp":0},"campaigns":0,"adGroups":0,"errors":[]}}
+
+---
+
+All accounts synced!

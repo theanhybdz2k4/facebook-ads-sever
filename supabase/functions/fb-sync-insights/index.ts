@@ -85,20 +85,31 @@ class FacebookApiClient {
             limit: "1000",
         };
 
-        if (granularity === "HOURLY") params.breakdowns = "hourly_stats_aggregated_by_advertiser_time_zone";
+        if (granularity === "HOURLY") params.breakdowns = ["hourly_stats_aggregated_by_advertiser_time_zone"];
         else {
             params.time_increment = "1";
             if (breakdowns) {
-                if (breakdowns === "device") params.breakdowns = "device_platform";
-                else if (breakdowns === "age_gender") params.breakdowns = "age,gender";
-                else if (breakdowns === "region") params.breakdowns = "region";
-                else params.breakdowns = breakdowns;
+                if (breakdowns === "device") params.breakdowns = ["device_platform"];
+                else if (breakdowns === "age_gender") params.breakdowns = ["age", "gender"];
+                else if (breakdowns === "region") params.breakdowns = ["region"];
+                else params.breakdowns = breakdowns.split(",").map(b => b.trim());
             }
         }
 
         const url = new URL(FB_BASE_URL + "/" + entityId + "/insights");
         url.searchParams.set("access_token", this.accessToken);
-        for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v as string);
+        
+        for (const [k, v] of Object.entries(params)) {
+            if (Array.isArray(v)) {
+                v.forEach(val => url.searchParams.append(k, val));
+            } else if (v !== undefined && v !== null) {
+                url.searchParams.set(k, v as string);
+            }
+        }
+
+        // Mask token for logging
+        const logUrl = url.toString().replace(/access_token=[^&]+/, "access_token=***");
+        console.log("[Insights] Fetching: " + logUrl);
 
         let allData: any[] = [];
         let nextUrl: string | null = url.toString();
@@ -348,11 +359,16 @@ Deno.serve(async (req: Request) => {
 
             const { data: account, error: accountError } = await supabase.from("platform_accounts").select(`id, external_id, platform_identities!inner(platform_credentials(credential_value))`).eq("id", targetAccountId).single();
 
-            if (accountError || !account) return jsonResponse({ success: false, error: "Account not found" }, 404);
+            if (!account) return jsonResponse({ success: false, error: "Account not found" }, 404);
 
             if (!fbEntityId) fbEntityId = account.external_id;
 
-            const token = account?.platform_identities?.platform_credentials?.find((c: any) => c.credential_value)?.credential_value;
+            // Handle both array and object responses for joins
+            const identities = Array.isArray(account.platform_identities) ? account.platform_identities : [account.platform_identities];
+            const identity = identities[0];
+            const credentials = identity?.platform_credentials ? (Array.isArray(identity.platform_credentials) ? identity.platform_credentials : [identity.platform_credentials]) : [];
+            const token = credentials.find((c: any) => c.credential_value)?.credential_value;
+
             if (!token) return jsonResponse({ success: false, error: "No token" }, 401);
 
             const fb = new FacebookApiClient(token);
@@ -369,19 +385,26 @@ Deno.serve(async (req: Request) => {
 
             if (branchErr || !accForBranch) return jsonResponse({ success: false, error: "Account not found or access denied" }, 404);
 
-            const accountUserId = (accForBranch.platform_identities as any).user_id;
+            // Robust user_id extraction
+            const accIdentities = Array.isArray(accForBranch.platform_identities) ? accForBranch.platform_identities : [accForBranch.platform_identities];
+            const accountUserId = accIdentities[0]?.user_id;
+
             // Strict check: account user_id must match auth.userId (unless it's system user ID 1)
             if (accountUserId !== auth.userId && auth.userId !== 1) {
                 return jsonResponse({ success: false, error: "Unauthorized: You do not own this account" }, 403);
             }
 
-            const { data: campaigns } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", targetAccountId).limit(2000);
-            const { data: adGroups } = await supabase.from("unified_ad_groups").select("id, external_id").eq("platform_account_id", targetAccountId).limit(5000);
-            const { data: ads } = await supabase.from("unified_ads").select("id, external_id, status, effective_status, end_time").eq("platform_account_id", targetAccountId).limit(10000);
+            const { data: campaignData } = await supabase.from("unified_campaigns").select("id, external_id").eq("platform_account_id", targetAccountId).limit(2000);
+            const { data: adGroupData } = await supabase.from("unified_ad_groups").select("id, external_id").eq("platform_account_id", targetAccountId).limit(5000);
+            const { data: adsData } = await supabase.from("unified_ads").select("id, external_id, status, effective_status, end_time").eq("platform_account_id", targetAccountId).limit(10000);
 
-            const campaignMap = new Map(campaigns?.map((c: any) => [c.external_id, c.id]));
-            const adGroupMap = new Map(adGroups?.map((ag: any) => [ag.external_id, ag.id]));
-            const adMap = new Map(ads?.map((a: any) => [a.external_id, a.id]));
+            const campaigns = campaignData || [];
+            const adGroups = adGroupData || [];
+            const ads = adsData || [];
+
+            const campaignMap = new Map(campaigns.map((c: any) => [c.external_id, c.id]));
+            const adGroupMap = new Map(adGroups.map((ag: any) => [ag.external_id, ag.id]));
+            const adMap = new Map(ads.map((a: any) => [a.external_id, a.id]));
 
             if (granularity === "DAILY" || granularity === "BOTH") {
                 const fbInsights = await fb.getInsights(fbEntityId as string, "ad", { start: dateStart, end: dateEnd });
@@ -570,7 +593,7 @@ Deno.serve(async (req: Request) => {
                     .or("end_time.is.null,end_time.gt." + nowStr);
 
                 let adList = bodyAdId ? ads : (activeAdsForHourly || ads || []);
-                if (bodyAdId) {
+                if (bodyAdId && Array.isArray(adList)) {
                     const specificAd = adList.find((a: any) => a.id === bodyAdId);
                     if (specificAd) adList = [specificAd];
                     else {
@@ -648,43 +671,45 @@ Deno.serve(async (req: Request) => {
             }
 
             if (breakdown) {
-                const fbBreakdowns = await fb.getInsights(fbEntityId as string, "ad", { start: dateStart, end: dateEnd }, "DAILY", breakdown);
-                result.debug.fbBreakdownsCount = fbBreakdowns.length;
-                if (fbBreakdowns.length > 0) {
-                    const parentUpserts = Array.from(new Map(fbBreakdowns.map(raw => {
-                        const cid = campaignMap.get(raw?.campaign_id) || null;
-                        const agid = adGroupMap.get(raw?.adset_id) || null;
-                        const adid = adMap.get(raw.ad_id) || null;
-                        const key = targetAccountId + "|" + cid + "|" + agid + "|" + adid + "|" + raw.date_start;
-                        return [key, {
-                            platform_account_id: targetAccountId,
-                            unified_campaign_id: cid,
-                            unified_ad_group_id: agid,
-                            unified_ad_id: adid,
-                            date: raw.date_start,
-                            synced_at: getVietnamTime()
-                        }];
-                    })).values());
+                const breakdownTypes = breakdown === 'all' 
+                    ? ['device', 'age_gender', 'region'] 
+                    : [breakdown];
+                
+                for (const bType of breakdownTypes) {
+                    try {
+                        console.log(`[Insights] Syncing breakdown: ${bType} for entity ${fbEntityId}`);
+                        const fbBreakdowns = await fb.getInsights(fbEntityId as string, "ad", { start: dateStart, end: dateEnd }, "DAILY", bType);
+                        
+                        if (fbBreakdowns.length === 0) continue;
 
-                    const { data: parents, error: pErr } = await supabase.from("unified_insights").upsert(parentUpserts, { onConflict: "platform_account_id,unified_ad_id,date" }).select("id, date, unified_ad_id");
-                    result.debug.parentsCount = parents?.length || 0;
-                    if (pErr) {
-                        console.error("[Insights] Parent upsert error:", pErr);
-                        result.debug.parentError = pErr.message;
-                    }
+                        // Create parent insights first
+                        const parentUpserts = Array.from(new Map(fbBreakdowns.map(raw => {
+                            const dbAdId = adMap.get(raw.ad_id);
+                            if (!dbAdId) return null;
+                            const key = targetAccountId + "|" + (campaignMap.get(raw.campaign_id) || null) + "|" + (adGroupMap.get(raw.adset_id) || null) + "|" + dbAdId + "|" + raw.date_start;
+                            return [key, {
+                                platform_account_id: targetAccountId,
+                                unified_campaign_id: campaignMap.get(raw.campaign_id) || null,
+                                unified_ad_group_id: adGroupMap.get(raw.adset_id) || null,
+                                unified_ad_id: dbAdId,
+                                date: raw.date_start,
+                                synced_at: getVietnamTime()
+                            }];
+                        }).filter(Boolean) as any[]).values());
 
-                    if (parents) {
+                        const { data: parents, error: pErr } = await supabase.from("unified_insights").upsert(parentUpserts, { onConflict: "platform_account_id,unified_ad_id,date" }).select("id, date, unified_ad_id");
+                        
+                        if (pErr || !parents) {
+                            console.error(`[Insights] Parent upsert error for ${bType}:`, pErr);
+                            continue;
+                        }
+
                         const getParentId = (raw: any) => {
                             const dbAdId = adMap.get(raw.ad_id);
-                            // Find match by date and ad UUID
-                            const match = parents.find((p: any) => p.date === raw.date_start && (p.unified_ad_id === dbAdId));
-                            if (!match) {
-                                console.log("[Insights] No parent match found for ad " + raw.ad_id + " (local: " + dbAdId + ") on " + raw.date_start + " in " + parents.length + " parents");
-                            }
-                            return match?.id;
+                            return parents.find((p: any) => p.date === raw.date_start && p.unified_ad_id === dbAdId)?.id;
                         };
 
-                        if (breakdown === "device") {
+                        if (bType === "device") {
                             const deviceUpserts = fbBreakdowns.map(raw => ({
                                 unified_insight_id: getParentId(raw),
                                 device: raw.device_platform,
@@ -693,10 +718,9 @@ Deno.serve(async (req: Request) => {
                                 clicks: parseInt(raw.clicks || "0", 10),
                                 results: extractResults(raw)
                             })).filter(u => u.unified_insight_id);
-                            const { error: devErr } = await supabase.from("unified_insight_devices").upsert(deviceUpserts, { onConflict: "unified_insight_id,device" });
-                            if (devErr) result.debug.deviceError = devErr.message;
-                            else result.breakdowns += deviceUpserts.length;
-                        } else if (breakdown === "age_gender") {
+                            await supabase.from("unified_insight_devices").upsert(deviceUpserts, { onConflict: "unified_insight_id,device" });
+                            result.breakdowns += deviceUpserts.length;
+                        } else if (bType === "age_gender") {
                             const agUpserts = fbBreakdowns.map(raw => ({
                                 unified_insight_id: getParentId(raw),
                                 age: raw.age, gender: raw.gender,
@@ -705,10 +729,9 @@ Deno.serve(async (req: Request) => {
                                 clicks: parseInt(raw.clicks || "0", 10),
                                 results: extractResults(raw)
                             })).filter(u => u.unified_insight_id);
-                            const { error: agErr } = await supabase.from("unified_insight_age_gender").upsert(agUpserts, { onConflict: "unified_insight_id,age,gender" });
-                            if (agErr) result.debug.agError = agErr.message;
-                            else result.breakdowns += agUpserts.length;
-                        } else if (breakdown === "region") {
+                            await supabase.from("unified_insight_age_gender").upsert(agUpserts, { onConflict: "unified_insight_id,age,gender" });
+                            result.breakdowns += agUpserts.length;
+                        } else if (bType === "region") {
                             const regUpserts = fbBreakdowns.map(raw => ({
                                 unified_insight_id: getParentId(raw),
                                 region: raw.region, country: raw.country,
@@ -717,10 +740,14 @@ Deno.serve(async (req: Request) => {
                                 clicks: parseInt(raw.clicks || "0", 10),
                                 results: extractResults(raw)
                             })).filter(u => u.unified_insight_id);
-                            const { error: regErr } = await supabase.from("unified_insight_regions").upsert(regUpserts, { onConflict: "unified_insight_id,region" });
-                            if (regErr) result.debug.regError = regErr.message;
-                            else result.breakdowns += regUpserts.length;
+                            await supabase.from("unified_insight_regions").upsert(regUpserts, { onConflict: "unified_insight_id,region" });
+                            result.breakdowns += regUpserts.length;
+                        } else {
+                            console.log(`[Insights] Breakdown type ${bType} is not yet supported for database storage.`);
                         }
+                    } catch (be: any) {
+                        console.error(`[Insights] Failed to sync breakdown ${bType}:`, be.message);
+                        // Don't throw, just continue to next breakdown or finish
                     }
                 }
             }

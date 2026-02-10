@@ -202,12 +202,18 @@ Deno.serve(async (req: Request) => {
         
         const accountId = parseInt(String(accountIdRaw));
 
-        const { data: account, error: accountError } = await supabase
+        // Build query - service_role can access any account
+        let query = supabase
             .from("platform_accounts")
             .select("id, external_id, platform_identities!inner (id, user_id, platform_credentials (credential_type, credential_value, is_active))")
-            .eq("id", accountId)
-            .eq("platform_identities.user_id", auth.userId)
-            .maybeSingle();
+            .eq("id", accountId);
+        
+        // Only apply user_id filter if NOT service_role
+        if (auth.userId !== 1) {
+            query = query.eq("platform_identities.user_id", auth.userId);
+        }
+        
+        const { data: account, error: accountError } = await query.maybeSingle();
 
         if (accountError || !account) return jsonResponse({ success: false, error: "Account not found or access denied" }, 404);
 
@@ -243,26 +249,29 @@ Deno.serve(async (req: Request) => {
         if (fbAds.length > 0) {
             console.log("[AdsSync] Extracting parent entities and creatives...");
 
-            // STEP 0: Extract campaigns & ad_groups from expanded ad objects
+            // STEP 0: Extract ALL campaigns & ad_groups from expanded ad objects
+            // IMPORTANT: We must upsert ALL (not just new ones) to refresh synced_at,
+            // otherwise the cleanup logic (Phase B/C) will archive them as "stale".
             const campaignDataMap = new Map<string, any>();
             const adSetDataMap = new Map<string, any>();
 
             for (const ad of fbAds) {
-                if (ad.campaign && ad.campaign.id && !campaignMap.has(ad.campaign.id)) {
+                if (ad.campaign && ad.campaign.id) {
                     campaignDataMap.set(ad.campaign.id, ad.campaign);
                 }
-                if (ad.adset && ad.adset.id && !adGroupMap.has(ad.adset.id)) {
+                if (ad.adset && ad.adset.id) {
                     adSetDataMap.set(ad.adset.id, ad.adset);
                 }
             }
 
-            // Sync missing campaigns
+            // Sync ALL campaigns (new + existing) to refresh synced_at
             if (campaignDataMap.size > 0) {
                 const campaignUpserts = Array.from(campaignDataMap.values()).map(fbCamp => {
-                    const newId = crypto.randomUUID();
-                    campaignMap.set(fbCamp.id, newId);
+                    const existingId = campaignMap.get(fbCamp.id);
+                    const id = existingId || crypto.randomUUID();
+                    if (!existingId) campaignMap.set(fbCamp.id, id);
                     return {
-                        id: newId,
+                        id: id,
                         external_id: fbCamp.id,
                         platform_account_id: accountId,
                         name: fbCamp.name || "Campaign " + fbCamp.id,
@@ -275,20 +284,25 @@ Deno.serve(async (req: Request) => {
                         synced_at: timestampNow,
                     };
                 });
-                const { error: campErr } = await supabase.from("unified_campaigns").upsert(campaignUpserts, { onConflict: "platform_account_id,external_id" });
-                if (campErr) result.errors.push("Campaign Auto-Create Error: " + campErr.message);
-                else result.campaigns = campaignUpserts.length;
+                const chunks = [];
+                for (let i = 0; i < campaignUpserts.length; i += 200) chunks.push(campaignUpserts.slice(i, i + 200));
+                for (const chunk of chunks) {
+                    const { error: campErr } = await supabase.from("unified_campaigns").upsert(chunk, { onConflict: "platform_account_id,external_id" });
+                    if (campErr) result.errors.push("Campaign Sync Error: " + campErr.message);
+                }
+                result.campaigns = campaignUpserts.length;
             }
 
-            // Sync missing ad_groups
+            // Sync ALL ad_groups (new + existing) to refresh synced_at
             if (adSetDataMap.size > 0) {
                 const adGroupUpserts = [];
                 for (const fbAdSet of adSetDataMap.values()) {
                     let campaignId = campaignMap.get(fbAdSet.campaign_id);
                     if (campaignId) {
-                        const newId = crypto.randomUUID();
+                        const existingAdGroup = adGroupMap.get(fbAdSet.id);
+                        const id = existingAdGroup?.id || crypto.randomUUID();
                         adGroupUpserts.push({
-                            id: newId,
+                            id: id,
                             external_id: fbAdSet.id,
                             platform_account_id: accountId,
                             unified_campaign_id: campaignId,
@@ -302,13 +316,19 @@ Deno.serve(async (req: Request) => {
                             platform_data: fbAdSet,
                             synced_at: timestampNow,
                         });
-                        adGroupMap.set(fbAdSet.id, { id: newId, start_time: fbAdSet.start_time, end_time: fbAdSet.end_time });
+                        if (!existingAdGroup) {
+                            adGroupMap.set(fbAdSet.id, { id: id, start_time: fbAdSet.start_time, end_time: fbAdSet.end_time });
+                        }
                     }
                 }
                 if (adGroupUpserts.length > 0) {
-                    const { error: agErr } = await supabase.from("unified_ad_groups").upsert(adGroupUpserts, { onConflict: "platform_account_id,external_id" });
-                    if (agErr) result.errors.push("AdGroup Auto-Create Error: " + agErr.message);
-                    else result.adGroups = adGroupUpserts.length;
+                    const chunks = [];
+                    for (let i = 0; i < adGroupUpserts.length; i += 200) chunks.push(adGroupUpserts.slice(i, i + 200));
+                    for (const chunk of chunks) {
+                        const { error: agErr } = await supabase.from("unified_ad_groups").upsert(chunk, { onConflict: "platform_account_id,external_id" });
+                        if (agErr) result.errors.push("AdGroup Sync Error: " + agErr.message);
+                    }
+                    result.adGroups = adGroupUpserts.length;
                 }
             }
 
