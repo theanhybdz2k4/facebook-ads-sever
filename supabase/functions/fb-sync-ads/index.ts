@@ -52,9 +52,8 @@ class FacebookApiClient {
 
     async getAds(accountId: string): Promise<any[]> {
         let allAds: any[] = [];
-        // Use smaller batch size to avoid rate limits
-        // UPDATE: Expanded creative fields to fix missing image issues
-        let url: string | null = FB_BASE_URL + "/" + accountId + "/ads?fields=id,adset_id,campaign_id,name,status,effective_status,creative{id,name,thumbnail_url,image_url,image_hash,object_story_spec},created_time,updated_time,configured_status&limit=200&access_token=" + this.accessToken;
+        // Use smaller batch size (100) because we are expanding fields (campaign, adset)
+        let url: string | null = FB_BASE_URL + "/" + accountId + "/ads?fields=id,adset_id,campaign_id,name,status,effective_status,creative{id,name,thumbnail_url,image_url,image_hash,object_story_spec},adset{id,campaign_id,name,status,effective_status,daily_budget,optimization_goal,start_time,end_time},campaign{id,account_id,name,objective,status,effective_status,daily_budget,lifetime_budget,start_time,stop_time},created_time,updated_time,configured_status&limit=100&access_token=" + this.accessToken;
 
         let retryCount = 0;
         const maxRetries = 3;
@@ -198,8 +197,10 @@ Deno.serve(async (req: Request) => {
 
     try {
         const bodyValue = await req.json();
-        const { accountId } = bodyValue;
-        if (!accountId) return jsonResponse({ success: false, error: "accountId is required" }, 400);
+        const accountIdRaw = bodyValue.accountId;
+        if (!accountIdRaw) return jsonResponse({ success: false, error: "accountId is required" }, 400);
+        
+        const accountId = parseInt(String(accountIdRaw));
 
         const { data: account, error: accountError } = await supabase
             .from("platform_accounts")
@@ -215,6 +216,7 @@ Deno.serve(async (req: Request) => {
         if (!tokenCred) return jsonResponse({ success: false, error: "No access token" }, 401);
 
         const fb = new FacebookApiClient(tokenCred.credential_value);
+        const timestampNow = getVietnamTime();
         const result = { 
             ads: { added: 0, updated: 0, noChange: 0, total: 0 }, 
             creatives: { added: 0, updated: 0, noChange: 0, total: 0, cleanedUp: 0 }, 
@@ -239,86 +241,68 @@ Deno.serve(async (req: Request) => {
         console.log(`[AdsSync] Processing ${fbAds.length} ads total (including ARCHIVED/DELETED for status updates)`);
 
         if (fbAds.length > 0) {
-            console.log("[AdsSync] Processing ads for missing parent entities...");
+            console.log("[AdsSync] Extracting parent entities and creatives...");
 
-            // STEP 0: Find and auto-create missing campaigns & ad_groups
-            // ... (keep same logic for parent entities)
-            const missingAdSetIds = new Set<string>();
-            const missingCampaignIds = new Set<string>();
+            // STEP 0: Extract campaigns & ad_groups from expanded ad objects
+            const campaignDataMap = new Map<string, any>();
+            const adSetDataMap = new Map<string, any>();
 
             for (const ad of fbAds) {
-                if (!adGroupMap.has(ad.adset_id)) {
-                    missingAdSetIds.add(ad.adset_id);
+                if (ad.campaign && ad.campaign.id && !campaignMap.has(ad.campaign.id)) {
+                    campaignDataMap.set(ad.campaign.id, ad.campaign);
                 }
-                if (!campaignMap.has(ad.campaign_id)) {
-                    missingCampaignIds.add(ad.campaign_id);
-                }
-            }
-
-            // Fetch and create missing campaigns
-            if (missingCampaignIds.size > 0) {
-                const campaignUpserts = [];
-                for (const campId of missingCampaignIds) {
-                    try {
-                        const fbCamp = await fb.getCampaign(campId);
-                        if (fbCamp && fbCamp.id) {
-                            const newId = crypto.randomUUID();
-                            campaignUpserts.push({
-                                id: newId,
-                                external_id: fbCamp.id,
-                                platform_account_id: accountId,
-                                name: fbCamp.name || "Campaign " + fbCamp.id,
-                                objective: fbCamp.objective,
-                                status: mapStatus(fbCamp.status),
-                                effective_status: fbCamp.effective_status,
-                                start_time: fbCamp.start_time || null,
-                                end_time: fbCamp.stop_time || null,
-                                platform_data: fbCamp,
-                                synced_at: getVietnamTime(),
-                            });
-                            campaignMap.set(fbCamp.id, newId);
-                        }
-                    } catch (e: any) {
-                        console.log("[AdsSync] Failed to fetch campaign " + campId + ": " + e.message);
-                    }
-                }
-                if (campaignUpserts.length > 0) {
-                    const { error: campErr } = await supabase.from("unified_campaigns").upsert(campaignUpserts, { onConflict: "platform_account_id,external_id" });
-                    if (campErr) result.errors.push("Campaign Auto-Create Error: " + campErr.message);
-                    else result.campaigns = campaignUpserts.length;
+                if (ad.adset && ad.adset.id && !adGroupMap.has(ad.adset.id)) {
+                    adSetDataMap.set(ad.adset.id, ad.adset);
                 }
             }
 
-            // Fetch and create missing ad_groups
-            if (missingAdSetIds.size > 0) {
+            // Sync missing campaigns
+            if (campaignDataMap.size > 0) {
+                const campaignUpserts = Array.from(campaignDataMap.values()).map(fbCamp => {
+                    const newId = crypto.randomUUID();
+                    campaignMap.set(fbCamp.id, newId);
+                    return {
+                        id: newId,
+                        external_id: fbCamp.id,
+                        platform_account_id: accountId,
+                        name: fbCamp.name || "Campaign " + fbCamp.id,
+                        objective: fbCamp.objective,
+                        status: mapStatus(fbCamp.status),
+                        effective_status: fbCamp.effective_status,
+                        start_time: fbCamp.start_time || null,
+                        end_time: fbCamp.stop_time || null,
+                        platform_data: fbCamp,
+                        synced_at: timestampNow,
+                    };
+                });
+                const { error: campErr } = await supabase.from("unified_campaigns").upsert(campaignUpserts, { onConflict: "platform_account_id,external_id" });
+                if (campErr) result.errors.push("Campaign Auto-Create Error: " + campErr.message);
+                else result.campaigns = campaignUpserts.length;
+            }
+
+            // Sync missing ad_groups
+            if (adSetDataMap.size > 0) {
                 const adGroupUpserts = [];
-                for (const adsetId of missingAdSetIds) {
-                    try {
-                        const fbAdSet = await fb.getAdSet(adsetId);
-                        if (fbAdSet && fbAdSet.id) {
-                            let campaignId = campaignMap.get(fbAdSet.campaign_id);
-                            if (campaignId) {
-                                const newId = crypto.randomUUID();
-                                adGroupUpserts.push({
-                                    id: newId,
-                                    external_id: fbAdSet.id,
-                                    platform_account_id: accountId,
-                                    unified_campaign_id: campaignId,
-                                    name: fbAdSet.name || "AdSet " + fbAdSet.id,
-                                    status: mapStatus(fbAdSet.status),
-                                    effective_status: fbAdSet.effective_status,
-                                    daily_budget: fbAdSet.daily_budget ? parseFloat(fbAdSet.daily_budget) : null,
-                                    optimization_goal: fbAdSet.optimization_goal,
-                                    start_time: fbAdSet.start_time || null,
-                                    end_time: fbAdSet.end_time || null,
-                                    platform_data: fbAdSet,
-                                    synced_at: getVietnamTime(),
-                                });
-                                adGroupMap.set(fbAdSet.id, { id: newId, start_time: fbAdSet.start_time, end_time: fbAdSet.end_time });
-                            }
-                        }
-                    } catch (e: any) {
-                        console.log("[AdsSync] Failed to fetch adset " + adsetId + ": " + e.message);
+                for (const fbAdSet of adSetDataMap.values()) {
+                    let campaignId = campaignMap.get(fbAdSet.campaign_id);
+                    if (campaignId) {
+                        const newId = crypto.randomUUID();
+                        adGroupUpserts.push({
+                            id: newId,
+                            external_id: fbAdSet.id,
+                            platform_account_id: accountId,
+                            unified_campaign_id: campaignId,
+                            name: fbAdSet.name || "AdSet " + fbAdSet.id,
+                            status: mapStatus(fbAdSet.status),
+                            effective_status: fbAdSet.effective_status,
+                            daily_budget: fbAdSet.daily_budget ? parseFloat(fbAdSet.daily_budget) : null,
+                            optimization_goal: fbAdSet.optimization_goal,
+                            start_time: fbAdSet.start_time || null,
+                            end_time: fbAdSet.end_time || null,
+                            platform_data: fbAdSet,
+                            synced_at: timestampNow,
+                        });
+                        adGroupMap.set(fbAdSet.id, { id: newId, start_time: fbAdSet.start_time, end_time: fbAdSet.end_time });
                     }
                 }
                 if (adGroupUpserts.length > 0) {
@@ -388,7 +372,7 @@ Deno.serve(async (req: Request) => {
                         thumbnail_url: c.thumbnail_url || imageUrl || null,
                         image_url: imageUrl,
                         platform_data: trimmedPlatformData, // USE TRIMMED DATA
-                        synced_at: getVietnamTime(),
+                        synced_at: timestampNow,
                     };
 
                     if (!existing) {
@@ -428,7 +412,6 @@ Deno.serve(async (req: Request) => {
             const existingAdDataMap = new Map<string, any>((currentAds || []).map((a: any) => [a.external_id, a]));
 
             const adUpserts = [];
-            const timestampNow = getVietnamTime();
 
             for (const ad of fbAds) {
                 const adGroup = adGroupMap.get(ad.adset_id);
@@ -455,7 +438,11 @@ Deno.serve(async (req: Request) => {
 
                 // Only store platform_data for non-archived or new ads to save space
                 if (!isArchived || !existing) {
-                    newData.platform_data = ad;
+                    // Tràng platform_data: Remove expanded objects before saving to ad
+                    const trimmedAd = { ...ad };
+                    delete trimmedAd.adset;
+                    delete trimmedAd.campaign;
+                    newData.platform_data = trimmedAd;
                 }
 
                 if (!existing) {
@@ -466,7 +453,13 @@ Deno.serve(async (req: Request) => {
                     result.ads.updated++;
                 } else {
                     // Update ONLY synced_at to keep DB lightweight
-                    adUpserts.push({ id: existing.id, synced_at: timestampNow });
+                    // Must include conflict keys for the upsert to match correctly
+                    adUpserts.push({ 
+                        id: existing.id, 
+                        platform_account_id: accountId,
+                        external_id: ad.id,
+                        synced_at: timestampNow 
+                    });
                     result.ads.noChange++;
                 }
             }
@@ -481,10 +474,48 @@ Deno.serve(async (req: Request) => {
             }
             result.ads.total = fbAds.length;
 
-            // 3. AUTO-CLEANUP: Delete old archived/deleted ads and their orphaned creatives
-            // This is the "EVERYWHERE" check the user requested to keep DB lightweight
+            // 3. AUTO-CLEANUP: 
+            // Phase A: Mark ads that were NOT returned by FB as ARCHIVED
+            // We know they weren't returned because we fetched ALL ads for the account, and these weren't in the fbAds list (so they weren't matched and updated above)
             try {
-                // Step A: Delete archived/deleted ads that haven't been synced in over 30 days
+                const { data: updatedAds, error: adStatusErr } = await supabase
+                    .from("unified_ads")
+                    .update({ effective_status: 'ARCHIVED', synced_at: timestampNow })
+                    .eq("platform_account_id", accountId)
+                    .neq("effective_status", "ARCHIVED")
+                    .neq("effective_status", "DELETED")
+                    .lt("synced_at", timestampNow)
+                    .select("id");
+                
+                if (adStatusErr) {
+                    console.error("[AdsSync] Ad status cleanup error:", adStatusErr.message);
+                } else if (updatedAds && updatedAds.length > 0) {
+                    console.log(`[AdsSync] Marked ${updatedAds.length} stale ads as ARCHIVED for account ${accountId}`);
+                }
+
+                // Phase B: Mark ad groups that were not synced as ARCHIVED
+                const { error: agStatusErr } = await supabase
+                    .from("unified_ad_groups")
+                    .update({ effective_status: 'ARCHIVED', synced_at: timestampNow })
+                    .eq("platform_account_id", accountId)
+                    .neq("effective_status", "ARCHIVED")
+                    .neq("effective_status", "DELETED")
+                    .lt("synced_at", timestampNow);
+                
+                if (agStatusErr) console.error("[AdsSync] AdGroup status cleanup error:", agStatusErr.message);
+
+                // Phase C: Mark campaigns that were not synced as ARCHIVED
+                const { error: campStatusErr } = await supabase
+                    .from("unified_campaigns")
+                    .update({ effective_status: 'ARCHIVED', synced_at: timestampNow })
+                    .eq("platform_account_id", accountId)
+                    .neq("effective_status", "ARCHIVED")
+                    .neq("effective_status", "DELETED")
+                    .lt("synced_at", timestampNow);
+                
+                if (campStatusErr) console.error("[AdsSync] Campaign status cleanup error:", campStatusErr.message);
+
+                // Phase D: Delete archived/deleted ads that haven't been synced in over 30 days
                 const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
                 const { error: adCleanupErr } = await supabase
                     .from("unified_ads")
@@ -493,9 +524,9 @@ Deno.serve(async (req: Request) => {
                     .in("effective_status", ["ARCHIVED", "DELETED", "UNKNOWN"])
                     .lt("synced_at", thirtyDaysAgo);
                 
-                if (adCleanupErr) console.error("[AdsSync] Ad cleanup error:", adCleanupErr.message);
+                if (adCleanupErr) console.error("[AdsSync] Stale ad deletion error:", adCleanupErr.message);
 
-                // Step B: Call the RPC to delete creatives that are no longer referenced by ANY ad
+                // Phase E: Call the RPC to delete creatives that are no longer referenced by ANY ad
                 const { data: cleanedCount, error: cleanupErr } = await supabase.rpc('delete_unused_creatives', { p_account_id: accountId });
                 if (!cleanupErr) {
                     result.creatives.cleanedUp = cleanedCount || 0;
@@ -509,7 +540,7 @@ Deno.serve(async (req: Request) => {
 
         }
 
-        await supabase.from("platform_accounts").update({ synced_at: getVietnamTime() }).eq("id", accountId);
+        await supabase.from("platform_accounts").update({ synced_at: timestampNow }).eq("id", accountId);
         return jsonResponse({ success: true, data: result });
     } catch (error: any) {
         return jsonResponse({ success: false, error: error.message }, 500);

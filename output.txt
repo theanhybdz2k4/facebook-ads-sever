@@ -1,3 +1,0 @@
-  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
-                                 Dload  Upload   Total   Spent    Left  Speed
-  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100   152    0   150  100     2    276      3 --:--:-- --:--:-- --:--:--   280100   152    0   150  100     2    276      3 --:--:-- --:--:-- --:--:--   279{"success":false,"error":"DB Error: \"failed to parse logic tree ((ai_analysis.is.null,not.ai_analysis.ilike.Tổng điểm%))\" (line 1, column 28)"}
