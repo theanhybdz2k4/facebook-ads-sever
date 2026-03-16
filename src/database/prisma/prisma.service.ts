@@ -125,8 +125,19 @@ export class PrismaService
 
   // Models that have deletedAt field - used by findMiddleware
   private readonly modelsWithDeletedAt = new Set([
-    'User', 'FbAccount', 'FbApiToken', 'RefreshToken', 'AdAccount',
-    'Campaign', 'Adset', 'Ad', 'Creative', 'AdImage', 'AdVideo', 'CrawlJob',
+    'User', 
+    'RefreshToken', 
+    'Branch', 
+    'PlatformIdentity', 
+    'PlatformAccount', 
+    'PlatformCredential', 
+    'UnifiedCampaign', 
+    'UnifiedAdGroup', 
+    'UnifiedAd', 
+    'UnifiedInsight', 
+    'SyncJob', 
+    'UnifiedHourlyInsight', 
+    'TelegramBot',
   ]);
 
   findMiddleware: Prisma.Middleware = async (params, next) => {

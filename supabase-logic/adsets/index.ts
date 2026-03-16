@@ -1,0 +1,257 @@
+/**
+ * Ad-Groups Edge Function - FULL FEATURE COMPATIBILITY
+ */
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.0";
+import { verify } from "https://deno.land/x/djwt@v3.0.1/mod.ts";
+
+const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
+const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const JWT_SECRET = Deno.env.get("JWT_SECRET");
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+function getVietnamNowISO(): string {
+    const vn = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
+    return vn.toISOString().replace('T', ' ').slice(0, 19);
+}
+
+const corsHeaders = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+const jsonResponse = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: corsHeaders });
+
+// CRITICAL: Robust Auth Logic
+async function verifyAuth(req: Request) {
+    const authHeader = req.headers.get("Authorization");
+    const serviceKeyHeader = req.headers.get("x-service-key") || req.headers.get("x-master-key");
+    const masterKey = Deno.env.get("MASTER_KEY") || "";
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    const authSecret = Deno.env.get("AUTH_SECRET") || "";
+
+    // 1. Check Service/Master Key in specialized headers
+    if (serviceKeyHeader === serviceKey || (masterKey && serviceKeyHeader === masterKey)) {
+        return { userId: 1 };
+    }
+
+    if (authHeader?.startsWith("Bearer ")) {
+        const token = authHeader.substring(7).trim();
+
+        // 2. Check Service/Master/Auth secrets as Bearer token
+        if ((serviceKey && token === serviceKey) || (masterKey && token === masterKey) || (authSecret && token === authSecret)) {
+            return { userId: 1 };
+        }
+
+        // 3. PRIORITY: Check custom auth_tokens table
+        try {
+            const { data: tokenData } = await supabase.from("auth_tokens").select("user_id").eq("token", token).maybeSingle();
+            if (tokenData) return { userId: tokenData.user_id };
+        } catch (e) { }
+
+        // 4. FALLBACK 1: Manual JWT verification
+        try {
+            const secret = Deno.env.get("JWT_SECRET");
+            if (secret) {
+                const encoder = new TextEncoder();
+                const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+                const payload = await verify(token, key);
+
+                if (payload.role === "service_role") return { userId: 1 };
+
+                const sub = payload.sub as string;
+                if (typeof sub === 'string') {
+                    if (/^\d+$/.test(sub)) {
+                        return { userId: parseInt(sub, 10) };
+                    }
+                    return { userId: sub };
+                }
+                return { userId: sub };
+            }
+        } catch (e) { }
+
+        // 5. FALLBACK 2: Supabase Auth
+        try {
+            const { data: { user } } = await supabase.auth.getUser(token);
+            if (user) return { userId: user.id };
+        } catch (e) { }
+    }
+    return null;
+}
+
+Deno.serve(async (req) => {
+    if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+    const auth = await verifyAuth(req);
+    if (!auth) return jsonResponse({ success: false, error: "Unauthorized" }, 401);
+
+    const url = new URL(req.url);
+    const segments = url.pathname.split("/").filter(Boolean);
+    const funcIndex = segments.indexOf("adsets");
+    const subPathSegments = funcIndex !== -1 ? segments.slice(funcIndex + 1) : segments;
+    const path = "/" + subPathSegments.join("/");
+
+    try {
+        // GET /ad-groups
+        if ((path === "/" || path === "") && req.method === "GET") {
+            const campaignId = url.searchParams.get("campaignId");
+            const accountId = url.searchParams.get("accountId");
+            const status = url.searchParams.get("effectiveStatus");
+            const branchId = url.searchParams.get("branchId");
+
+            let query = supabase
+                .from("unified_ad_groups")
+                .select(`
+                    id, external_id, name, status, effective_status, daily_budget, start_time, end_time, synced_at, unified_campaign_id,
+                    unified_campaigns!inner(id, name, platform_account_id, platform_accounts!inner(id, branch_id, synced_at, platform_identities!inner(user_id))),
+                    unified_insights(spend, impressions, clicks, results, date)
+                `)
+                .eq("unified_campaigns.platform_accounts.platform_identities.user_id", auth.userId);
+
+            if (campaignId) query = query.eq("unified_campaign_id", campaignId);
+            if (accountId) query = query.eq("unified_campaigns.platform_account_id", parseInt(accountId));
+            if (status) query = query.eq("effective_status", status);
+            if (branchId && branchId !== "all") query = query.eq("unified_campaigns.platform_accounts.branch_id", parseInt(branchId));
+
+            // Filter out expired ad groups (end_time in the past)
+            const nowVN = getVietnamNowISO();
+            query = query.or(`end_time.is.null,end_time.gte.${nowVN}`);
+
+            const { data, error } = await query.order("name", { ascending: true }).limit(500);
+            if (error) throw error;
+
+            const vnNow = new Date(Date.now() + 7 * 3600000);
+            const dateTodayVn = vnNow.toISOString().split('T')[0];
+            const datePastVn = new Date(vnNow.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+            const dateStart = url.searchParams.get("dateStart") || datePastVn;
+            const dateEnd = url.searchParams.get("dateEnd") || dateTodayVn;
+
+            const optimizedData = (data || []).map((s: any) => {
+                const insights = Array.isArray(s.unified_insights) ? s.unified_insights : [];
+                const filteredInsights = insights.filter((i: any) => i.date >= dateStart && i.date <= dateEnd);
+
+                const stats = filteredInsights.reduce((acc: any, curr: any) => ({
+                    spend: acc.spend + (Number(curr.spend) || 0),
+                    impressions: acc.impressions + (Number(curr.impressions) || 0),
+                    clicks: acc.clicks + (Number(curr.clicks) || 0),
+                    results: acc.results + (Number(curr.results) || 0),
+                }), { spend: 0, impressions: 0, clicks: 0, results: 0 });
+
+                return {
+                    id: s.id,
+                    campaignId: s.unified_campaign_id,
+                    externalId: s.external_id,
+                    name: s.name,
+                    status: s.status,
+                    effectiveStatus: s.effective_status,
+                    dailyBudget: s.daily_budget,
+                    startTime: s.start_time,
+                    endTime: s.end_time,
+                    syncedAt: s.synced_at,
+                    accountId: s.unified_campaigns.platform_account_id,
+                    campaign: {
+                        id: s.unified_campaigns.id,
+                        name: s.unified_campaigns.name,
+                        account: {
+                            id: s.unified_campaigns.platform_accounts.id,
+                            syncedAt: s.unified_campaigns.platform_accounts.synced_at
+                        }
+                    },
+                    stats: stats
+                };
+            });
+
+            return jsonResponse(optimizedData);
+        }
+
+        // GET /ad-groups/by-campaign/:id
+        if (path.includes("/by-campaign/") && req.method === "GET") {
+            const campaignId = path.split("/").pop();
+            const { data, error } = await supabase
+                .from("unified_ad_groups")
+                .select(`
+                    id, name, status, effective_status, external_id, unified_campaign_id, start_time, end_time,
+                    unified_campaigns!inner(platform_accounts!inner(platform_identities!inner(user_id)))
+                `)
+                .eq("unified_campaign_id", campaignId)
+                .eq("unified_campaigns.platform_accounts.platform_identities.user_id", auth.userId);
+            if (error) throw error;
+            const mapped = (data || []).map(ag => ({
+                id: ag.id,
+                name: ag.name,
+                status: ag.status,
+                effectiveStatus: ag.effective_status,
+                externalId: ag.external_id,
+                campaignId: ag.unified_campaign_id,
+                startTime: ag.start_time,
+                endTime: ag.end_time
+            }));
+            return jsonResponse(mapped);
+        }
+
+        // GET /ad-groups/:id
+        if (subPathSegments.length === 1 && req.method === "GET") {
+            const adgroupId = subPathSegments[0];
+            const { data, error } = await supabase
+                .from("unified_ad_groups")
+                .select(`
+                    id, external_id, name, status, effective_status, daily_budget, start_time, end_time, synced_at, unified_campaign_id,
+                    unified_campaigns!inner(id, name, platform_accounts!inner(id, platform_identities!inner(user_id)))
+                `)
+                .eq("id", adgroupId)
+                .eq("unified_campaigns.platform_accounts.platform_identities.user_id", auth.userId) // Consider relaxing this like other detail views if needed
+                .single();
+
+            if (error || !data) return jsonResponse({ success: false, error: "Ad Group not found" }, 404);
+
+            return jsonResponse({
+                id: data.id,
+                name: data.name,
+                status: data.status,
+                effectiveStatus: data.effective_status,
+                campaignId: data.unified_campaign_id,
+                startTime: data.start_time,
+                endTime: data.end_time,
+                campaign: data.unified_campaigns
+            });
+        }
+
+        // POST /ad-groups/sync/account/:id (reuses campaigns sync)
+        if (path.includes("/sync/account/") && req.method === "POST") {
+            const accountId = path.split("/").pop();
+            if (!accountId) return jsonResponse({ success: false, error: "Missing accountId" }, 400);
+
+            // 1. Verify account ownership before triggering sync
+            const { data: accountOwner, error: ownerError } = await supabase
+                .from("platform_accounts")
+                .select("id, platform_identities!inner(user_id)")
+                .eq("id", parseInt(accountId))
+                .eq("platform_identities.user_id", auth.userId)
+                .maybeSingle();
+
+            if (ownerError || !accountOwner) {
+                return jsonResponse({ success: false, error: "Account not found or access denied" }, 404);
+            }
+
+            // 2. Forward the current user's token instead of a legacy system token
+            const syncResponse = await fetch(`${supabaseUrl}/functions/v1/fb-sync-campaigns`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": req.headers.get("Authorization") || ""
+                },
+                body: JSON.stringify({ accountId: parseInt(accountId) })
+            });
+
+            const result = await syncResponse.json();
+            return jsonResponse(result, syncResponse.status);
+        }
+
+        return jsonResponse({ success: false, error: `Route Not Found: ${req.method} ${path}` }, 404);
+    } catch (error: any) {
+        return jsonResponse({ success: false, error: error.message }, 500);
+    }
+});

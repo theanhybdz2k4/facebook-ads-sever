@@ -1,6 +1,5 @@
 import { IsString, IsOptional, IsEnum, IsDateString } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { TokenType } from '@prisma/client';
 
 export class CreateTokenDto {
     @ApiProperty({ description: 'Facebook access token' })
@@ -11,11 +10,6 @@ export class CreateTokenDto {
     @IsOptional()
     @IsString()
     accountId?: string;
-
-    @ApiPropertyOptional({ enum: TokenType })
-    @IsOptional()
-    @IsEnum(TokenType)
-    tokenType?: TokenType;
 
     @ApiPropertyOptional({ description: 'Token expiration date' })
     @IsOptional()

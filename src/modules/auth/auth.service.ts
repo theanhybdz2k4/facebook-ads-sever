@@ -87,13 +87,13 @@ export class AuthService {
                 name: true,
                 isActive: true,
                 createdAt: true,
-                fbAccounts: {
+                platformIdentities: {
                     select: {
                         id: true,
                         name: true,
-                        fbUserId: true,
+                        externalId: true,
                         isValid: true,
-                        _count: { select: { adAccounts: true, tokens: true } },
+                        _count: { select: { accounts: true, credentials: true } },
                     },
                 },
             },

@@ -2,377 +2,185 @@ import {
     Controller,
     Get,
     Post,
-    Delete,
     Body,
     Param,
+    Delete,
     Query,
-    ParseIntPipe,
     UseGuards,
+    HttpStatus,
+    ParseIntPipe,
     Request,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { FbAccountService } from './services/fb-account.service';
-import { TokenService } from './services/token.service';
-import { CrawlJobService } from './services/crawl-job.service';
-import { RateLimiterService } from './services/rate-limiter.service';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import { JwtAuthGuard } from '@n-modules/auth/guards/jwt-auth.guard';
+import { FbAccountService } from './accounts/fb-account.service';
+import { EntitySyncService } from './sync/entity-sync.service';
+import { InsightsSyncService } from './sync/insights-sync.service';
 import { CrawlSchedulerService } from './jobs/crawl-scheduler.service';
-import { TelegramService } from './services/telegram.service';
-import { SyncEntitiesDto, SyncInsightsDto } from './dtos';
 import { PrismaService } from '@n-database/prisma/prisma.service';
-import { IsString, IsOptional } from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-
-// DTOs for FB Account management
-export class AddFbAccountDto {
-    @ApiProperty({ description: 'Facebook access token' })
-    @IsString()
-    accessToken: string;
-
-    @ApiPropertyOptional({ description: 'Name for this FB account' })
-    @IsOptional()
-    @IsString()
-    name?: string;
-}
-
-export class AddTokenDto {
-    @ApiProperty({ description: 'Facebook access token' })
-    @IsString()
-    accessToken: string;
-
-    @ApiPropertyOptional()
-    @IsOptional()
-    @IsString()
-    name?: string;
-
-    @ApiPropertyOptional()
-    @IsOptional()
-    isDefault?: boolean;
-}
 
 @ApiTags('Facebook Ads')
-@Controller('fb-ads')
+@Controller('facebook-ads')
+@UseGuards(JwtAuthGuard)
+@ApiBearerAuth()
 export class FacebookAdsController {
     constructor(
         private readonly fbAccountService: FbAccountService,
-        private readonly tokenService: TokenService,
-        private readonly crawlJobService: CrawlJobService,
-        private readonly rateLimiterService: RateLimiterService,
+        private readonly entitySyncService: EntitySyncService,
+        private readonly insightsSyncService: InsightsSyncService,
         private readonly schedulerService: CrawlSchedulerService,
-        private readonly telegramService: TelegramService,
         private readonly prisma: PrismaService,
     ) { }
 
-    // ==================== FB ACCOUNTS ====================
+    // ==================== FB ACCOUNTS (Identities) ====================
 
-    @Post('fb-accounts')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Add new FB account (enter token)' })
-    async addFbAccount(@Request() req: any, @Body() dto: AddFbAccountDto) {
-        return this.fbAccountService.addFbAccount(req.user.id, dto.accessToken, dto.name);
+    @Post('accounts')
+    @ApiOperation({ summary: 'Add a new Facebook identity (Personal Account)' })
+    async addFbAccount(
+        @Request() req: any,
+        @Body() body: { accessToken: string; name?: string },
+    ) {
+        return this.fbAccountService.addFbAccount(req.user.id, body.accessToken, body.name);
     }
 
-    @Get('fb-accounts')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'List user FB accounts' })
+    @Get('accounts')
+    @ApiOperation({ summary: 'List all Facebook identities for the user' })
     async getFbAccounts(@Request() req: any) {
         return this.fbAccountService.getFbAccountsByUser(req.user.id);
     }
 
-    @Get('fb-accounts/:id')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Get FB account details' })
-    async getFbAccount(@Param('id', ParseIntPipe) id: number) {
+    @Get('accounts/:id')
+    @ApiOperation({ summary: 'Get details of a Facebook identity' })
+    async getFbAccount(
+        @Request() req: any,
+        @Param('id', ParseIntPipe) id: number,
+    ) {
         return this.fbAccountService.getFbAccountWithDetails(id);
     }
 
-    @Delete('fb-accounts/:id')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Delete FB account' })
-    async deleteFbAccount(@Request() req: any, @Param('id', ParseIntPipe) id: number) {
+    @Delete('accounts/:id')
+    @ApiOperation({ summary: 'Delete a Facebook identity' })
+    async deleteFbAccount(
+        @Request() req: any,
+        @Param('id', ParseIntPipe) id: number,
+    ) {
         return this.fbAccountService.deleteFbAccount(req.user.id, id);
     }
 
-    @Post('fb-accounts/:id/sync')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Sync ad accounts from FB' })
-    async syncAdAccounts(@Param('id', ParseIntPipe) id: number) {
+    @Post('accounts/:id/tokens')
+    @ApiOperation({ summary: 'Add a new access token to a Facebook identity' })
+    async addToken(
+        @Param('id', ParseIntPipe) id: number,
+        @Body() body: { accessToken: string; isDefault?: boolean },
+    ) {
+        return this.fbAccountService.addToken(id, body.accessToken, undefined, body.isDefault);
+    }
+
+    @Post('accounts/:id/sync-ad-accounts')
+    @ApiOperation({ summary: 'Sync available Ad Accounts from Facebook' })
+    async syncAdAccounts(
+        @Param('id', ParseIntPipe) id: number,
+    ) {
         return this.fbAccountService.syncAdAccounts(id);
     }
 
-    @Post('fb-accounts/:id/tokens')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Add token to FB account' })
-    async addToken(@Param('id', ParseIntPipe) id: number, @Body() dto: AddTokenDto) {
-        return this.fbAccountService.addToken(id, dto.accessToken, dto.name, dto.isDefault);
+    // ==================== AD ACCOUNTS (PlatformAccounts) ====================
+
+    @Get('ad-accounts')
+    @ApiOperation({ summary: 'List all Ad Accounts the user has access to' })
+    @ApiQuery({ name: 'platformIdentityId', required: false })
+    async getAdAccounts(
+        @Request() req: any,
+        @Query('platformIdentityId') platformIdentityId?: string,
+    ) {
+        return this.prisma.platformAccount.findMany({
+            where: {
+                identity: {
+                    userId: req.user.id,
+                    id: platformIdentityId ? parseInt(platformIdentityId) : undefined,
+                },
+                accountStatus: '1', 
+            },
+            include: { identity: { select: { name: true } } },
+        });
     }
 
-    // ==================== ENTITY SYNC ====================
+    // ==================== SYNC OPERATIONS ====================
 
     @Post('sync/entities')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Sync entities (campaigns, adsets, ads, creatives)' })
-    async syncEntities(@Body() dto: SyncEntitiesDto) {
-        // If adsetId is provided, sync ads for that specific adset
-        if (dto.adsetId) {
-            await this.schedulerService.triggerAdsSyncByAdset(dto.adsetId);
-            return { message: 'Ads sync job queued for adset', adsetId: dto.adsetId };
-        }
-
-        // If campaignId is provided, sync adsets for that specific campaign
-        if (dto.campaignId) {
-            await this.schedulerService.triggerAdsetsSyncByCampaign(dto.campaignId);
-            return { message: 'Adsets sync job queued for campaign', campaignId: dto.campaignId };
-        }
-
-        // Otherwise sync by accountId as before
-        if (!dto.accountId) {
-            throw new Error('Either accountId, campaignId, or adsetId is required');
-        }
-        await this.schedulerService.triggerEntitySync(dto.accountId, dto.entityType || 'all');
-        return { message: 'Entity sync job queued', accountId: dto.accountId };
+    @ApiOperation({ summary: 'Trigger manual sync of entities (Campaigns, AdSets, Ads)' })
+    async syncEntities(
+        @Body() body: { accountId: string; entityType: string },
+    ) {
+        return this.schedulerService.triggerEntitySync(parseInt(body.accountId), body.entityType);
     }
-
-    // ==================== INSIGHTS SYNC ====================
 
     @Post('sync/insights')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Sync insights for date range' })
-    async syncInsights(@Body() dto: SyncInsightsDto) {
-        // If adId is provided, sync insights for that specific ad
-        if (dto.adId) {
-            await this.schedulerService.triggerInsightsSyncByAd(
-                dto.adId,
-                dto.dateStart,
-                dto.dateEnd,
-                dto.breakdown || 'all',
-            );
-            return {
-                message: 'Insights sync job queued for ad',
-                adId: dto.adId,
-                dateRange: `${dto.dateStart} to ${dto.dateEnd}`,
-            };
-        }
-
-        // Otherwise sync by accountId
-        if (!dto.accountId) {
-            throw new Error('Either accountId or adId is required');
-        }
-        await this.schedulerService.triggerInsightsSync(
-            dto.accountId,
-            dto.dateStart,
-            dto.dateEnd,
-            dto.breakdown || 'all',
+    @ApiOperation({ summary: 'Trigger manual sync of insights' })
+    async syncInsights(
+        @Body() body: {
+            accountId: string;
+            dateStart: string;
+            dateEnd: string;
+            breakdown?: string;
+        },
+    ) {
+        return this.schedulerService.triggerInsightsSync(
+            parseInt(body.accountId),
+            body.dateStart,
+            body.dateEnd,
+            body.breakdown,
         );
-        return {
-            message: 'Insights sync job queued',
-            accountId: dto.accountId,
-            dateRange: `${dto.dateStart} to ${dto.dateEnd}`,
-        };
     }
 
-    // ==================== JOBS ====================
-
-    @Get('jobs')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'List recent crawl jobs' })
-    async getJobs(@Query('limit') limit?: string) {
-        return this.crawlJobService.getRecentJobs(limit ? parseInt(limit) : 50);
-    }
-
-    @Get('jobs/:id')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Get crawl job details' })
-    async getJob(@Param('id', ParseIntPipe) id: number) {
-        return this.crawlJobService.getJob(id);
-    }
-
-    // ==================== RATE LIMIT ====================
-
-    @Get('rate-limit')
-    @ApiOperation({ summary: 'Get current rate limit status' })
-    async getRateLimitStatus() {
-        return this.rateLimiterService.getAllStates();
-    }
-
-    // ==================== DATA QUERIES ====================
-
-    @Get('accounts')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'List active ad accounts' })
-    async getAdAccounts(@Request() req: any) {
-        return this.prisma.adAccount.findMany({
-            where: {
-                fbAccount: { userId: req.user.id },
-                accountStatus: 1, // Only ACTIVE accounts
-            },
-            orderBy: { syncedAt: 'desc' },
-        });
-    }
+    // ==================== DATA QUERIES (Unified Models) ====================
 
     @Get('campaigns')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'List campaigns' })
-    async getCampaigns(
-        @Request() req: any,
-        @Query('accountId') accountId?: string,
-        @Query('effectiveStatus') effectiveStatus?: string,
-        @Query('search') search?: string,
-    ) {
-        return this.prisma.campaign.findMany({
-            where: {
-                ...(accountId && { accountId }),
-                ...(effectiveStatus && { effectiveStatus }),
-                ...(search && {
-                    OR: [
-                        { name: { contains: search, mode: 'insensitive' } },
-                        { id: { contains: search } },
-                    ],
-                }),
-                account: { fbAccount: { userId: req.user.id } },
-            },
-            orderBy: { syncedAt: 'desc' },
-            take: 100,
+    @ApiOperation({ summary: 'List campaigns by ad account' })
+    async getCampaigns(@Query('accountId', ParseIntPipe) accountId: number) {
+        return this.prisma.unifiedCampaign.findMany({
+            where: { platformAccountId: accountId },
+            orderBy: { createdAt: 'desc' },
         });
     }
 
-    @Get('adsets')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'List adsets' })
-    async getAdsets(
-        @Request() req: any,
-        @Query('accountId') accountId?: string,
-        @Query('campaignId') campaignId?: string,
-        @Query('effectiveStatus') effectiveStatus?: string,
-        @Query('search') search?: string,
-    ) {
-        return this.prisma.adset.findMany({
-            where: {
-                ...(accountId && { accountId }),
-                ...(campaignId && { campaignId }),
-                ...(effectiveStatus && { effectiveStatus }),
-                ...(search && {
-                    OR: [
-                        { name: { contains: search, mode: 'insensitive' } },
-                        { id: { contains: search } },
-                    ],
-                }),
-                account: { fbAccount: { userId: req.user.id } },
-            },
-            orderBy: { syncedAt: 'desc' },
-            take: 100,
+    @Get('ad-groups')
+    @ApiOperation({ summary: 'List adgroups (adsets) by campaign' })
+    async getAdGroups(@Query('campaignId') campaignId: string) {
+        return this.prisma.unifiedAdGroup.findMany({
+            where: { unifiedCampaignId: campaignId },
+            orderBy: { createdAt: 'desc' },
         });
     }
 
     @Get('ads')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'List ads' })
-    async getAds(
-        @Request() req: any,
-        @Query('accountId') accountId?: string,
-        @Query('adsetId') adsetId?: string,
-        @Query('effectiveStatus') effectiveStatus?: string,
-        @Query('search') search?: string,
-    ) {
-        return this.prisma.ad.findMany({
-            where: {
-                ...(accountId && { accountId }),
-                ...(adsetId && { adsetId }),
-                ...(effectiveStatus && { effectiveStatus }),
-                ...(search && {
-                    OR: [
-                        { name: { contains: search, mode: 'insensitive' } },
-                        { id: { contains: search } },
-                    ],
-                }),
-                account: { fbAccount: { userId: req.user.id } },
-            },
-            orderBy: { syncedAt: 'desc' },
-            take: 100,
+    @ApiOperation({ summary: 'List ads by adgroup' })
+    async getAds(@Query('adGroupId') adGroupId: string) {
+        return this.prisma.unifiedAd.findMany({
+            where: { unifiedAdGroupId: adGroupId },
+            orderBy: { createdAt: 'desc' },
         });
     }
 
-    @Get('insights')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Query daily insights' })
-    async getInsights(
-        @Request() req: any,
-        @Query('accountId') accountId?: string,
+    @Get('insights/daily')
+    @ApiOperation({ summary: 'Get daily insights for an account or ad' })
+    async getDailyInsights(
+        @Query('accountId', ParseIntPipe) accountId: number,
+        @Query('adId') adId?: string,
         @Query('dateStart') dateStart?: string,
         @Query('dateEnd') dateEnd?: string,
     ) {
-        return this.prisma.adInsightsDaily.findMany({
+        return this.prisma.unifiedInsight.findMany({
             where: {
-                ...(accountId && { accountId }),
-                ...(dateStart && dateEnd && {
-                    date: { gte: new Date(dateStart), lte: new Date(dateEnd) },
-                }),
-                account: { fbAccount: { userId: req.user.id } },
+                platformAccountId: accountId,
+                unifiedAdId: adId,
+                date: {
+                    gte: dateStart ? new Date(dateStart) : undefined,
+                    lte: dateEnd ? new Date(dateEnd) : undefined,
+                },
             },
+            include: { ad: { select: { name: true } } },
             orderBy: { date: 'desc' },
-            take: 100,
         });
-    }
-
-    // ==================== TELEGRAM ====================
-
-    @Post('telegram/refresh')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Refresh Telegram chat IDs from getUpdates' })
-    async refreshTelegramChatIds() {
-        await this.telegramService.refreshChatIds();
-        return { success: true, chatIds: this.telegramService.getChatIds() };
-    }
-
-    @Post('telegram/add-chat')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Manually add a Telegram chat ID' })
-    async addTelegramChatId(@Body('chatId') chatId: string) {
-        this.telegramService.addChatId(chatId);
-        return { success: true, chatId };
-    }
-
-    @Get('telegram/chat-ids')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Get all registered Telegram chat IDs' })
-    getTelegramChatIds() {
-        return { chatIds: this.telegramService.getChatIds() };
-    }
-
-    @Post('telegram/test')
-    @UseGuards(JwtAuthGuard)
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Send test message to all Telegram subscribers' })
-    async sendTestTelegram() {
-        await this.telegramService.sendInsightsSyncReport({
-            accountName: 'Test Account',
-            date: new Date().toISOString().split('T')[0],
-            adsCount: 10,
-            totalSpend: 500000,
-            totalImpressions: 50000,
-            totalClicks: 1500,
-            totalReach: 40000,
-            currency: 'VND',
-        });
-        return { success: true, subscriberCount: this.telegramService.getChatIds().length };
     }
 }
-

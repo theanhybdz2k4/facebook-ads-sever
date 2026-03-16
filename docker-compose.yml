@@ -21,11 +21,11 @@ services:
     depends_on:
       - redis
     environment:
-      - TZ: "Asia/Ho_Chi_Minh"
+      TZ: "Asia/Ho_Chi_Minh"
 
   postgres:
     container_name: aams-postgres
-    image: postgres:13.5
+    image: postgres:17
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${DB_DATABASE}
