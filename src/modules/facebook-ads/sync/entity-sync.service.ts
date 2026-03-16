@@ -1,7 +1,8 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '@n-database/prisma/prisma.service';
+import { PrismaService } from '../../../database/prisma/prisma.service';
 import { FacebookApiService } from '../api/facebook-api.service';
 import { TokenService } from '../accounts/token.service';
+import { CreativeSyncService } from './creative-sync.service';
 import { UnifiedStatus } from '@prisma/client';
 
 @Injectable()
@@ -12,6 +13,7 @@ export class EntitySyncService {
         private readonly prisma: PrismaService,
         private readonly facebookApi: FacebookApiService,
         private readonly tokenService: TokenService,
+        private readonly creativeSyncService: CreativeSyncService,
     ) { }
 
     private mapStatus(fbStatus: string): UnifiedStatus {
@@ -292,51 +294,9 @@ export class EntitySyncService {
             });
         }
 
+        // Tự động sync Creatives sau khi sync Ads
+        await this.creativeSyncService.syncCreativesForAccount(platformAccountId);
+
         return { synced: ads.length };
-    }
-
-    /**
-     * Đồng bộ Creatives
-     */
-    async syncCreatives(platformAccountId: number) {
-        const token = await this.tokenService.getTokenForAdAccount(platformAccountId);
-        if (!token) throw new Error('No token found');
-
-        const account = await this.prisma.platformAccount.findUnique({
-            where: { id: platformAccountId }
-        });
-        if (!account) throw new Error('Account not found');
-
-        const creatives = await this.facebookApi.getAdCreatives(account.externalId, token);
-        const now = new Date();
-
-        for (const creative of creatives) {
-            await this.prisma.unifiedAdCreative.upsert({
-                where: { id: creative.id },
-                create: {
-                    id: creative.id,
-                    platformAccountId,
-                    externalId: creative.id,
-                    name: creative.name,
-                    body: creative.body,
-                    imageUrl: creative.image_url,
-                    thumbnailUrl: creative.thumbnail_url,
-                    title: creative.title,
-                    syncedAt: now,
-                    platformData: creative,
-                },
-                update: {
-                    name: creative.name,
-                    body: creative.body,
-                    imageUrl: creative.image_url,
-                    thumbnailUrl: creative.thumbnail_url,
-                    title: creative.title,
-                    syncedAt: now,
-                    platformData: creative,
-                }
-            });
-        }
-
-        return { synced: creatives.length };
     }
 }

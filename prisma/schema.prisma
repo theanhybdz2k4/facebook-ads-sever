@@ -140,7 +140,7 @@ model PlatformIdentity {
   user        User                 @relation(fields: [userId], references: [id])
   platform    Platform             @relation(fields: [platformId], references: [id])
   credentials PlatformCredential[]
-  accounts    PlatformAccount[]
+  accounts    PlatformAccount[] @relation("IdentityToAccounts")
   pages       PlatformPage[]
 
   @@map("platform_identities")
@@ -162,7 +162,7 @@ model PlatformAccount {
   branchId           Int?      @map("branch_id")
   deletedAt          DateTime? @map("deleted_at")
 
-  identity        PlatformIdentity  @relation(fields: [platformIdentityId], references: [id])
+  identity        PlatformIdentity  @relation("IdentityToAccounts", fields: [platformIdentityId], references: [id])
   platform        Platform          @relation(fields: [platformId], references: [id])
   branch          Branch?           @relation(fields: [branchId], references: [id])
   campaigns       UnifiedCampaign[]
@@ -426,6 +426,7 @@ model UnifiedAdCreative {
   account PlatformAccount @relation(fields: [platformAccountId], references: [id])
   ads     UnifiedAd[]
 
+  @@unique([platformAccountId, externalId])
   @@map("unified_ad_creatives")
 }
 

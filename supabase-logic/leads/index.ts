@@ -449,35 +449,41 @@ Deno.serve(async (req) => {
             const rangeStart = dateStart ? `${dateStart}T${startTime}+07:00` : todayRange.start;
             const rangeEnd = dateEnd ? `${dateEnd}T${endTime}+07:00` : todayRange.end;
 
-            // 1. STATS FROM LEADS TABLE (COUNT NEW CONTACTS)
+            // 1. STATS FROM LEADS TABLE (COUNT ACTIVE AND NEW CONTACTS)
             // Use accountIds fetched above to avoid complex join issues
             let leadsBaseQuery = supabase
                 .from("leads")
-                .select("id, first_contact_at, is_qualified, is_potential, is_manual_potential, source_campaign_id, platform_data, metadata, platform_account_id")
+                .select("id, first_contact_at, last_message_at, is_qualified, is_potential, is_manual_potential, source_campaign_id, platform_data, metadata, platform_account_id")
                 .in("platform_account_id", accountIds);
 
             if (pageIdParam && pageIdParam !== "all") leadsBaseQuery = leadsBaseQuery.eq("fb_page_id", pageIdParam);
             if (externalCampaignId) leadsBaseQuery = leadsBaseQuery.eq("source_campaign_id", externalCampaignId);
 
-            // Filter by FIRST contact in range
-            leadsBaseQuery = leadsBaseQuery.gte("first_contact_at", rangeStart).lte("first_contact_at", rangeEnd);
+            // Fetch leads ACTIVE in range (last_message_at)
+            // Note: New leads will also have last_message_at in this range.
+            const { data: activeLeadsData, error: leadsError } = await leadsBaseQuery
+                .gte("last_message_at", rangeStart)
+                .lte("last_message_at", rangeEnd);
 
-            const { data: leadsData, error: leadsError } = await leadsBaseQuery;
+            const activeLeads = activeLeadsData || [];
 
-            // NEW CONTACTS in range
-            const rangeNewContacts = leadsData || [];
+            // NEW CONTACTS: subset of active leads who FIRST contacted in this range
+            const rangeNewContacts = activeLeads.filter((l: any) => 
+                l.first_contact_at && 
+                new Date(l.first_contact_at) >= new Date(rangeStart) && 
+                new Date(l.first_contact_at) <= new Date(rangeEnd)
+            );
             const rangeNewTotal = rangeNewContacts.length;
 
-            // AGGREGATION: Ad leads are those marked as qualified (attribute of ad interaction)
-            const adsLeads = rangeNewContacts.filter((l: any) => l.source_campaign_id || l.is_qualified);
-            const organicLeads = rangeNewContacts.filter((l: any) => !l.source_campaign_id && !l.is_qualified);
+            // Stats for Ad Leads (Activity-based)
+            const adsActive = activeLeads.filter((l: any) => l.source_campaign_id);
+            const potentialFromAds = adsActive.filter((l: any) => l.is_potential === true || l.is_manual_potential === true).length;
+            const totalActiveAds = adsActive.length;
 
-            const rangeNewAds = adsLeads.length;
-            const rangeNewOrganic = organicLeads.length;
-
-            // Count potential leads in each group (is_potential = AI analysis, is_manual_potential = starred by user)
-            const potentialFromAds = adsLeads.filter((l: any) => l.is_potential === true || l.is_manual_potential === true).length;
-            const potentialFromOrganic = organicLeads.filter((l: any) => l.is_potential === true || l.is_manual_potential === true).length;
+            // Stats for Organic Leads (Activity-based)
+            const organicActive = activeLeads.filter((l: any) => !l.source_campaign_id);
+            const potentialFromOrganic = organicActive.filter((l: any) => l.is_potential === true || l.is_manual_potential === true).length;
+            const totalActiveOrganic = organicActive.length;
 
             // Count ALL starred (manual potential) leads - không giới hạn theo ngày
             // Query riêng để đếm tất cả leads đã đánh dấu sao
@@ -526,16 +532,16 @@ Deno.serve(async (req) => {
 
             const result = {
                 spendTotal, spendToday, spendTodayRaw, yesterdaySpend,
-                todayLeads: rangeNewTotal,
-                todayQualified: rangeNewAds,
-                messagingNewFromAds, // Values from Facebook Ads Insights
-                todayNewOrganic: rangeNewOrganic,
+                todayLeads: rangeNewTotal, // Cohort-based: New customers today
+                todayQualified: totalActiveAds, // Activity-based denominator for Ads card
+                messagingNewFromAds,
+                todayNewOrganic: totalActiveOrganic, // Activity-based denominator for Organic card
                 potentialFromAds,
                 potentialFromOrganic,
                 todayMessagesCount: uniqueLeadsInRange,
                 starredCount,
                 totalLeads: rangeNewTotal,
-                totalQualified: rangeNewAds,
+                totalQualified: totalActiveAds + totalActiveOrganic,
                 revenue: revenueTotal,
                 avgDailySpend: spendTotal / days,
                 roas: spendTotal > 0 ? parseFloat((revenueTotal / spendTotal).toFixed(2)) : 0,

@@ -2,6 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { EntitySyncService } from '../sync/entity-sync.service';
+import { CreativeSyncService } from '../sync/creative-sync.service';
 
 export interface EntitySyncJobData {
     accountId?: number;
@@ -15,7 +16,10 @@ export interface EntitySyncJobData {
 export class EntityProcessor extends WorkerHost {
     private readonly logger = new Logger(EntityProcessor.name);
 
-    constructor(private readonly entitySyncService: EntitySyncService) {
+    constructor(
+        private readonly entitySyncService: EntitySyncService,
+        private readonly creativeSyncService: CreativeSyncService,
+    ) {
         super();
     }
 
@@ -35,13 +39,13 @@ export class EntityProcessor extends WorkerHost {
                     return await this.entitySyncService.syncAds(accountId!);
 
                 case 'creatives':
-                    return await this.entitySyncService.syncCreatives(accountId!);
+                    return await this.creativeSyncService.syncCreativesForAccount(accountId!);
 
                 case 'all':
                     await this.entitySyncService.syncCampaigns(accountId!);
                     await this.entitySyncService.syncAdGroups(accountId!);
                     await this.entitySyncService.syncAds(accountId!);
-                    return await this.entitySyncService.syncCreatives(accountId!);
+                    return await this.creativeSyncService.syncCreativesForAccount(accountId!);
 
                 default:
                     throw new Error(`Unknown entity type: ${entityType}`);

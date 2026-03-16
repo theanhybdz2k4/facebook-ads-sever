@@ -8,6 +8,7 @@ import { TokenService } from './accounts/token.service';
 import { FbAccountService } from './accounts/fb-account.service';
 import { EntitySyncService } from './sync/entity-sync.service';
 import { InsightsSyncService } from './sync/insights-sync.service';
+import { CreativeSyncService } from './sync/creative-sync.service';
 import { CrawlJobService } from './sync/crawl-job.service';
 import { TelegramService } from './notifications/telegram.service';
 import { EntityProcessor } from './processors/entity.processor';
@@ -39,6 +40,7 @@ export const INSIGHTS_QUEUE = 'fb-insights-sync';
         FbAccountService,
         EntitySyncService,
         InsightsSyncService,
+        CreativeSyncService,
         CrawlJobService,
         TelegramService,
         EntityProcessor,
@@ -51,6 +53,7 @@ export const INSIGHTS_QUEUE = 'fb-insights-sync';
         FbAccountService,
         EntitySyncService,
         InsightsSyncService,
+        CreativeSyncService,
         TelegramService,
     ],
 })

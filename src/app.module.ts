@@ -19,6 +19,7 @@ import { ResponseInterceptor } from '@n-interceptors/response.interceptor';
 import { AllExceptionFilter } from './filter-exceptions/exception.filter';
 import { AuthModule } from './modules/auth/auth.module';
 import { FacebookAdsModule } from './modules/facebook-ads/facebook-ads.module';
+import { MessengerModule } from './modules/messenger/messenger.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { FacebookAdsModule } from './modules/facebook-ads/facebook-ads.module';
     ScheduleModule.forRoot(),
     AuthModule,
     FacebookAdsModule,
+    MessengerModule,
   ],
   controllers: [AppController],
   providers: [

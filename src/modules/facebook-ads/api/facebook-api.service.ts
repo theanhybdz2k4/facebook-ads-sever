@@ -96,6 +96,37 @@ export class FacebookApiService {
     }
 
     /**
+     * Raw GET request without data wrapper (used for flexible queries like IDs list)
+     */
+    async getRaw<T = any>(
+        endpoint: string,
+        accessToken: string,
+        params: Record<string, string> = {},
+        accountId?: string,
+    ): Promise<T> {
+        if (accountId) await this.rateLimiter.waitIfNeeded(accountId);
+
+        const url = `${FB_GRAPH_API_URL}${endpoint}`;
+        try {
+            const response = await firstValueFrom(
+                this.httpService.get<T>(url, {
+                    params: { ...params, access_token: accessToken },
+                }),
+            );
+
+            if (accountId) {
+                const throttleHeader = response.headers['x-fb-ads-insights-throttle'];
+                this.rateLimiter.parseThrottleHeader(throttleHeader, accountId);
+            }
+
+            return response.data;
+        } catch (error) {
+            this.logger.error(`Facebook API Raw Error (${endpoint}): ${error.message}`);
+            throw error;
+        }
+    }
+
+    /**
      * Fetch all pages of data from a paginated endpoint (Optimized from Edge Functions)
      */
     async getAllPages<T>(
