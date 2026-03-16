@@ -20,6 +20,7 @@ import { AllExceptionFilter } from './filter-exceptions/exception.filter';
 import { AuthModule } from './modules/auth/auth.module';
 import { FacebookAdsModule } from './modules/facebook-ads/facebook-ads.module';
 import { MessengerModule } from './modules/messenger/messenger.module';
+import { LeadsModule } from './modules/leads/leads.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { MessengerModule } from './modules/messenger/messenger.module';
     AuthModule,
     FacebookAdsModule,
     MessengerModule,
+    LeadsModule,
   ],
   controllers: [AppController],
   providers: [

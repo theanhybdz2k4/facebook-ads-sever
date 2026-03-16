@@ -31,7 +31,10 @@ TIÊU CHÍ CHẤM ĐIỂM (Thang 10):
 4. Liên lạc (2đ): Khách đã để lại SĐT hoặc sẵn sàng cung cấp khi được yêu cầu.
 5. Tương tác & Phản hồi (2đ): Khách chủ động trao đổi, phản hồi nhanh. TRỪ ĐIỂM nếu: Khách rep quá chậm (>24h-48h mỗi tin), hoặc đã ngưng tương tác lâu dù Page có nhắn tin (hội thoại bị 'nguội').
 
-QUY TẮC PHẢN HỒI: Dòng đầu tiên PHẢI là "Đánh giá: TIỀM NĂNG" hoặc "Đánh giá: KHÔNG TIỀM NĂNG". Sau đó bắt buộc có phần "Tóm tắt: ..." để hiển thị ở danh sách tin nhắn.
+QUY TẮC PHẢN HỒI (RẤT QUAN TRỌNG): 
+- Dòng đầu tiên PHẢI là "Đánh giá: TIỀM NĂNG" nếu Tổng điểm đạt từ 8/10 trở lên. 
+- Nếu dưới 8 điểm, PHẢI là "Đánh giá: KHÔNG TIỀM NĂNG". 
+- Không bao giờ được đánh giá TIỀM NĂNG nếu tổng điểm thấp hơn 8.
 
 CẤU TRÚC PHẢN HỒI (BẮT BUỘC):
 Đánh giá: [TIỀM NĂNG hoặc KHÔNG TIỀM NĂNG]
@@ -59,9 +62,20 @@ ${conversationText}
 
         const analysis = data.candidates?.[0]?.content?.parts?.[0]?.text || null;
         if (analysis) {
-            const lines = analysis.split('\n');
+            const lines = analysis.split('\n').map(l => l.trim());
             const firstLine = lines[0].toLowerCase();
-            const isPotential = firstLine.includes('tiềm năng') && !firstLine.includes('không tiềm năng');
+            
+            // Tìm dòng tổng điểm và parse số
+            let score = 0;
+            const scoreLine = lines.find(l => l.toLowerCase().includes('tổng điểm'));
+            if (scoreLine) {
+                const match = scoreLine.match(/(\d+)/);
+                if (match) score = parseInt(match[1]);
+            }
+
+            // Ép buộc potential phải có điểm >= 8
+            const isPotential = firstLine.includes('tiềm năng') && !firstLine.includes('không tiềm năng') && score >= 8;
+            
             const cleanedAnalysis = lines.slice(1).join('\n').trim();
             return { analysis: cleanedAnalysis, isPotential };
         }
@@ -86,7 +100,6 @@ Deno.serve(async (req) => {
         const result = await analyzeWithGemini(geminiApiKey, messages);
 
         if (result) {
-            // Fetch current lead data to merge platform_data
             const { data: currentLead } = await supabase
                 .from("leads")
                 .select("platform_data, metadata")
@@ -113,7 +126,6 @@ Deno.serve(async (req) => {
 
             if (updateErr) throw updateErr;
 
-            console.log(`[fb-ai-analysis] Analysis completed and saved for lead ${leadId}`);
             return new Response(JSON.stringify({ 
                 success: true, 
                 isPotential: result.isPotential,
